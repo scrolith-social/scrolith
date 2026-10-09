@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../testApp';
+import { cleanupGcoinRedisClient } from './gcoinTestCleanup';
 import prisma from '../utils/prismaClient';
 
 describe('Gcoin API smoke tests', () => {
@@ -9,7 +10,11 @@ describe('Gcoin API smoke tests', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    try {
+      await cleanupGcoinRedisClient();
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   test('GET /api/gcoin/settings returns 200', async () => {

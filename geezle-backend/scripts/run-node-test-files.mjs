@@ -2,6 +2,22 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+process.env.NODE_ENV = 'test';
+process.env.APP_RUNTIME = 'test';
+process.env.DISABLE_BACKGROUND_WORKERS = 'true';
+process.env.DATABASE_URL =
+  process.env.DATABASE_URL ||
+  'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_test';
+process.env.SHADOW_DATABASE_URL =
+  process.env.SHADOW_DATABASE_URL ||
+  'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_shadow';
+process.env.TEST_DB_KIND = process.env.TEST_DB_KIND || 'local-postgres';
+process.env.TEST_DB_PROJECT = process.env.TEST_DB_PROJECT || 'local-only';
+process.env.TEST_DB_INSTANCE = process.env.TEST_DB_INSTANCE || 'local-postgres-test';
+process.env.TEST_DB_NAME = process.env.TEST_DB_NAME || 'scrolith_test';
+
+await import('./test-db-guard.mjs');
+
 const collectNodeTestFiles = (dir) => {
   const entries = readdirSync(dir, { withFileTypes: true });
   const files = [];

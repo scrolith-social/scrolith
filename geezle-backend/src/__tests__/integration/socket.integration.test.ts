@@ -3,6 +3,7 @@ import { AddressInfo } from 'net';
 import { io as Client } from 'socket.io-client';
 import app, { server } from '../../server';
 import prisma from '../../utils/prismaClient';
+import { cleanupGcoinRedisClient } from '../gcoinTestCleanup';
 import jwt from 'jsonwebtoken';
 
 jest.setTimeout(20000);
@@ -35,8 +36,14 @@ describe('Socket integration - targeted emits', () => {
 
   afterAll(async () => {
     try {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    } catch (e) {}
+      try {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      } finally {
+        await cleanupGcoinRedisClient();
+      }
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   const connectClient = (token: string) => new Promise<any>((resolve, reject) => {

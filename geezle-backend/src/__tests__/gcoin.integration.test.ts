@@ -4,6 +4,7 @@ import {
   TRANSFER_LIMIT_PER_MIN,
   CONVERSION_LIMIT_PER_DAY
 } from '../../src/middleware/gcoinLimits';
+import { cleanupGcoinRedisClient } from './gcoinTestCleanup';
 
 jest.setTimeout(120000);
 
@@ -18,6 +19,10 @@ describe('Gcoin Redis atomic limiter integration', () => {
       .send({ userId: 'dev-user-id-123', amount: 50000 })
       .expect(200);
   }, 30000);
+
+  afterAll(async () => {
+    await cleanupGcoinRedisClient();
+  });
 
   test('concurrent transfers respect per-minute limit', async () => {
     const concurrency = 20;

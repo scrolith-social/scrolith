@@ -9,6 +9,9 @@ process.env.DISABLE_BACKGROUND_WORKERS = 'true';
 process.env.DATABASE_URL =
   process.env.DATABASE_URL ||
   'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_test';
+process.env.SHADOW_DATABASE_URL =
+  process.env.SHADOW_DATABASE_URL ||
+  'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_shadow';
 process.env.TEST_DB_KIND = process.env.TEST_DB_KIND || 'local-postgres';
 process.env.TEST_DB_PROJECT = process.env.TEST_DB_PROJECT || 'local-only';
 process.env.TEST_DB_INSTANCE = process.env.TEST_DB_INSTANCE || 'local-postgres-test';
@@ -28,6 +31,7 @@ const jestBin = './node_modules/jest/bin/jest.js';
 const jestTimeoutMs = Number.parseInt(process.env.JEST_TEST_TIMEOUT_MS || '60000', 10);
 const groupTimeoutMs = Number.parseInt(process.env.JEST_GROUP_TIMEOUT_MS || '900000', 10);
 const groupSize = Number.parseInt(process.env.JEST_GROUP_SIZE || '12', 10);
+const forceExit = process.env.JEST_FORCE_EXIT !== 'false';
 
 const listResult = spawnSync(
   process.execPath,
@@ -41,6 +45,10 @@ if (listResult.error?.code === 'ETIMEDOUT' || listResult.status !== 0) {
 }
 
 const jestFiles = JSON.parse(listResult.stdout || '[]').sort();
+if (jestFiles.length === 0) {
+  console.error('[jest] no Jest test files were discovered; refusing a no-op full test run.');
+  process.exit(1);
+}
 const groups = [];
 const isolatedFiles = jestFiles.filter((file) =>
   /integration[\\/]socket\.integration\.test\.[jt]sx?$/.test(file) ||
@@ -112,21 +120,20 @@ for (const [index, files] of groups.entries()) {
   execution.groupsStarted += 1;
   const outputFile = join(resultDir, `group-${String(index + 1).padStart(3, '0')}.json`);
   console.log(`[jest] group ${index + 1}/${groups.length}: ${files.length} files`);
+  const jestArgs = [
+    '--config', 'jest.config.cjs',
+    '--runInBand',
+    '--detectOpenHandles',
+    ...(forceExit ? ['--forceExit'] : []),
+    '--testTimeout', String(jestTimeoutMs),
+    '--json',
+    '--outputFile', outputFile,
+    '--runTestsByPath',
+    ...files
+  ];
   const result = spawnSync(
     process.execPath,
-    [
-      '--max-old-space-size=4096',
-      jestBin,
-      '--config', 'jest.config.cjs',
-      '--runInBand',
-      '--detectOpenHandles',
-      '--forceExit',
-      '--testTimeout', String(jestTimeoutMs),
-      '--json',
-      '--outputFile', outputFile,
-      '--runTestsByPath',
-      ...files
-    ],
+    ['--max-old-space-size=4096', jestBin, ...jestArgs],
     {
       cwd: process.cwd(),
       env: process.env,

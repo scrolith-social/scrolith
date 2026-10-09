@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../testApp';
+import { cleanupGcoinRedisClient } from './gcoinTestCleanup';
 import prisma from '../utils/prismaClient';
 
 describe('Gcoin edge cases', () => {
@@ -41,18 +42,25 @@ describe('Gcoin edge cases', () => {
   });
 
   afterAll(async () => {
-    await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
-    await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: senderId } });
-    // restore previous gcoin settings if any
-    if (!prevSettings || prevSettings.id !== 'default') {
-      await prisma.gcoinSettings.deleteMany({ where: { id: 'default' } });
+    try {
+      await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
+      await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: senderId } });
+      // restore previous gcoin settings if any
+      if (!prevSettings || prevSettings.id !== 'default') {
+        await prisma.gcoinSettings.deleteMany({ where: { id: 'default' } });
+      }
+      if (prevSettings) {
+        const { id, createdAt, updatedAt, ...restoredSettings } = prevSettings;
+        await prisma.gcoinSettings.update({ where: { id: prevSettings.id }, data: restoredSettings as any });
+      }
+    } finally {
+      try {
+        await cleanupGcoinRedisClient();
+      } finally {
+        await prisma.$disconnect();
+      }
     }
-    if (prevSettings) {
-      const { id, createdAt, updatedAt, ...restoredSettings } = prevSettings;
-      await prisma.gcoinSettings.update({ where: { id: prevSettings.id }, data: restoredSettings as any });
-    }
-    await prisma.$disconnect();
   });
 
   test('transfer fails when insufficient balance for amount+fee', async () => {

@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../testApp';
+import { cleanupGcoinRedisClient } from './gcoinTestCleanup';
 import prisma from '../utils/prismaClient';
 
 describe('Gcoin transfer, donate, conversion endpoints', () => {
@@ -55,11 +56,18 @@ describe('Gcoin transfer, donate, conversion endpoints', () => {
   });
 
   afterAll(async () => {
-    await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
-    await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
-    await prisma.communityPost.deleteMany({ where: { id: postId } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: devUserId } });
-    await prisma.$disconnect();
+    try {
+      await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
+      await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
+      await prisma.communityPost.deleteMany({ where: { id: postId } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: devUserId } });
+    } finally {
+      try {
+        await cleanupGcoinRedisClient();
+      } finally {
+        await prisma.$disconnect();
+      }
+    }
   });
 
   test('POST /api/gcoin/transfer transfers gcoin between users', async () => {

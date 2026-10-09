@@ -1,0 +1,144 @@
+name: Backend PR CI
+
+on:
+  pull_request:
+    branches:
+      - backend/main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test_credentials:
+    runs-on: ubuntu-latest
+    outputs:
+      postgres_password: ${{ steps.generate.outputs.postgres_password }}
+      jwt_secret: ${{ steps.generate.outputs.jwt_secret }}
+    steps:
+      - name: Generate ephemeral test-only credentials
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'postgres_password=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_OUTPUT"
+          printf 'jwt_secret=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_OUTPUT"
+
+  backend_tests:
+    needs: test_credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: geezle-backend
+    env:
+      NODE_ENV: test
+      APP_RUNTIME: test
+      DISABLE_BACKGROUND_WORKERS: 'true'
+      DATABASE_URL: postgresql://scrolith_test:${{ needs.test_credentials.outputs.postgres_password }}@127.0.0.1:5432/scrolith_test
+      SHADOW_DATABASE_URL: postgresql://scrolith_test:${{ needs.test_credentials.outputs.postgres_password }}@127.0.0.1:5432/scrolith_shadow
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_TEST_MODE: local
+      REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
+      TEST_DB_KIND: cloudbuild-postgres
+      TEST_DB_PROJECT: cloudbuild-ephemeral
+      TEST_DB_INSTANCE: cloudbuild-ephemeral-postgres-test
+      TEST_DB_NAME: scrolith_test
+      JWT_SECRET: ${{ needs.test_credentials.outputs.jwt_secret }}
+      JWT_EXPIRES_IN: 1h
+      JEST_FORCE_EXIT: 'false'
+      JEST_TEST_TIMEOUT_MS: '60000'
+      JEST_GROUP_TIMEOUT_MS: '900000'
+      JEST_GROUP_SIZE: '12'
+      NODE_OPTIONS: --max-old-space-size=4096
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scrolith_test
+          POSTGRES_PASSWORD: ${{ needs.test_credentials.outputs.postgres_password }}
+          POSTGRES_DB: scrolith_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrolith_test -d scrolith_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - name: Mask ephemeral test credentials
+        shell: bash
+        env:
+          TEST_POSTGRES_PASSWORD: ${{ needs.test_credentials.outputs.postgres_password }}
+          TEST_JWT_SECRET: ${{ needs.test_credentials.outputs.jwt_secret }}
+        run: |
+          printf '::add-mask::%s\n' "$TEST_POSTGRES_PASSWORD"
+          printf '::add-mask::%s\n' "$TEST_JWT_SECRET"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Use Node.js 22.18.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: npm
+          cache-dependency-path: geezle-backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Validate and generate Prisma client
+        run: |
+          npx prisma validate
+          npx prisma generate
+
+      - name: Apply checked-in migrations to disposable CI database
+        run: |
+          npx prisma migrate deploy
+          npx prisma migrate status
+
+      - name: Seed deterministic test fixtures
+        run: npm run test:db:seed
+
+      - name: Run Node.js contract tests
+        env:
+          NODE_TEST_TIMEOUT_MS: '120000'
+        run: npm run test:node
+
+      - name: Run required Jest suite with open-handle detection
+        # test:full normally uses --forceExit for local runs. CI disables it so
+        # --detectOpenHandles diagnostics remain visible and leaked handles fail
+        # the bounded group instead of being forcibly hidden.
+        env:
+          CI: 'true'
+        run: npm run test:full
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Check patch formatting
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git -C "$GITHUB_WORKSPACE" fetch --no-tags origin "$PR_BASE_SHA"
+          git -C "$GITHUB_WORKSPACE" diff --check "$PR_BASE_SHA" "$GITHUB_SHA"

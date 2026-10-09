@@ -1,5 +1,6 @@
 import request from 'supertest';
 import app from '../testApp';
+import { cleanupGcoinRedisClient } from './gcoinTestCleanup';
 import prisma from '../utils/prismaClient';
 
 describe('Gcoin API endpoint tests', () => {
@@ -16,7 +17,11 @@ describe('Gcoin API endpoint tests', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    try {
+      await cleanupGcoinRedisClient();
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   test('Admin can credit a user wallet', async () => {
