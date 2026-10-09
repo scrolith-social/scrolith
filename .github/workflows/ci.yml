@@ -33,12 +33,11 @@ jobs:
     name: Build and validate frontend
     runs-on: ubuntu-latest
 
-    env:
-      BACKEND_URL: ${{ secrets.BACKEND_URL }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Use Node.js
         uses: actions/setup-node@v4
@@ -48,32 +47,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build frontend
+      - name: Build frontend with inert endpoint
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_production == true) }}
         shell: bash
         env:
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
-          DEPLOY_PRODUCTION: ${{ inputs.deploy_production }}
+          VITE_BACKEND_URL: https://backend.invalid
+          BACKEND_URL: https://backend.invalid
+        run: npm run build
+
+      - name: Build frontend for authorized production deployment
+        if: >-
+          ${{
+            github.event_name == 'workflow_dispatch' &&
+            github.ref == 'refs/heads/main' &&
+            inputs.deploy_production == true
+          }}
+        shell: bash
+        env:
+          VITE_BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
           set -euo pipefail
-
-          # Ordinary CI builds must not require a live production backend.
-          # Use a deliberately inert target when no backend URL is configured.
-          #
-          # An explicitly authorized production deployment must fail closed
-          # rather than produce a deployable build using the inert target.
-          if [ -z "$VITE_BACKEND_URL" ] && [ -z "$BACKEND_URL" ]; then
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "${DEPLOY_PRODUCTION:-false}" = "true" ]; then
-              echo "::error::BACKEND_URL must be configured before an authorized production deployment."
-              exit 1
-            fi
-
-            export VITE_BACKEND_URL="https://backend.invalid"
-            export BACKEND_URL="https://backend.invalid"
-          else
-            export VITE_BACKEND_URL="${VITE_BACKEND_URL:-$BACKEND_URL}"
-            export BACKEND_URL="${BACKEND_URL:-$VITE_BACKEND_URL}"
+          if [ -z "$VITE_BACKEND_URL" ]; then
+            echo "::error::BACKEND_URL must be configured before an authorized production deployment."
+            exit 1
           fi
-
           npm run build
 
       - name: Upload build artifact
@@ -86,7 +84,8 @@ jobs:
       - name: Run frontend unit tests
         shell: bash
         env:
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
+          VITE_BACKEND_URL: https://backend.invalid
+          BACKEND_URL: https://backend.invalid
         run: |
           set -euo pipefail
 
@@ -102,6 +101,8 @@ jobs:
             inputs.run_e2e == true
           }}
         shell: bash
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
           set -euo pipefail
 
@@ -114,13 +115,13 @@ jobs:
         if: >-
           ${{
             github.event_name == 'workflow_dispatch' &&
-            inputs.run_e2e == true &&
-            env.BACKEND_URL != ''
+            inputs.run_e2e == true
           }}
         shell: bash
         env:
-          CYPRESS_apiUrl: ${{ env.BACKEND_URL }}
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          CYPRESS_apiUrl: ${{ secrets.BACKEND_URL }}
+          VITE_BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: |
           set -euo pipefail
 
@@ -131,8 +132,7 @@ jobs:
           ${{
             always() &&
             github.event_name == 'workflow_dispatch' &&
-            inputs.run_e2e == true &&
-            env.BACKEND_URL != ''
+            inputs.run_e2e == true
           }}
         uses: actions/upload-artifact@v4
         with:
