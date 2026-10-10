@@ -1,6 +1,7 @@
 import request from 'supertest';
 import app from '../testApp';
 import prisma from '../utils/prismaClient';
+import { closeGcoinLimitStore, resetAll } from '../middleware/gcoinLimits';
 
 describe('Gcoin API smoke tests', () => {
   beforeAll(async () => {
@@ -9,7 +10,15 @@ describe('Gcoin API smoke tests', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    try {
+      resetAll();
+    } finally {
+      try {
+        await closeGcoinLimitStore();
+      } finally {
+        await prisma.$disconnect();
+      }
+    }
   });
 
   test('GET /api/gcoin/settings returns 200', async () => {

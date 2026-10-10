@@ -23,4 +23,23 @@ describe('Gcoin protection-store failure safety', () => {
     await expect(tryRecordTransfer('synthetic-user')).resolves.toBe(false);
     await expect(tryRecordConversion('synthetic-user')).resolves.toBe(false);
   });
+
+  test('test runtime rejects remote Redis before creating a client', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.REDIS_URL = 'redis://redis.example.invalid:6379';
+    delete process.env.REDIS;
+
+    const redisConstructor = jest.fn();
+    jest.doMock('ioredis', () => redisConstructor);
+
+    let tryRecordTransfer!: (userId: string) => Promise<boolean>;
+    jest.isolateModules(() => {
+      ({ tryRecordTransfer } = require('../middleware/gcoinLimits'));
+    });
+
+    await expect(tryRecordTransfer('synthetic-user')).rejects.toThrow(
+      'Gcoin tests require REDIS_URL pointing to local test Redis at 127.0.0.1'
+    );
+    expect(redisConstructor).not.toHaveBeenCalled();
+  });
 });

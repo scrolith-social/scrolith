@@ -4,6 +4,7 @@ import { io as Client } from 'socket.io-client';
 import app, { server } from '../../server';
 import prisma from '../../utils/prismaClient';
 import jwt from 'jsonwebtoken';
+import { closeGcoinLimitStore, resetAll } from '../../middleware/gcoinLimits';
 
 jest.setTimeout(20000);
 
@@ -37,6 +38,17 @@ describe('Socket integration - targeted emits', () => {
     try {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     } catch (e) {}
+    finally {
+      try {
+        resetAll();
+      } finally {
+        try {
+          await closeGcoinLimitStore();
+        } finally {
+          await prisma.$disconnect();
+        }
+      }
+    }
   });
 
   const connectClient = (token: string) => new Promise<any>((resolve, reject) => {
