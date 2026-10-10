@@ -1,13 +1,16 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { requiredSecret } from '../src/utils/security/requiredSecret';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  const production = process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
   const email = process.env.ADMIN_EMAIL || 'admin@local';
-  const password = process.env.ADMIN_PASSWORD || 'admin12345';
-  const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret';
+  const password = process.env.ADMIN_PASSWORD || (production ? '' : 'admin12345');
+  if (!password) throw new Error('ADMIN_PASSWORD is required in production');
+  const JWT_SECRET = requiredSecret('JWT_SECRET', 'dev_jwt_secret');
 
   let admin = await prisma.user.findUnique({ where: { email } });
   if (!admin) {
@@ -26,7 +29,11 @@ async function main() {
   }
 
   const token = jwt.sign({ id: admin.id, email: admin.email, role: admin.role }, JWT_SECRET, { expiresIn: '30d' });
-  console.log('\nDEV_ADMIN_TOKEN=' + token + '\n');
+  if (production) {
+    console.log('Admin token generated; retrieve it through the approved secure operator channel.');
+  } else {
+    console.log('\nDEV_ADMIN_TOKEN=' + token + '\n');
+  }
   await prisma.$disconnect();
 }
 

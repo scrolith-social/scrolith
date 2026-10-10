@@ -874,7 +874,6 @@ export const registerFxJobs = async (app: Application) => {
       }
     },
     {
-      scheduled: true,
       timezone: fxConfig.timezone || DEFAULT_FX_SYSTEM_CONFIG.timezone
     }
   );

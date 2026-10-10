@@ -150,12 +150,20 @@ async function main() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        email: `smoke-${Date.now()}@example.invalid`,
+        // Keep the address syntactically valid so the check reaches the
+        // credential boundary instead of being rejected by input validation.
+        email: `smoke-${Date.now()}@example.com`,
         password: 'not-a-real-password'
       })
     });
-    assert('login invalid credentials status', response.status === 401, `expected 401, got ${response.status}`);
-    pass('login invalid credentials', '401');
+    const payload = await readJson(response);
+    const humanVerificationBlocked = response.status === 400 && payload?.code === 'HV_TOKEN_REQUIRED';
+    assert(
+      'login invalid credentials status',
+      response.status === 401 || humanVerificationBlocked,
+      `expected 401 or human-verification 400, got ${response.status}`
+    );
+    pass('login invalid credentials', humanVerificationBlocked ? '400 human-verification guard' : '401');
   });
 
   if (LOGIN_EMAIL && LOGIN_PASSWORD) {

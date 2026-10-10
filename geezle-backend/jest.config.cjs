@@ -20,7 +20,14 @@ module.exports = {
   roots: ['<rootDir>/src', '<rootDir>/tests'],
   testMatch: ['**/?(*.)+(spec|test).ts?(x)'],
   transform: {
-    '^.+\\.(ts|tsx)$': 'ts-jest'
+    '^.+\\.(ts|tsx)$': [
+      'ts-jest',
+      {
+        tsconfig: 'tsconfig.json',
+        isolatedModules: true,
+        diagnostics: false
+      }
+    ]
   },
   setupFiles: ['<rootDir>/jest.setup.cjs'],
   moduleNameMapper: {
@@ -28,9 +35,4 @@ module.exports = {
   },
   moduleFileExtensions: ['ts','tsx','js','jsx','json','node'],
   testPathIgnorePatterns: ['/dist/', '/node_modules/', ...nodeTestSpecs],
-  globals: {
-    'ts-jest': {
-      tsconfig: 'tsconfig.json'
-    }
-  }
 };

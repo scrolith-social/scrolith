@@ -20,6 +20,11 @@ const HARD_TIMEOUT_MS = Number(process.env.HARD_TIMEOUT_MS || 30000);
 const E2E_USER_EMAIL = process.env.E2E_USER_EMAIL || 'e2e.user@scrolith.com';
 const E2E_USER_PASSWORD = process.env.E2E_USER_PASSWORD || 'e2ePass123';
 const E2E_USER_ROLE = process.env.E2E_USER_ROLE || 'CLIENT';
+const production = process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
+const developmentJwtSecret = () => {
+  if (production && !process.env.JWT_SECRET) throw new Error('JWT_SECRET is required in production');
+  return process.env.JWT_SECRET || 'dev_jwt_secret';
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -86,7 +91,7 @@ async function getTokenWithFallback() {
     const user = await prisma.user.findUnique({ where: { email: EMAIL }, select: { id: true, role: true } });
     await prisma.$disconnect();
     if (!user?.id) throw new Error('Admin user not found for fallback token');
-    const secret = process.env.JWT_SECRET || 'dev_jwt_secret';
+    const secret = developmentJwtSecret();
     const token = jwt.sign({ id: user.id, email: EMAIL, role: user.role }, secret, { expiresIn: '7d' });
     return { token, userId: user.id, source: 'fallback-jwt' };
   } catch (e) {
@@ -117,7 +122,7 @@ async function getOrCreateUserToken() {
         select: { id: true, role: true, passwordHash: true }
       });
     }
-    const secret = process.env.JWT_SECRET || 'dev_jwt_secret';
+    const secret = developmentJwtSecret();
     const token = jwt.sign(
       { id: user.id, email: E2E_USER_EMAIL, role: user.role },
       secret,

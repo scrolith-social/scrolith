@@ -5145,7 +5145,6 @@ if (!runtimePolicy.isTest) {
             console.error('[cron] reconcileAdPayments error:', err);
           }
         }, {
-          scheduled: true,
           timezone: process.env.SCHEDULE_TIMEZONE || 'UTC'
         });
 
@@ -5202,7 +5201,6 @@ if (!runtimePolicy.isTest) {
             }
           },
           {
-            scheduled: true,
             timezone: process.env.SCHEDULE_TIMEZONE || 'UTC'
           }
         );
@@ -5241,7 +5239,6 @@ if (!runtimePolicy.isTest) {
             }
           },
           {
-            scheduled: true,
             timezone: process.env.SCHEDULE_TIMEZONE || 'UTC'
           }
         );
