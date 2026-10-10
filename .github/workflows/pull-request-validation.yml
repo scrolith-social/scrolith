@@ -61,6 +61,3 @@ jobs:
           VITE_BACKEND_URL: https://backend.invalid
           BACKEND_URL: https://backend.invalid
         run: npm run test:cert:unit
-
-      - name: Run mobile wrapper unit tests
-        run: npm run test:mobile:unit

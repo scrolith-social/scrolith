@@ -14,7 +14,7 @@
     "desktop:dist:nsis": "electron-builder --win nsis --x64 -c.win.artifactName=Scrolith-Desktop-Setup-${version}-${arch}.${ext}",
     "desktop:dist:portable": "electron-builder --win portable --x64 -c.win.artifactName=Scrolith-Desktop-Portable-${version}-${arch}.${ext}",
     "desktop:publish:gcs": "powershell -ExecutionPolicy Bypass -File scripts/publish-desktop-release.ps1",
-    "test:mobile:unit": "node scripts/run-mobile-unit-tests.mjs",
+    "test:mobile:unit": "node --import tsx --test tests/unit/**/*.test.ts",
     "test:mobile:release": "node scripts/mobile-release-gate.cjs",
     "test:cert:unit": "node --import tsx --test tests/unit/enterpriseSpacingScale.test.ts tests/unit/postCardDesignSystem.test.ts tests/unit/postCardVisualQaChecklist.test.ts tests/unit/phase2116ReleaseGate.test.ts src/utils/__tests__/phase2114FeedStability.spec.ts src/utils/__tests__/phase2114FeedIntegrityStress.spec.ts",
     "test:cert:storage": "node scripts/phase2116-generate-storage-state.mjs",
