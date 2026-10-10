@@ -29,7 +29,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           git fetch --no-tags origin "$PR_BASE_SHA"
-          git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+          git diff --check "$PR_BASE_SHA" "$GITHUB_SHA"
 
   frontend:
     name: Frontend build and unit tests
