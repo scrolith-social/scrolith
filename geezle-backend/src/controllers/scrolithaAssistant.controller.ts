@@ -21,6 +21,7 @@ import {
 import { submitFeedback } from '../services/scrolithaAi/feedback';
 import { loadAIFeatureFlags } from '../services/scrolithaAi/config';
 import { getAIConsent } from '../services/scrolithaAi/consent';
+import { toUserSafeAIReason, toUserSafeAIResult } from '../services/scrolithaAi/userSafeReason';
 
 const userIdOf = (req: Request) =>
   String((req as any).user?.id || (req as any).userId || '').trim() || null;
@@ -77,7 +78,7 @@ export async function assistantChat(req: Request, res: Response) {
       correlationId: String(req.headers['x-correlation-id'] || '') || undefined
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'chat_failed' });
   }
@@ -94,7 +95,7 @@ export async function assistantRewrite(req: Request, res: Response) {
       locale: req.body?.locale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'rewrite_failed' });
   }
@@ -112,7 +113,7 @@ export async function assistantComposer(req: Request, res: Response) {
       locale: req.body?.locale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'composer_failed' });
   }
@@ -129,7 +130,7 @@ export async function assistantTranslate(req: Request, res: Response) {
       sourceLocale: req.body?.sourceLocale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'translate_failed' });
   }
@@ -147,7 +148,7 @@ export async function assistantDraft(req: Request, res: Response) {
       locale: req.body?.locale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'draft_failed' });
   }
@@ -164,7 +165,7 @@ export async function assistantSearchSuggest(req: Request, res: Response) {
       locale: req.body?.locale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'search_failed' });
   }
@@ -181,7 +182,7 @@ export async function assistantNotificationAssist(req: Request, res: Response) {
       locale: req.body?.locale
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'notif_assist_failed' });
   }
@@ -325,7 +326,7 @@ export async function usePrompt(req: Request, res: Response) {
       conversationId: req.body?.conversationId
     });
     const status = result.ok ? 200 : result.blocked ? 403 : 503;
-    return res.status(status).json({ success: result.ok, data: result, error: result.reason });
+    return res.status(status).json({ success: result.ok, data: toUserSafeAIResult(result), error: toUserSafeAIReason(result.reason) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'use_prompt_failed' });
   }

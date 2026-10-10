@@ -7,6 +7,7 @@ type BreakerState = {
   failures: number;
   openUntil: number;
   halfOpen: boolean;
+  halfOpenInFlight: boolean;
 };
 
 const breakers = new Map<AIProviderId, BreakerState>();
@@ -21,19 +22,41 @@ export function isCircuitOpen(provider: AIProviderId): boolean {
     b.halfOpen = true;
     b.openUntil = 0;
   }
-  return false;
+  return b.halfOpen && b.halfOpenInFlight;
+}
+
+/**
+ * Allows one recovery probe after the open interval. Concurrent callers must
+ * wait for that probe to settle instead of stampeding the unhealthy provider.
+ */
+export function acquireProviderAttempt(provider: AIProviderId): boolean {
+  const b = breakers.get(provider);
+  if (!b) return true;
+  const now = Date.now();
+  if (b.openUntil > now) return false;
+  if (b.openUntil && b.openUntil <= now) {
+    b.halfOpen = true;
+    b.openUntil = 0;
+  }
+  if (b.halfOpen) {
+    if (b.halfOpenInFlight) return false;
+    b.halfOpenInFlight = true;
+    breakers.set(provider, b);
+  }
+  return true;
 }
 
 export function recordProviderSuccess(provider: AIProviderId) {
-  breakers.set(provider, { failures: 0, openUntil: 0, halfOpen: false });
+  breakers.set(provider, { failures: 0, openUntil: 0, halfOpen: false, halfOpenInFlight: false });
 }
 
 export function recordProviderFailure(provider: AIProviderId) {
-  const b = breakers.get(provider) || { failures: 0, openUntil: 0, halfOpen: false };
+  const b = breakers.get(provider) || { failures: 0, openUntil: 0, halfOpen: false, halfOpenInFlight: false };
   b.failures += 1;
   if (b.failures >= FAILURE_THRESHOLD) {
     b.openUntil = Date.now() + OPEN_MS;
     b.halfOpen = false;
+    b.halfOpenInFlight = false;
   }
   breakers.set(provider, b);
 }
@@ -45,7 +68,8 @@ export function getCircuitSnapshot() {
       failures: v.failures,
       open: v.openUntil > Date.now(),
       openUntil: v.openUntil || null,
-      halfOpen: v.halfOpen
+      halfOpen: v.halfOpen,
+      halfOpenInFlight: v.halfOpenInFlight
     };
   }
   return out;
@@ -88,6 +112,7 @@ export async function withBackoff<T>(
 
 export default {
   isCircuitOpen,
+  acquireProviderAttempt,
   recordProviderSuccess,
   recordProviderFailure,
   getCircuitSnapshot,

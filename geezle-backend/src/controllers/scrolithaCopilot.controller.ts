@@ -10,6 +10,7 @@ import { detectIntentLocal } from '../services/scrolithaAi/providers/nativeProvi
 import { ScrolithaAI } from '../services/scrolithaAi';
 import { loadAIFeatureFlags } from '../services/scrolithaAi/config';
 import type { CopilotSurface } from '../services/scrolithaAi/types';
+import { toUserSafeAIReason } from '../services/scrolithaAi/userSafeReason';
 
 const userIdOf = (req: Request) =>
   String((req as any).user?.id || (req as any).userId || '').trim() || null;
@@ -50,8 +51,8 @@ export async function postCopilot(req: Request, res: Response) {
     return res.status(status).json({
       success: result.ok,
       data: result.ok ? result : undefined,
-      error: result.reason,
-      code: result.reason
+      error: toUserSafeAIReason(result.reason),
+      code: toUserSafeAIReason(result.reason)
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err?.message || 'copilot_failed' });

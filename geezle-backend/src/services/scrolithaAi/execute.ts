@@ -43,7 +43,7 @@ import {
 } from './usage';
 import { inc, logAIEvent } from './observability';
 import {
-  isCircuitOpen,
+  acquireProviderAttempt,
   recordProviderSuccess,
   recordProviderFailure,
   withTimeout
@@ -416,9 +416,9 @@ export class ScrolithaAI {
             continue;
           }
           if (
-            isCircuitOpen(step.provider) &&
             step.provider !== 'MOCK' &&
-            step.provider !== 'NATIVE'
+            step.provider !== 'NATIVE' &&
+            !acquireProviderAttempt(step.provider)
           ) {
             lastError = `circuit_open:${step.provider}`;
             continue;
