@@ -52,16 +52,16 @@ jobs:
           --health-retries 30
 
     steps:
-      - name: Mask generated disposable database password
-        env:
-          TEST_DB_PASSWORD: "ci-${{ github.run_id }}-${{ github.run_attempt }}-only"
-        run: echo "::add-mask::$TEST_DB_PASSWORD"
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           persist-credentials: false
+
+      - name: Mask generated disposable database password
+        env:
+          TEST_DB_PASSWORD: "ci-${{ github.run_id }}-${{ github.run_attempt }}-only"
+        run: echo "::add-mask::$TEST_DB_PASSWORD"
 
       - name: Use Node.js 22.18.0
         uses: actions/setup-node@v4
@@ -173,7 +173,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           git fetch --no-tags origin "$PR_BASE_SHA"
-          git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+          git diff --check "$PR_BASE_SHA" "$GITHUB_SHA"
 
       - name: Clean backend Docker build
         run: docker build --file Dockerfile.acr.temp --tag scrolith-backend:prisma7-ci .
