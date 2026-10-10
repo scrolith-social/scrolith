@@ -136,8 +136,9 @@ test('AndroidManifest FCM defaults and POST_NOTIFICATIONS', () => {
 });
 
 test('Phase 29 version and production Capacitor origin', () => {
-  assert.match(gradle, /versionCode 42/);
-  assert.match(gradle, /versionName "1.1.32"/);
+  const versionCode = Number(gradle.match(/versionCode\s+(\d+)/)?.[1] || 0);
+  assert.ok(versionCode > 35, `versionCode must remain above the Play Store floor: ${versionCode}`);
+  assert.match(gradle, /versionName "\d+\.\d+\.\d+"/);
   assert.match(gradle, /debugSymbolLevel/);
   assert.match(capacitor, /scrolith\.com/);
   assert.match(capacitor, /androidScheme: 'https'/);

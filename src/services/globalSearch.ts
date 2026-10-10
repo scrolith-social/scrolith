@@ -137,6 +137,19 @@ export const resolveGlobalSearchItemUrl = (item: any, normalizedType?: GlobalSea
 export const normalizeGlobalSearchItem = (item: any): GlobalSearchItem => {
   const normalizedType = normalizeGlobalSearchType(item?.type || item?.kind || item?.entityType || item?.category);
   const title = item?.title || item?.name || item?.username || 'Result';
+  const meta = {
+    ...(item?.meta && typeof item.meta === 'object' ? item.meta : {}),
+    profilePhotoFileId:
+      item?.meta?.profilePhotoFileId ||
+      item?.profilePhotoFileId ||
+      item?.profile_photo_file_id ||
+      undefined,
+    profile_photo_file_id:
+      item?.meta?.profile_photo_file_id ||
+      item?.profile_photo_file_id ||
+      item?.profilePhotoFileId ||
+      undefined
+  };
   const image = item?.avatarUrl || item?.avatar || item?.image || item?.cover || item?.thumbnail || null;
   return {
     id: item?.id || item?._id,
@@ -151,7 +164,7 @@ export const normalizeGlobalSearchItem = (item: any): GlobalSearchItem => {
     avatarUrl: image,
     image: image || undefined,
     category: item?.category,
-    meta: item?.meta || {}
+    meta
   };
 };
 

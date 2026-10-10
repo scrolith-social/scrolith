@@ -429,7 +429,6 @@ export const kycApi = {
     form.append('document_type', type);
     form.append('file', file, filename || (file as File).name || 'document');
     const response = await api.post<ApiResponse<KYCSecureUploadResult>>('/kyc/uploads', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 180000
     });
     const raw = handleApiResponse<any>(response) || {};

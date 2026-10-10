@@ -20,6 +20,17 @@ test('uses secure KYC upload endpoint /kyc/uploads', () => {
   assert.match(src, /uploadSecureDocument/);
 });
 
+test('lets the browser set the multipart boundary for secure KYC uploads', () => {
+  const src = kycService();
+  assert.match(src, /api\.post[\s\S]*\/kyc\/uploads[\s\S]*timeout:\s*180000/);
+  assert.doesNotMatch(src, /headers:\s*\{\s*['"]Content-Type['"]:\s*['"]multipart\/form-data['"]/);
+});
+
+test('maps approved KYC status to the verified user label', () => {
+  const src = read('src/services/user.ts');
+  assert.match(src, /normalizedKyc === ['"]approved['"]/);
+});
+
 test('does not attach KYC documents via generic /files/upload or file_id payload', () => {
   const service = kycService();
   const user = userKyc();

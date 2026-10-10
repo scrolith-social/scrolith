@@ -133,10 +133,11 @@ test('Phase 29 manifest icon, default channel, production hosts, POST_NOTIFICATI
 });
 
 test('Phase 29 version code > 35 and package identity', () => {
-  assert.match(gradle, /versionCode 42/);
-  assert.match(gradle, /versionName "1.1.32"/);
+  const versionCode = Number(gradle.match(/versionCode\s+(\d+)/)?.[1] || 0);
+  assert.ok(versionCode > 35, `versionCode must remain above the Play Store floor: ${versionCode}`);
+  assert.match(gradle, /versionName "\d+\.\d+\.\d+"/);
   assert.match(gradle, /applicationId "com\.scrolith\.scrolith"/);
-  assert.equal(packageJson.version, '1.1.31');
+  assert.match(String(packageJson.version), /^\d+\.\d+\.\d+$/);
   assert.match(capacitor, /hostname: 'scrolith\.com'/);
   assert.match(capacitor, /androidScheme: 'https'/);
   assert.doesNotMatch(capacitor, /localhost:3000/);

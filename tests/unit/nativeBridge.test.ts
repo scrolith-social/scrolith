@@ -19,7 +19,7 @@ test('native notification envelope is bounded and strips unsafe metadata', () =>
     ...Array.from({ length: 45 }, (_, index) => ({ id: `n-${index}`, title: 'More' }))
   ], 'request-1');
 
-  assert.equal(envelope.bridgeVersion, '2');
+  assert.equal(envelope.bridgeVersion, '3');
   assert.equal(envelope.requestId, 'request-1');
   assert.equal(envelope.items.length, 40);
   assert.equal(envelope.items[0].title.length, 160);

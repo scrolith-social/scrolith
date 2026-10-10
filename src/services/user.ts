@@ -342,6 +342,8 @@ const mapProfile = (p: any): UserProfile => {
     responseTime: p.response_time ?? p.responseTime ?? undefined,
     professional_identity: professionalIdentity,
     professionalIdentity,
+    availability,
+    professionalAvailability: availability,
     hiring,
     clientHiringStatus: hiring
   };
@@ -352,7 +354,8 @@ const mapUser = (u: any): User => {
   const resolvedAvatar =
     resolveUserAvatarUrl({ ...u, profilePhotoFileId, profile_photo_file_id: profilePhotoFileId }) || undefined;
   const normalizedKyc = String(u.kyc_status ?? u.kycStatus ?? '').toLowerCase();
-  const isVerified = Boolean(u.isVerified ?? u.is_verified ?? normalizedKyc === 'verified');
+  const isKycApproved = normalizedKyc === 'verified' || normalizedKyc === 'approved';
+  const isVerified = Boolean(u.isVerified ?? u.is_verified) || isKycApproved;
   return {
     id: u.id,
     name: u.name,

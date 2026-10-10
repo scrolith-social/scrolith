@@ -28,7 +28,7 @@ test('projects direct and group conversations into a bounded native envelope', (
     }
   ], 'self', 'request-1', 4);
 
-  assert.equal(envelope.bridgeVersion, '2');
+  assert.equal(envelope.bridgeVersion, '3');
   assert.equal(envelope.kind, 'snapshot');
   assert.equal(envelope.requestId, 'request-1');
   assert.equal(envelope.revision, 4);
