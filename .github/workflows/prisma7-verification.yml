@@ -8,6 +8,7 @@ on:
       - backend/main
   push:
     branches:
+      - backend/main
       - codex/staging-redis-remediation-20260917
   workflow_dispatch: {}
 
@@ -69,6 +70,12 @@ jobs:
           node-version: 22.18.0
           cache: npm
           cache-dependency-path: geezle-backend/package-lock.json
+
+      - name: Enforce PR workflow secret boundaries
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/check-pr-workflow-secrets.mjs
+          node --test scripts/check-pr-workflow-secrets.test.mjs
 
       - name: Create isolated shadow database
         env:
