@@ -1,0 +1,66 @@
+name: Pull request validation
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-safety:
+    name: Validate workflow syntax and PR secret boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR merge commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Parse workflow YAML
+        run: |
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].each { |path| YAML.parse_file(path); puts "parsed #{path}" }'
+
+      - name: Reject secret references in PR-triggered workflows
+        run: node scripts/check-pr-workflow-secrets.mjs
+
+      - name: Check PR patch formatting
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags origin "$PR_BASE_SHA"
+          git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+
+  frontend:
+    name: Frontend build and unit tests
+    if: github.base_ref == 'main' || github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR merge commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build with inert backend endpoint
+        env:
+          VITE_BACKEND_URL: https://backend.invalid
+          BACKEND_URL: https://backend.invalid
+        run: npm run build
+
+      - name: Run maintained frontend certification unit tests
+        env:
+          VITE_BACKEND_URL: https://backend.invalid
+          BACKEND_URL: https://backend.invalid
+        run: npm run test:cert:unit
+
+      - name: Run mobile wrapper unit tests
+        run: npm run test:mobile:unit
