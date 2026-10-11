@@ -1,10 +1,14 @@
 name: Prisma 7 Verification
 
 on:
+  # One-off validation branch only. This is intentionally not a PR, deployment,
+  # or default-branch workflow.
   push:
     branches:
-      - codex/staging-redis-remediation-20260917
-  workflow_dispatch: {}
+      - codex/pr157-hosted-validation-20261011
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -14,8 +18,8 @@ jobs:
       run:
         working-directory: geezle-backend
     env:
-      DATABASE_URL: postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_test
-      SHADOW_DATABASE_URL: postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_shadow
+      DATABASE_URL: "postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/scrolith_test"
+      SHADOW_DATABASE_URL: "postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/scrolith_shadow"
       REDIS_URL: redis://127.0.0.1:6379
       REDIS_TEST_MODE: local
       REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
@@ -24,10 +28,10 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: scrolith_test
-          POSTGRES_PASSWORD: local_test_password
+          POSTGRES_PASSWORD: "ci-${{ github.run_id }}-${{ github.run_attempt }}-only"
           POSTGRES_DB: scrolith_test
         ports:
-          - 5432:5432
+          - 127.0.0.1:5432:5432
         options: >-
           --health-cmd "pg_isready -U scrolith_test -d scrolith_test"
           --health-interval 2s
@@ -36,7 +40,7 @@ jobs:
       redis:
         image: redis:7-alpine
         ports:
-          - 6379:6379
+          - 127.0.0.1:6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 2s
@@ -46,15 +50,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
 
-      - name: Initialize repository submodules for cross-tree certification tests
+      - name: Mask generated disposable database password
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          git -C "$GITHUB_WORKSPACE" config -f "$GITHUB_WORKSPACE/.gitmodules" submodule.geezle.url https://github.com/geezlesocial/scrolith.git
-          git -C "$GITHUB_WORKSPACE" submodule sync --recursive
-          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-          git -C "$GITHUB_WORKSPACE" -c "http.https://github.com/.extraheader=$auth_header" submodule update --init --recursive
+          TEST_DB_PASSWORD: "ci-${{ github.run_id }}-${{ github.run_attempt }}-only"
+        run: echo "::add-mask::$TEST_DB_PASSWORD"
 
       - name: Use Node.js 22.18.0
         uses: actions/setup-node@v4
@@ -63,14 +66,20 @@ jobs:
           cache: npm
           cache-dependency-path: geezle-backend/package-lock.json
 
+      - name: Enforce PR workflow secret boundaries
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/check-pr-workflow-secrets.mjs
+          node --test scripts/check-pr-workflow-secrets.test.mjs
+
       - name: Create isolated shadow database
         env:
-          PGPASSWORD: local_test_password
+          PGPASSWORD: "ci-${{ github.run_id }}-${{ github.run_attempt }}-only"
         run: |
           psql --host=127.0.0.1 --username=scrolith_test --dbname=postgres --command="CREATE DATABASE scrolith_shadow OWNER scrolith_test;"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --registry=https://registry.npmjs.org --replace-registry-host=always
 
       - name: Wait for CI Redis service
         env:
@@ -141,6 +150,11 @@ jobs:
           REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
         run: node scripts/run-node-test-files.mjs
 
+      - name: Focused proxy-trust regression
+        env:
+          CI: true
+        run: npx jest --config jest.config.cjs --runInBand src/middleware/__tests__/authRateLimit.proxyVariation.spec.ts
+
       - name: Jest regression suites
         env:
           CI: true
@@ -160,11 +174,15 @@ jobs:
       - name: TypeScript build
         run: npm run build
 
-      - name: Check patch formatting
-        run: git diff --check
+      - name: Check PR patch formatting
+        run: git diff --check "$GITHUB_SHA^" "$GITHUB_SHA"
 
       - name: Clean backend Docker build
-        run: docker build --file Dockerfile.acr.temp --tag scrolith-backend:prisma7-ci .
+        run: |
+          docker build --no-cache --file Dockerfile.pr157-validation --tag scrolith-backend:pr157-validation .
+          image_id="$(docker image inspect --format '{{.Id}}' scrolith-backend:pr157-validation)"
+          echo "LOCAL_IMAGE_ID=$image_id"
+          echo "- Backend image config digest: \`$image_id\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify final runtime artifact and startup health
         shell: bash
@@ -232,7 +250,7 @@ jobs:
             --env REDIS_URL="$REDIS_URL" \
             --env REDIS_TEST_MODE=local \
             --env REDIS_RATE_LIMIT_FAIL_CLOSED=true \
-            scrolith-backend:prisma7-ci >/dev/null
+            scrolith-backend:pr157-validation >/dev/null
 
           for attempt in $(seq 1 60); do
             if ! docker inspect --format '{{.State.Running}}' "$SMOKE_CONTAINER" 2>/dev/null | grep -qx true; then
@@ -256,15 +274,38 @@ jobs:
       - name: Production dependency audit
         shell: bash
         run: |
-          npm audit --omit=dev --json > audit-production.json || true
-          node -e "const r=require('./audit-production.json'); console.log(JSON.stringify(r.metadata?.vulnerabilities||{}))"
+          set +e
+          npm audit --registry=https://registry.npmjs.org --omit=dev --json > "$RUNNER_TEMP/audit-production.json"
+          audit_status=$?
+          set -e
+          node - "$RUNNER_TEMP/audit-production.json" "$GITHUB_STEP_SUMMARY" <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const counts = report.metadata?.vulnerabilities;
+          if (!counts) throw new Error('Production npm audit returned no vulnerability summary.');
+          console.log(JSON.stringify(counts));
+          fs.appendFileSync(process.argv[3], `\n### Production dependency audit\n\n\`\`\`json\n${JSON.stringify(counts)}\n\`\`\`\n`);
+          NODE
+          exit "$audit_status"
 
       - name: Full dependency audit
+        if: always()
         shell: bash
         run: |
-          npm audit --json > audit-full.json || true
-          node -e "const r=require('./audit-full.json'); console.log(JSON.stringify(r.metadata?.vulnerabilities||{}))"
+          set +e
+          npm audit --registry=https://registry.npmjs.org --json > "$RUNNER_TEMP/audit-full.json"
+          audit_status=$?
+          set -e
+          node - "$RUNNER_TEMP/audit-full.json" "$GITHUB_STEP_SUMMARY" <<'NODE'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const counts = report.metadata?.vulnerabilities;
+          if (!counts) throw new Error('Full npm audit returned no vulnerability summary.');
+          console.log(JSON.stringify(counts));
+          fs.appendFileSync(process.argv[3], `\n### Full dependency audit\n\n\`\`\`json\n${JSON.stringify(counts)}\n\`\`\`\n`);
+          NODE
+          exit "$audit_status"
 
       - name: Remove audit artifacts
         if: always()
-        run: rm -f audit-production.json audit-full.json
+        run: rm -f "$RUNNER_TEMP/audit-production.json" "$RUNNER_TEMP/audit-full.json"
