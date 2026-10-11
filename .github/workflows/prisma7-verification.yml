@@ -129,7 +129,9 @@ jobs:
         run: |
           npx prisma migrate deploy
           npx prisma migrate status
-          npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --script
+
+      - name: Verify Prisma diff exit-code contract
+        run: node scripts/check-prisma-diff-exit-codes.mjs
 
       - name: Seed deterministic CI fixtures
         env:
@@ -287,3 +289,6 @@ jobs:
       - name: Remove audit artifacts
         if: always()
         run: rm -f audit-production.json audit-full.json
+
+      - name: Enforce Prisma schema-to-migration drift gate
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --script --exit-code

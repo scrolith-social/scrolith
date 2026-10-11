@@ -134,3 +134,25 @@ The combined candidate's zero Critical/zero High production-scope count must not
 - The CI maintainer owns keeping this test on the disposable PostgreSQL/Redis validation path and ensuring it remains in the isolated Jest group. The current `npm run test:full` runner isolates `src/__tests__/integration/socket.integration.test.ts`; the new test is discovered by that maintained suite. CI uses generated test credentials and loopback-bound disposable services; no production secret or deployed database is used.
 - The release/security authority still needs to determine whether unresolved full-tree findings block merge of a CI-only PR separately from production release, what evidence is required for applicability/risk disposition, and whether the release gate requires a fresh production-scope audit after #157/#158 are merged. This record proposes no exception and does not authorize merge or deployment.
 - The schema-to-migration discrepancy and other release gates remain separate unresolved items. Neither the scoped reviews of #157/#158 nor the combined candidate run resolves them.
+
+## Prisma schema-to-migration drift review (2026-10-12)
+
+### Reproduction and evidence
+
+The reported comparison was reproduced in [PR #156 verification run 38142731719](https://github.com/geezlesocial/scrolith/actions/runs/38142731719), using that workflow's disposable PostgreSQL service and separately created disposable `scrolith_shadow` database. The run applied only the 137 checked-in migrations to the test database, checked migration status, then ran:
+
+```sh
+npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --script
+```
+
+The CLI log confirms it loaded `geezle-backend/prisma.config.ts`, `prisma/schema.prisma`, the configured local test database, and all 137 migration files. That config points migration history to `prisma/migrations` and configures the isolated shadow database required when diffing from migrations. The command emitted **897 output lines** (including its terminal blank separator). The SQL statements and internal line layout are preserved in [`pr156-migration-drift-38142731719.sql`](pr156-migration-drift-38142731719.sql), with CI timestamps and only that terminal blank separator omitted (SHA-256 `8E1A55B69252B2FBB9B2D386BF052559A90B2F75465D73AB19804F28267A53B5`). The complete raw output remains in the linked workflow log; no credential-like values were detected in the SQL. It includes 125 `ALTER`, 18 `DROP`, and 75 `CREATE` statements. No SQL from this comparison was executed.
+
+### Finding
+
+This was a real schema-to-migration-history difference, not a malformed command, wrong schema/migrations path, or accidental comparison against a shared database. Prisma's documented `--from-migrations` comparison replays the migration history in a shadow database; the run confirms that path and configuration. The diff represents the SQL Prisma would need to transform the migration-history schema into the current Prisma schema. The CI defect was that omitting `--exit-code` made Prisma return success even though it emitted a nonempty diff. The exact historical edits that introduced each schema difference have not yet been attributed to individual commits.
+
+### CI correction and exit-code validation
+
+The workflow now tests the installed, lockfile-resolved Prisma CLI's `--exit-code` contract with three disposable cases: identical schemas must return 0; a temporary schema with an injected model must return 2 and include that model in the generated SQL; and a missing schema input must return 1. The test resolves Prisma's declared CLI binary from its installed package manifest and starts it with `process.execPath`, without a shell. The actual migration-history-to-schema gate runs with `--exit-code` after the other CI checks so tests, TypeScript, Docker/runtime, and audit reporting still execute. It fails on either a difference (2) or a comparison error (1), and keeps generated SQL visible in the Actions log.
+
+The current checked-in schema/migration discrepancy remains unresolved and is expected to make the new actual drift gate fail with exit code 2 until an owner reviews and reconciles migration history. No corrective migration was generated or applied. Only the existing checked-in migrations were applied to CI's disposable database. Hosted validation of the new three-case check and final gate is pending this correction's workflow run; audit findings remain separate and are not treated as cleared by functional CI.
