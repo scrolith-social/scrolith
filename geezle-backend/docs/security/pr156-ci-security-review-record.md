@@ -111,16 +111,20 @@ The following separate draft PRs have independent scoped code-review decisions. 
 | [#157 proxy-addr Critical fix](https://github.com/geezlesocial/scrolith/pull/157) | `d9b1377da623da2a147f50658930b626ef54df57` | [Independent APPROVED review](https://github.com/geezlesocial/scrolith/pull/157#pullrequestreview-5483323146) | `proxy-addr` 2.0.7 → 2.0.8 and the focused proxy-trust regression. Open, draft, unmerged. |
 | [#158 High dependency fixes](https://github.com/geezlesocial/scrolith/pull/158) | `3a37e5399f053fae84becfcc1fa0bae2841ae55b` | [Independent APPROVED review](https://github.com/geezlesocial/scrolith/pull/158#pullrequestreview-5483288388) | Compatible updates for `compression`, `sharp`, Firebase-scoped `@fastify/busboy`, `deepmerge-ts`, and `mysql2`; Prisma remains 7.10.0. Open, draft, unmerged. |
 
-These reviewed changes are not present on `backend/main` while the PRs remain unmerged. The 2026-10-10 audit snapshot for base `32f49c2d6b3b38551cea4855b1bab7aa15fba7ca` remains the recorded baseline for that branch. It has not been rerun as part of this PR #156 follow-up.
+These reviewed changes are not present on `backend/main` while the PRs remain unmerged. The `backend/main` base is `32f49c2d6b3b38551cea4855b1bab7aa15fba7ca`. The PR #156 validation merge ref leaves the backend dependency manifest and lockfile unchanged, so its fresh audit is representative of that unmerged dependency baseline, not of the #157/#158 combined candidate.
 
 ### Do not conflate branch and combined-candidate audit results
 
 | Source under review | Production audit (C/H/M/L) | Full audit (C/H/M/L) | Interpretation |
 | --- | --- | --- | --- |
-| `backend/main` base `32f49c2d6b3b38551cea4855b1bab7aa15fba7ca`, last recorded 2026-10-10 | 1 / 7 / 31 / 1 | 2 / 44 / 34 / 3 | Unmerged branch baseline; the #157/#158 fixes are not included. These are historical recorded totals, not a fresh audit in this update. |
+| `backend/main` base `32f49c2d6b3b38551cea4855b1bab7aa15fba7ca`, freshly reported by PR #156 validation run 38141736073 on 2026-10-11 | 1 / 7 / 31 / 1 | 2 / 44 / 34 / 3 | Unmerged dependency baseline; #157/#158 fixes are not included. The CI validation merge ref has no dependency-manifest or lockfile changes relative to this base. |
 | Combined #156 + #157 + #158 candidate, [hosted run 38121207260](https://github.com/geezlesocial/scrolith/actions/runs/38121207260) | 0 / 0 / 31 / 1 | 1 / 37 / 34 / 3 | Candidate evidence only; not the state of `backend/main`. Both audit commands returned nonzero and the overall workflow concluded failure because findings remain. Functional checks in that run passed; the audit failures were not suppressed. |
 
 The combined candidate's zero Critical/zero High production-scope count must not be described as the current production or `backend/main` dependency posture. The combined full-tree audit still reports one Critical and 37 High findings, so the full-tree security gate is not cleared.
+
+### PR #156 validation result
+
+[Prisma 7 Verification run 38141736073](https://github.com/geezlesocial/scrolith/actions/runs/38141736073), for PR #156 head `e92185be69f4c5b65297dd18fc3e9ee62cf0bd8b`, completed successfully. It used loopback-bound disposable PostgreSQL and Redis with generated test-only credentials. Secret-boundary checks, Prisma validation/generation, isolated migrations, deterministic fixture seeding, Node contract tests, TypeScript build, patch formatting, clean Docker build, and runtime `/api/health` (HTTP 200) all completed. Full Jest passed **203/203 suites and 1,286/1,286 tests**; the maintained `socket.integration.test.ts` group passed **6/6 tests**, including the new admin-profile positive-path test. The production and full audits reported the baseline totals in the table above; the workflow intentionally continues after reporting audit findings, so its successful conclusion is not a zero-vulnerability result.
 
 ### Remaining findings, accountability, and decisions
 
