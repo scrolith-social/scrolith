@@ -89,7 +89,9 @@
     "zod": "^3.25.76"
   },
   "overrides": {
-    "@fastify/busboy": "3.2.2",
+    "firebase-admin": {
+      "@fastify/busboy": "3.2.2"
+    },
     "@grpc/grpc-js": "^1.14.5",
     "@prisma/config": {
       "deepmerge-ts": "^8.0.1"
