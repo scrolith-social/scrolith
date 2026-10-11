@@ -51,6 +51,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Include the pushed commit's parent so the patch-format check can diff it.
+          fetch-depth: 2
           submodules: recursive
           persist-credentials: false
 
@@ -272,6 +274,7 @@ jobs:
           exit 1
 
       - name: Production dependency audit
+        if: always()
         shell: bash
         run: |
           set +e
