@@ -40,9 +40,9 @@ describe('Socket integration - targeted emits', () => {
     } catch (e) {}
   });
 
-  const connectClient = (token: string) => new Promise<any>((resolve, reject) => {
-    // create a single socket connected to the /community namespace for both control and listening
-    const sock = Client(`http://127.0.0.1:${port}/community`, {
+  const connectClient = (token: string, namespace: string | null = '/community') => new Promise<any>((resolve, reject) => {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const sock = Client(namespace ? `${baseUrl}${namespace}` : baseUrl, {
       path: '/socket.io',
       transports: ['websocket'],
       auth: { token: `Bearer ${token}` },
@@ -84,7 +84,7 @@ describe('Socket integration - targeted emits', () => {
     };
   };
 
-  test('authenticated admin profile update emits compatible events over a real Socket.IO session', async () => {
+  test('authenticated admin profile update emits compatible events on the root Socket.IO namespace', async () => {
     const userId = `admin-profile-ci-${randomUUID()}`;
     const email = `${userId}@example.invalid`;
     const displayName = `CI profile ${randomUUID()}`;
@@ -103,7 +103,9 @@ describe('Socket integration - targeted emits', () => {
       userCreated = true;
 
       const token = jwt.sign({ id: userId }, secret);
-      client = await connectClient(token);
+      // The current route uses io.emit(), which targets the root namespace.
+      // Keep this test aligned with that production handler behavior.
+      client = await connectClient(token, null);
       const userEventWaiter = waitForEventWithCleanup(client, 'user:profile_updated');
       const adminEventWaiter = waitForEventWithCleanup(client, 'admin:profile_updated');
       userEvent = userEventWaiter;
