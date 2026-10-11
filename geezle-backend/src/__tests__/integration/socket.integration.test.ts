@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { AddressInfo } from 'net';
+import { randomUUID } from 'crypto';
 import { io as Client } from 'socket.io-client';
 import app, { server } from '../../server';
 import prisma from '../../utils/prismaClient';
@@ -57,6 +58,92 @@ describe('Socket integration - targeted emits', () => {
     const t = setTimeout(() => reject(new Error('timeout waiting for event ' + ev)), timeout);
     const handler = (payload: any) => { clearTimeout(t); resolve(payload); };
     c.once(ev, handler);
+  });
+
+  const waitForEventWithCleanup = (socket: any, event: string, timeout = 5000) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let handler: (payload: any) => void = () => undefined;
+    const promise = new Promise<any>((resolve, reject) => {
+      handler = (payload: any) => {
+        if (timer) clearTimeout(timer);
+        socket.off(event, handler);
+        resolve(payload);
+      };
+      timer = setTimeout(() => {
+        socket.off(event, handler);
+        reject(new Error(`timeout waiting for event ${event}`));
+      }, timeout);
+      socket.on(event, handler);
+    });
+    return {
+      promise,
+      cancel: () => {
+        if (timer) clearTimeout(timer);
+        socket.off(event, handler);
+      }
+    };
+  };
+
+  test('authenticated admin profile update emits compatible events over a real Socket.IO session', async () => {
+    const userId = `admin-profile-ci-${randomUUID()}`;
+    const email = `${userId}@example.invalid`;
+    const displayName = `CI profile ${randomUUID()}`;
+    const secret = process.env.JWT_SECRET || 'dev_jwt_secret';
+    const previousSetting = await prisma.appSetting.findUnique({ where: { scope: 'admin_profile' } });
+    let userCreated = false;
+    let profileWriteAttempted = false;
+    let client: any;
+    let userEvent: ReturnType<typeof waitForEventWithCleanup> | undefined;
+    let adminEvent: ReturnType<typeof waitForEventWithCleanup> | undefined;
+
+    try {
+      await prisma.user.create({
+        data: { id: userId, email, role: 'ADMIN' } as any
+      });
+      userCreated = true;
+
+      const token = jwt.sign({ id: userId }, secret);
+      client = await connectClient(token);
+      const userEventWaiter = waitForEventWithCleanup(client, 'user:profile_updated');
+      const adminEventWaiter = waitForEventWithCleanup(client, 'admin:profile_updated');
+      userEvent = userEventWaiter;
+      adminEvent = adminEventWaiter;
+
+      profileWriteAttempted = true;
+      const response = await request(app)
+        .put('/api/admin/profile')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ displayName });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ success: true, data: { displayName } });
+
+      const [userPayload, adminPayload] = await Promise.all([userEventWaiter.promise, adminEventWaiter.promise]);
+      expect(userPayload).toMatchObject({ userId, updates: { name: displayName } });
+      expect(adminPayload).toMatchObject({ profile: { displayName } });
+    } finally {
+      userEvent?.cancel();
+      adminEvent?.cancel();
+      try {
+        client?.disconnect();
+      } finally {
+        try {
+          if (profileWriteAttempted) {
+            if (previousSetting) {
+              await prisma.appSetting.upsert({
+                where: { scope: 'admin_profile' },
+                create: { scope: 'admin_profile', data: previousSetting.data } as any,
+                update: { data: previousSetting.data }
+              });
+            } else {
+              await prisma.appSetting.deleteMany({ where: { scope: 'admin_profile' } });
+            }
+          }
+        } finally {
+          if (userCreated) await prisma.user.delete({ where: { id: userId } });
+        }
+      }
+    }
   });
 
   test('admin credit emits targeted wallet balance update', async () => {
