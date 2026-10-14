@@ -310,3 +310,108 @@ Live staging and production compatibility remain **NOT VERIFIED**. In
 particular, null counts, duplicate resume-version keys, current migration
 checksums, lock duration, and database version must be verified by the database
 owner before staging execution.
+
+## Step 162 staging-preflight closeout addendum — 2026-10-14
+
+This addendum records the authorized staging preflight evidence and the
+checksum-representation follow-up. It does not authorize migration execution,
+modify the staging ledger, or supersede the independent-review and release
+gates.
+
+### Exact PR #162 checksum reconciliation
+
+The exact local checkout was verified at commit
+`24956042d66aae256213b79bf07c60dc954c67d4`. The file
+`20260302193000_add_messenger_voice_features/migration.sql` is LF-only in that
+checkout (5,871 bytes, 167 LF line endings):
+
+| Representation | SHA-256 | Result |
+| --- | --- | --- |
+| Exact local LF bytes | `972df7ff60640993667288c6abf672fb664fe5609da327241a0b2bf9246ce905` | Matches local baseline |
+| Same content normalized to CRLF | `3adf941f2b5a548bf3a8a0418351a9329f0d37b2cc8c5844d29810a90c3d834f` | Matches staging ledger |
+
+The staging checksum finding is therefore explained by line-ending byte
+representation, not by a demonstrated SQL-content difference. This explanation
+still requires database-owner and release-owner acceptance; the historical
+migration file and live `_prisma_migrations` row remain unchanged.
+
+### Disposable Prisma behavior reproduction
+
+The test used a separate PostgreSQL 16 container with image
+`postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65`,
+a synthetic database, and a distinct synthetic shadow database. A copied
+release-candidate migration tree was used; the repository checkout was not
+edited.
+
+The copied tree first replayed all 139 migrations successfully. Only the copied
+`20260302193000_add_messenger_voice_features/migration.sql` was then converted
+to CRLF, producing the staging checksum above. Results:
+
+| Prisma command | Result | Evidence |
+| --- | --- | --- |
+| `prisma migrate deploy` after LF replay | PASS, exit 0 | 139 migrations applied |
+| `prisma migrate status` after CRLF substitution | PASS, exit 0 | `Database schema is up to date!`; no warning |
+| `prisma migrate deploy` after CRLF substitution | PASS, exit 0 | `No pending migrations to apply.` |
+| `prisma migrate diff --from-migrations ... --to-schema ... --exit-code` | PASS, exit 0 | `No difference detected.` |
+
+The tested Prisma commands did not warn about the checksum-only line-ending
+difference and did not classify it as a pending migration. This does not make
+the ledger discrepancy acceptable by policy; it establishes that separate
+checksum-integrity reconciliation is required because the normal status,
+deploy, and schema-diff gates do not detect this representation difference.
+
+The disposable container was removed. No staging or production SQL was run.
+
+### Authorized staging preflight evidence
+
+The existing authorized preflight evidence remains:
+
+- Correct staging target: `scrolith`, PostgreSQL 17.11, TLS 1.3.
+- All 13 required NULL counts: zero; aggregate zero.
+- Duplicate `ResumeVersion` groups and affected records: zero.
+- All 22 candidate tables: absent.
+- `ResumeVersion_resumeId_versionNumber_key`: absent.
+- Ledger: 137 rows, all completed, with no failed, unfinished, rolled-back,
+  or duplicate records.
+- Restricted inspector role: no application writes, unauthorized migration
+  columns, sequence privileges, memberships, or executable SECURITY DEFINER
+  routines.
+- Lock assessment: no waiting locks, external target locks, active non-idle
+  sessions, or long transactions visible to the inspector.
+
+The staging ledger contains the one explained checksum representation
+difference documented above. The staging role, temporary jobs, temporary UAMI,
+temporary secret-scope RBAC assignments, and temporary secrets were cleaned up;
+the secrets are present only as Key Vault soft-deleted recovery records.
+
+### Local cleanup outcome
+
+The following temporary files were removed:
+
+- `C:\Projects\scrolith-prisma-inspector-stg01-20261014.yaml`
+- `C:\Projects\scrolith-prisma-dba-bootstrap-stg01-20261014.yaml`
+- `C:\Projects\scrolith-prisma-historical-manifest-20261014.txt`
+
+The local safety layer blocked recursive deletion of these exact temporary
+directories:
+
+- `C:\Projects\scrolith-pr162-checksum-repro-20261014` — copied migration
+  replay tree; no credentials or live data.
+- `C:\Projects\scrolith-azure-pg-roots-20261014` — exactly five public CA
+  certificate files: DigiCert Global Root G2 and Microsoft RSA/ECC Root CA
+  2017 `.crt`/`.pem` representations.
+
+These remaining local files are not live credentials or database records, but
+cleanup is incomplete until they are removed through an approved local cleanup
+operation.
+
+### Updated release determination
+
+**STAGING PREFLIGHT: BLOCKED / MIGRATION EXECUTION: NO-GO.**
+
+The data, schema, TLS, permission, and lock checks passed. The checksum
+representation is technically explained but remains pending explicit
+database-owner/release-owner acceptance. Independent review, CI evidence,
+verified backup and recovery readiness, maintenance-window approval, and
+explicit migration execution authorization remain mandatory. No staging
+migration may be run on the basis of this addendum alone.
