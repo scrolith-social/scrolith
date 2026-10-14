@@ -64,6 +64,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
       - name: Set up Node.js 22.18.0
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
@@ -275,6 +278,7 @@ jobs:
       - name: Emit verification summary
         if: always()
         run: |
-          echo "VERIFICATION_COMMIT=${GITHUB_SHA}"
+          echo "VERIFICATION_COMMIT=${{ github.event.pull_request.head.sha }}"
+          echo "WORKFLOW_MERGE_REF=${GITHUB_SHA}"
           echo "POSTGRES_MAJOR=${{ matrix.postgres.major }}"
           echo "JOB_STATUS=${{ job.status }}"
