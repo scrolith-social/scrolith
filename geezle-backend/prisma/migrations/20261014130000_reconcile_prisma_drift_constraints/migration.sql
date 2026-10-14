@@ -2,6 +2,8 @@
 -- This migration is intentionally fail-closed: it never fabricates values,
 -- deletes rows, or silently repairs incompatible data.
 
+BEGIN;
+
 DO $$
 BEGIN
   IF EXISTS (
@@ -42,6 +44,19 @@ BEGIN
   END IF;
 END $$;
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "ResumeVersion"
+    GROUP BY "resumeId", "versionNumber"
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION
+      'Cannot create ResumeVersion uniqueness constraint: duplicate (resumeId, versionNumber) values require data-owner approval';
+  END IF;
+END $$;
+
 ALTER TABLE "Conversation"
   ALTER COLUMN "visibility" SET NOT NULL,
   ALTER COLUMN "joinPolicy" SET NOT NULL,
@@ -61,18 +76,7 @@ ALTER TABLE "User"
   ALTER COLUMN "groupInviteAudience" SET NOT NULL,
   ALTER COLUMN "notificationMessagePreviewEnabled" SET NOT NULL;
 
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-    FROM "ResumeVersion"
-    GROUP BY "resumeId", "versionNumber"
-    HAVING COUNT(*) > 1
-  ) THEN
-    RAISE EXCEPTION
-      'Cannot create ResumeVersion uniqueness constraint: duplicate (resumeId, versionNumber) values require data-owner approval';
-  END IF;
-END $$;
-
 CREATE UNIQUE INDEX "ResumeVersion_resumeId_versionNumber_key"
   ON "ResumeVersion"("resumeId", "versionNumber");
+
+COMMIT;

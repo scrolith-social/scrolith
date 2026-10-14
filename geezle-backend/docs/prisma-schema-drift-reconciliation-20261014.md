@@ -17,6 +17,11 @@ The Prisma diff contained 73 operation sections:
 
 The operation-section count is distinct from the number of affected columns.
 
+The forward-only additive migration contains exactly 22 `CREATE TABLE`
+statements, 51 `CREATE INDEX` statements, and 48 `ADD CONSTRAINT ... FOREIGN
+KEY` statements. The 51-index count must not be reported as a foreign-key
+count.
+
 ## Reconciliation matrix: historical indexes that must not be dropped
 
 | Table | Physical index and historical source | Prisma treatment | Risk / result |
@@ -113,17 +118,24 @@ Other default observations are preserved in the schema:
 `ResumeVersion_resumeId_versionNumber_key` is required by the Prisma model but
 absent from historical replay. The corrective migration first checks for
 duplicate `(resumeId, versionNumber)` groups and raises an exception if any are
-found, then creates the unique index. It does not delete, merge, or select a
-winner. The same operation must be preflighted on staging by the database/data
-owner and scheduled for an appropriate lock window; a duplicate or lock failure
-must stop the deployment.
+found, before any DDL runs, then creates the unique index. It does not delete,
+merge, or select a winner. The same operation must be preflighted on staging by
+the database/data owner and scheduled for an appropriate lock window; a
+duplicate or lock failure must stop the deployment.
 
 ## Corrective migration and rollback
 
-`20261014130000_reconcile_prisma_drift_constraints/migration.sql` is forward-only
-and transactional. Its only database changes are the approved `SET NOT NULL`
-operations and creation of the missing unique index. It contains no UPDATE,
-DELETE, DROP, TRUNCATE, or historical checksum manipulation.
+Both new migrations are forward-only and use explicit PostgreSQL `BEGIN` and
+`COMMIT` boundaries. The first migration encloses all 22 table creations, 51
+indexes, and 48 foreign keys in one transaction. The corrective migration
+performs all 13 NULL preflights and the duplicate-key preflight before any DDL,
+then encloses the approved `SET NOT NULL` operations and unique-index creation
+in the same transaction. PostgreSQL rolls back the complete migration
+transaction when a preflight or DDL statement fails. These boundaries were
+verified through Prisma Migrate replay on PostgreSQL 16 and 17; Prisma accepted
+the explicit boundaries and recorded successful migrations only after `COMMIT`.
+Neither migration contains UPDATE, DELETE, DROP, TRUNCATE, or historical
+checksum manipulation.
 
 Before staging approval:
 
@@ -138,6 +150,114 @@ Before staging approval:
    approved backup or execute a separately reviewed reverse migration. Do not
    drop the unique index or reintroduce nullable columns automatically as a
    rollback shortcut.
+
+## Read-only staging preflight queries
+
+The following queries are prepared for the database owner to run against the
+approved staging target only after separate authorization. They are read-only,
+do not return application records, and must be captured as sanitized evidence.
+They do not approve or apply a migration.
+
+### Required-field NULL counts
+
+```sql
+SELECT
+  COUNT(*) FILTER (WHERE "visibility" IS NULL) AS conversation_visibility_nulls,
+  COUNT(*) FILTER (WHERE "joinPolicy" IS NULL) AS conversation_join_policy_nulls,
+  COUNT(*) FILTER (WHERE "messagingMode" IS NULL) AS conversation_messaging_mode_nulls
+FROM public."Conversation";
+
+SELECT
+  COUNT(*) FILTER (WHERE "role" IS NULL) AS participant_role_nulls,
+  COUNT(*) FILTER (WHERE "notifications" IS NULL) AS participant_notifications_nulls
+FROM public."ConversationParticipant";
+
+SELECT
+  COUNT(*) FILTER (WHERE "presenceVisibility" IS NULL) AS presence_visibility_nulls,
+  COUNT(*) FILTER (WHERE "lastSeenVisibility" IS NULL) AS last_seen_visibility_nulls,
+  COUNT(*) FILTER (WHERE "readReceiptsEnabled" IS NULL) AS read_receipts_enabled_nulls,
+  COUNT(*) FILTER (WHERE "typingIndicatorsEnabled" IS NULL) AS typing_indicators_enabled_nulls,
+  COUNT(*) FILTER (WHERE "recordingIndicatorsEnabled" IS NULL) AS recording_indicators_enabled_nulls,
+  COUNT(*) FILTER (WHERE "directMessageAudience" IS NULL) AS direct_message_audience_nulls,
+  COUNT(*) FILTER (WHERE "groupInviteAudience" IS NULL) AS group_invite_audience_nulls,
+  COUNT(*) FILTER (WHERE "notificationMessagePreviewEnabled" IS NULL) AS notification_preview_nulls
+FROM public."User";
+```
+
+### Duplicate ResumeVersion keys
+
+```sql
+SELECT "resumeId", "versionNumber", COUNT(*) AS duplicate_count
+FROM public."ResumeVersion"
+GROUP BY "resumeId", "versionNumber"
+HAVING COUNT(*) > 1
+ORDER BY "resumeId", "versionNumber";
+```
+
+### Candidate table and index presence
+
+```sql
+SELECT n.nspname AS schema_name, c.relname, c.relkind
+FROM pg_catalog.pg_class AS c
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relname IN (
+    'QuestCatalog', 'UserQuest', 'QuestCompletionLog', 'PortfolioProof',
+    'ProofAttestation', 'ProofAuditLog', 'ProjectPod', 'PodMember',
+    'PodMilestone', 'PodActivity', 'Question', 'Answer', 'Vote', 'Bounty',
+    'ChannelSubscriptionPlan', 'ChannelSubscription', 'EventOfficeHour',
+    'UserAnalyticsDaily', 'EntityAnalyticsDaily', 'ModerationCase',
+    'ModerationAction', 'CommunityStoryLike'
+  )
+ORDER BY c.relname;
+
+SELECT schemaname, tablename, indexname, indexdef
+FROM pg_catalog.pg_indexes
+WHERE schemaname = 'public'
+  AND indexname IN ('ResumeVersion_resumeId_versionNumber_key');
+```
+
+### Prisma migration ledger
+
+```sql
+SELECT migration_name, checksum, started_at, finished_at,
+       rolled_back_at, applied_steps_count
+FROM public."_prisma_migrations"
+ORDER BY started_at NULLS LAST, migration_name;
+```
+
+The ledger query intentionally omits `id` and `logs`; it is for migration
+identity/status reconciliation, not application-data inspection. The owner
+must separately verify that there are no duplicate migration names, incomplete
+rows, rolled-back rows, or checksum mismatches against the local migration
+files. No ledger row may be edited to force a pass.
+
+### Lock-impact assessment
+
+```sql
+SELECT pid, usename, application_name, client_addr, state,
+       wait_event_type, wait_event, xact_start, query_start,
+       pg_catalog.pg_blocking_pids(pid) AS blocking_pids,
+       left(query, 200) AS query_preview
+FROM pg_catalog.pg_stat_activity
+WHERE datname = current_database()
+  AND pid <> pg_backend_pid()
+  AND state <> 'idle'
+ORDER BY xact_start NULLS LAST, query_start NULLS LAST;
+
+SELECT l.pid, l.mode, l.granted, c.relname,
+       pg_catalog.pg_blocking_pids(l.pid) AS blocking_pids
+FROM pg_catalog.pg_locks AS l
+JOIN pg_catalog.pg_class AS c ON c.oid = l.relation
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relname IN ('Conversation', 'ConversationParticipant', 'User', 'ResumeVersion')
+ORDER BY c.relname, l.granted, l.pid;
+```
+
+These lock queries assess maintenance-window risk only. They do not guarantee
+a future lock duration and must be repeated immediately before an authorized
+migration.
 
 ## Validation evidence
 
@@ -172,6 +292,19 @@ Validation commands and results:
 | Login-approval unit suite | PASS, 1 suite / 6 tests |
 | TypeScript build | PASS, exit 0 |
 | Historical migration integrity | PASS, no historical migration file changed |
+
+### Atomic-failure validation
+
+| Scenario | PG16 | PG17 | Evidence |
+| --- | --- | --- | --- |
+| NULL-value preflight | PASS, Prisma exit 1 | PASS, Prisma exit 1 | `Cannot enforce Conversation required fields`; all 13 target columns remained nullable, the unique index remained absent, and no successful corrective ledger row was recorded. |
+| Duplicate `ResumeVersion` preflight | PASS, Prisma exit 1 | PASS, Prisma exit 1 | `Cannot create ResumeVersion uniqueness constraint`; two synthetic duplicate rows remained, all 13 target columns remained nullable, and the unique index remained absent. |
+| Mid-22-table DDL failure | PASS, Prisma exit 1 | PASS, Prisma exit 1 | Synthetic `ProjectPod` conflict produced `relation "ProjectPod" already exists`; earlier `QuestCatalog`, `UserQuest`, and other newly created tables were absent after failure. |
+
+The failure cases used cloned disposable databases only. Failed migration
+attempts left an incomplete Prisma ledger attempt with `applied_steps_count = 0`
+and no finished timestamp; this is expected failure evidence, not a successful
+application. No staging or production database was contacted.
 
 Live staging and production compatibility remain **NOT VERIFIED**. In
 particular, null counts, duplicate resume-version keys, current migration

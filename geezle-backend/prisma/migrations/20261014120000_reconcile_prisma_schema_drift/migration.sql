@@ -4,6 +4,8 @@
 -- Generated from disposable PostgreSQL 16 catalog diff and filtered to CREATE-only
 -- additions for the 22 missing relations, indexes, and foreign keys.
 
+BEGIN;
+
 -- CreateTable
 CREATE TABLE "QuestCatalog" (
     "id" TEXT NOT NULL,
@@ -884,3 +886,5 @@ ALTER TABLE "CommunityStoryLike" ADD CONSTRAINT "CommunityStoryLike_storyId_fkey
 
 -- AddForeignKey
 ALTER TABLE "CommunityStoryLike" ADD CONSTRAINT "CommunityStoryLike_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+COMMIT;
