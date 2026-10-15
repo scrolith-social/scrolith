@@ -299,6 +299,10 @@ model User {
   // Resume / CV builder and reviewer
   resumeDocuments ResumeDocument[] @relation("ResumeDocuments")
   resumeAnalyses  ResumeAnalysis[] @relation("ResumeAnalyses")
+
+  @@index([languagePreferencesConfirmed], map: "User_languagePreferencesConfirmed_idx")
+  @@index([loginApprovalWaivedUntil], map: "User_loginApprovalWaivedUntil_idx")
+  @@index([twoFactorEnabled], map: "User_twoFactorEnabled_idx")
 }
 
 model Profile {
@@ -359,7 +363,7 @@ model ProfessionalAvailability {
   visibility        ProfessionalAvailabilityVisibility @default(PUBLIC)
   isActive          Boolean                            @default(false)
   createdAt         DateTime                           @default(now())
-  updatedAt         DateTime                           @updatedAt
+  updatedAt         DateTime                           @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -403,7 +407,7 @@ model ClientHiringStatus {
   isActive    Boolean                 @default(false)
   expiresAt   DateTime?
   createdAt   DateTime                @default(now())
-  updatedAt   DateTime                @updatedAt
+  updatedAt   DateTime                @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -427,7 +431,7 @@ model HiringRecommendationState {
   lastClickedAt          DateTime?
   activatedAt            DateTime?
   createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  updatedAt              DateTime  @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -471,7 +475,7 @@ model ResumeDocument {
   pdfUrl         String?
   pdfStorageKey  String?
   createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  updatedAt      DateTime @default(now()) @updatedAt
 
   user     User            @relation("ResumeDocuments", fields: [userId], references: [id], onDelete: Cascade)
   versions ResumeVersion[]
@@ -520,7 +524,7 @@ model ResumeAnalysis {
   status              String   @default("pending")
   errorMessage        String?
   createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  updatedAt           DateTime @default(now()) @updatedAt
 
   client User @relation("ResumeAnalyses", fields: [clientId], references: [id], onDelete: Cascade)
 
@@ -584,6 +588,7 @@ model UserSettings {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([videoCallsEnabled], map: "UserSettings_videoCallsEnabled_idx")
 }
 
 model Gig {
@@ -1053,7 +1058,7 @@ model FxManualOverride {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  @@index([fromCurrency, toCurrency, status, effectiveFrom])
+  @@index([fromCurrency, toCurrency, status, effectiveFrom], map: "FxManualOverride_fromCurrency_toCurrency_status_effectiveFrom_i")
   @@index([status, createdAt])
 }
 
@@ -1131,7 +1136,7 @@ model FxQuote {
   status                  String    @default("active")
   metadata                Json?
   createdAt               DateTime  @default(now()) @map("created_at")
-  updatedAt               DateTime  @updatedAt @map("updated_at")
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([userId, status])
   @@index([contextType, contextId])
@@ -1665,7 +1670,7 @@ model Topic {
   followerCount Int      @default(0)
   usageCount    Int      @default(0)
   createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  updatedAt     DateTime @default(now()) @updatedAt
 
   aliases TopicAlias[]
   follows TopicFollow[]
@@ -2279,7 +2284,7 @@ model ContentTranslation {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  @@unique([entityType, entityId, targetLocale, contentHash])
+  @@unique([entityType, entityId, targetLocale, contentHash], map: "ContentTranslation_entityType_entityId_targetLocale_contentHash")
   @@index([entityType, entityId, targetLocale])
   @@index([status])
   @@index([updatedAt])
@@ -2356,9 +2361,9 @@ model RecoImpressionLog {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  @@unique([viewerId, entityType, entityId, surface, shownAtDay])
-  @@index([entityType, entityId, surface, shownAtDay])
-  @@index([viewerId, shownAtDay])
+  @@unique([viewerId, entityType, entityId, surface, shownAtDay], map: "reco_impression_log_unique_key")
+  @@index([entityType, entityId, surface, shownAtDay], map: "reco_impression_log_entity_surface_day_idx")
+  @@index([viewerId, shownAtDay], map: "reco_impression_log_viewer_day_idx")
   @@map("reco_impression_log")
 }
 
@@ -2372,8 +2377,8 @@ model RecoFeedbackLog {
   metadata   Json?
   createdAt  DateTime @default(now()) @map("created_at")
 
-  @@index([entityType, entityId, surface, action, createdAt])
-  @@index([viewerId, createdAt])
+  @@index([entityType, entityId, surface, action, createdAt], map: "reco_feedback_log_entity_surface_action_created_at_idx")
+  @@index([viewerId, createdAt], map: "reco_feedback_log_viewer_created_at_idx")
   @@map("reco_feedback_log")
 }
 
@@ -3106,7 +3111,7 @@ model FoundingPartnerEnrollmentPayment {
   user    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
   partner FoundingPartner?       @relation(fields: [partnerId], references: [id], onDelete: SetNull)
 
-  @@unique([provider, providerReferenceId])
+  @@unique([provider, providerReferenceId], map: "FoundingPartnerEnrollmentPayment_provider_providerReferenceId_k")
   @@index([userId, status])
   @@index([programId, status])
 }
@@ -4154,7 +4159,7 @@ model ClubMembership {
   status      String   @default("active")
   invitedById String?
   joinedAt    DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
 
   // Relationships
   club CommunityClub @relation(fields: [clubId], references: [id], onDelete: Cascade)
@@ -4361,6 +4366,8 @@ model Conversation {
   @@index([updatedAt, id])
   @@index([lastMessageAt])
   @@index([type, visibility])
+  @@index([type, memberCount(sort: Desc, nulls: Last)], map: "Conversation_type_memberCount_idx")
+  @@index([type, visibility, lastMessageAt(sort: Desc, nulls: Last)], map: "Conversation_type_visibility_lastMessageAt_idx")
   @@index([source, sourceId])
   @@index([type, joinPolicy])
   @@index([type, messagingMode])
@@ -4401,6 +4408,10 @@ model ConversationParticipant {
   @@index([userId, deletedAt, conversationId])
   @@index([conversationId, role])
   @@index([conversationId, profileKey])
+  @@index([conversationId, lastDeliveredAt], map: "ConversationParticipant_conversationId_lastDeliveredAt_idx")
+  @@index([conversationId, lastReadAt], map: "ConversationParticipant_conversationId_lastReadAt_idx")
+  @@index([deletedAt], map: "ConversationParticipant_deletedAt_idx")
+  @@index([isStarred], map: "ConversationParticipant_isStarred_idx")
 }
 
 /// Phase 22.2 — group invitations
@@ -4462,7 +4473,7 @@ model ConversationSettings {
   /// Advanced filters / keyword lists / AI hooks (opaque JSON)
   policyJson              Json?
   createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  updatedAt               DateTime @default(now()) @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }
@@ -4477,13 +4488,14 @@ model ConversationJoinRequest {
   reviewedById   String?
   reviewedAt     DateTime?
   createdAt      DateTime                      @default(now())
-  updatedAt      DateTime                      @updatedAt
+  updatedAt      DateTime                      @default(now()) @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@unique([conversationId, userId, status])
   @@index([conversationId, status])
   @@index([userId, status])
+  @@index([status, createdAt(sort: Desc)], map: "ConversationJoinRequest_status_createdAt_idx")
 }
 
 /// Phase 29.1 — mute / shadow mute / ban
@@ -4523,6 +4535,7 @@ model GroupModerationAction {
   @@index([conversationId, createdAt])
   @@index([actorId, createdAt])
   @@index([action, createdAt])
+  @@index([createdAt(sort: Desc)], map: "GroupModerationAction_createdAt_idx")
 }
 
 /// Phase 29.1 — pinned messages (not participant isStarred)
@@ -4700,7 +4713,7 @@ model Reaction {
   targetId    String
   reactionKey String
   createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  updatedAt   DateTime           @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -4715,7 +4728,7 @@ model ReactionSummary {
   targetType ReactionTargetType
   targetId   String
   counts     Json
-  updatedAt  DateTime           @updatedAt
+  updatedAt  DateTime           @default(now()) @updatedAt
   createdAt  DateTime           @default(now())
 
   @@unique([targetType, targetId])
@@ -4884,7 +4897,7 @@ model CommunityNotificationSubscription {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, targetType, targetId])
+  @@unique([userId, targetType, targetId], map: "CommunityNotificationSubscription_userId_targetType_targetId_ke")
   @@index([userId])
   @@index([targetType, targetId])
   @@index([updatedAt])
@@ -5741,6 +5754,7 @@ model Notification {
   @@index([entityType, entityId])
   @@index([actorId])
   @@index([isRead])
+  @@index([userId, type], map: "Notification_title_trgm_placeholder_idx")
 }
 
 // Phase 32.0 — canonical emit event log
@@ -5786,7 +5800,7 @@ model NotificationDelivery {
   latencyMs      Int?
   providerMeta   Json?
   createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  updatedAt      DateTime  @default(now()) @updatedAt
   deliveredAt    DateTime?
 
   @@index([userId, createdAt])
@@ -5818,7 +5832,7 @@ model NotificationPreference {
   version           Int       @default(1)
   metadata          Json?
   createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  updatedAt         DateTime  @default(now()) @updatedAt
 
   @@unique([userId, category])
   @@index([userId])
@@ -5838,7 +5852,7 @@ model NotificationEventPreference {
   muted        Boolean  @default(false)
   metadata     Json?
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@unique([userId, eventType])
   @@index([userId])
@@ -5863,7 +5877,7 @@ model NotificationGlobalPreference {
   version                Int      @default(1)
   metadata               Json?
   createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  updatedAt              DateTime @default(now()) @updatedAt
 }
 
 // Phase 32.2 — temporary focus mode sessions
@@ -5883,7 +5897,7 @@ model NotificationFocusSession {
   active                 Boolean   @default(true)
   metadata               Json?
   createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  updatedAt              DateTime  @default(now()) @updatedAt
 
   @@index([userId, active])
   @@index([endsAt])
@@ -5913,7 +5927,7 @@ model NotificationDigestSchedule {
   lastRunAt      DateTime?
   metadata       Json?
   createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  updatedAt      DateTime  @default(now()) @updatedAt
 
   @@index([enabled, mode])
 }
@@ -5940,7 +5954,7 @@ model NotificationDigest {
   readAt              DateTime?
   sentAt              DateTime?
   createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  updatedAt           DateTime  @default(now()) @updatedAt
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
@@ -6009,7 +6023,7 @@ model NotificationAnalyticsCounter {
   metric    String
   value     Float    @default(0)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([date, category, metric])
   @@index([date])
@@ -6035,7 +6049,7 @@ model NotificationOpsTemplate {
   createdBy         String?
   updatedBy         String?
   createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  updatedAt         DateTime  @default(now()) @updatedAt
 
   @@unique([key, channel, locale, version])
   @@index([status, channel])
@@ -6052,7 +6066,7 @@ model NotificationCampaign {
   title           String
   body            String
   deepLink        String?
-  channels        String[]  @default([])
+  channels        String[]  @default(["IN_APP"])
   targeting       Json?
   templateId      String?
   scheduleType    String    @default("immediate")
@@ -6069,7 +6083,7 @@ model NotificationCampaign {
   createdBy       String?
   updatedBy       String?
   createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  updatedAt       DateTime  @default(now()) @updatedAt
 
   @@index([status, scheduledAt])
   @@index([type, createdAt])
@@ -6109,7 +6123,7 @@ model NotificationRetryJob {
   completedAt    DateTime?
   createdBy      String?
   createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  updatedAt      DateTime  @default(now()) @updatedAt
 
   @@index([status, nextAttemptAt])
   @@index([channel, status])
@@ -6124,7 +6138,7 @@ model NotificationOpsConfig {
   version   Int      @default(1)
   updatedBy String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 // Phase 1 — admin-controlled engagement milestone automation rules.
@@ -6173,8 +6187,8 @@ model EngagementSignal {
   metadata       Json?
   createdAt      DateTime @default(now()) @map("created_at")
 
-  @@index([eventType, entityType, entityId, occurredAt])
-  @@index([ownerId, eventType, occurredAt])
+  @@index([eventType, entityType, entityId, occurredAt], map: "engagement_signal_event_lookup_idx")
+  @@index([ownerId, eventType, occurredAt], map: "engagement_signal_owner_lookup_idx")
   @@map("engagement_signal")
 }
 
@@ -6195,9 +6209,9 @@ model EngagementMilestoneState {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  @@unique([ruleId, entityType, entityId, ownerId, threshold])
-  @@index([ownerId, eventType, createdAt])
-  @@index([status, createdAt])
+  @@unique([ruleId, entityType, entityId, ownerId, threshold], map: "engagement_milestone_state_claim_key")
+  @@index([ownerId, eventType, createdAt], map: "engagement_milestone_state_owner_lookup_idx")
+  @@index([status, createdAt], map: "engagement_milestone_state_status_lookup_idx")
   @@map("engagement_milestone_state")
 }
 
@@ -7160,10 +7174,10 @@ model FeatureAudience {
   flagId        String
   key           String
   label         String
-  roleScope     String[]
-  countryScope  String[]
-  platformScope String[]
-  appVersions   String[]
+  roleScope     String[] @default([])
+  countryScope  String[] @default([])
+  platformScope String[] @default([])
+  appVersions   String[] @default([])
   metadata      Json?
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
@@ -7320,7 +7334,7 @@ model SocketSession {
   transport        String?
   authSource       String?
   isAuthenticated  Boolean   @default(false)
-  rooms            String[]
+  rooms            String[]  @default([])
   handshakeQuery   Json?
   metadata         Json?
   connectedAt      DateTime  @default(now())
@@ -7342,7 +7356,7 @@ model PresenceLease {
   userId     String
   namespace  String
   status     String    @default("ACTIVE")
-  rooms      String[]
+  rooms      String[]  @default([])
   metadata   Json?
   acquiredAt DateTime  @default(now())
   lastSeenAt DateTime  @default(now())
@@ -7574,7 +7588,7 @@ model LoginTrustedDevice {
   isTrusted   Boolean  @default(true)
   lastSeenAt  DateTime @default(now())
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -7587,20 +7601,20 @@ model LoginTrustedDevice {
 model LoginApprovalAttempt {
   id                 String    @id @default(cuid())
   userId             String
-  requestedDeviceId  String    @map("newDeviceId")
-  challenge          String    @map("challenge")
+  requestedDeviceId  String
+  challenge          String    @default("") @map("challenge")
   approvalTokenHash  String    @unique
   status             String    @default("PENDING")
   expiresAt          DateTime
-  requestedIp        String?   @map("requestIp")
-  requestedUserAgent String?   @map("userAgent")
-  deviceMetadata     Json?     @map("metadata")
-  approvedByUserId   String?   @map("approvedById")
+  requestedIp        String?
+  requestedUserAgent String?
+  deviceMetadata     Json?
+  approvedByUserId   String?
   approvedAt         DateTime?
   rejectedAt         DateTime?
   consumedAt         DateTime?
   createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  updatedAt          DateTime  @default(now()) @updatedAt
 
   user       User  @relation("LoginApprovalUser", fields: [userId], references: [id], onDelete: Cascade)
   approvedBy User? @relation("LoginApprovalDecider", fields: [approvedByUserId], references: [id], onDelete: SetNull)
@@ -7626,7 +7640,7 @@ model PasskeyCredential {
   lastUsedAt   DateTime? @map("last_used_at")
   revokedAt    DateTime? @map("revoked_at")
   createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -7711,7 +7725,7 @@ model NotificationSyncState {
   lastEventAt  DateTime?
   metadata     Json?
   createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  updatedAt    DateTime  @default(now()) @updatedAt
 }
 
 // ===== Market Intelligence Models =====
@@ -7974,7 +7988,7 @@ model HumanVerificationSettings {
   data      Json
   updatedBy String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model HumanVerificationPolicy {
@@ -7985,7 +7999,7 @@ model HumanVerificationPolicy {
   rules     Json
   priority  Int      @default(100)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@index([endpoint, enabled])
 }
@@ -8055,7 +8069,7 @@ model HumanVerificationAnalytics {
   value      Float    @default(0)
   dimensions Json?
   createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  updatedAt  DateTime @default(now()) @updatedAt
 
   @@unique([date, endpoint, metric])
   @@index([date])
@@ -8084,7 +8098,7 @@ model AIProviderConfiguration {
   config    Json?
   updatedBy String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model AIModelConfiguration {
@@ -8097,7 +8111,7 @@ model AIModelConfiguration {
   costTier    String   @default("low")
   metadata    Json?
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
 
   @@unique([provider, modelId])
   @@index([provider, enabled])
@@ -8110,7 +8124,7 @@ model AICapability {
   description String?
   metadata    Json?
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
 }
 
 model AIPrompt {
@@ -8129,7 +8143,7 @@ model AIPrompt {
   publishedBy        String?
   publishedAt        DateTime?
   createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  updatedAt          DateTime  @default(now()) @updatedAt
 
   @@unique([promptKey, version, locale])
   @@index([capability, status])
@@ -8215,7 +8229,7 @@ model AIConsent {
   productImprovementDataAllowed     Boolean  @default(false)
   consentVersion                    String   @default("33.0.0")
   createdAt                         DateTime @default(now())
-  updatedAt                         DateTime @updatedAt
+  updatedAt                         DateTime @default(now()) @updatedAt
 }
 
 model AISafetyDecision {
@@ -8239,7 +8253,7 @@ model AIFeatureFlag {
   version   Int      @default(1)
   updatedBy String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model AIAuditLog {
@@ -8287,7 +8301,7 @@ model AIConversation {
   lastMessageAt DateTime?
   metadata      Json?
   createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  updatedAt     DateTime  @default(now()) @updatedAt
 
   @@index([userId, updatedAt])
   @@index([userId, pinned])
@@ -8337,7 +8351,7 @@ model AIUserMemory {
   signalWeights       Json?
   version             Int      @default(1)
   createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  updatedAt           DateTime @default(now()) @updatedAt
 }
 
 model AIRecommendationFeedback {

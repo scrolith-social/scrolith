@@ -1,0 +1,284 @@
+name: Prisma Drift PR Verification
+
+on:
+  pull_request:
+    branches:
+      - backend/main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prisma-drift-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: PostgreSQL ${{ matrix.postgres.major }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres:
+          - major: '16'
+            image: postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65
+          - major: '17'
+            image: postgres:17@sha256:91eb910c44c7ed13f7f1a4ccadaa9ca72ef14cddc04cacb6e070e48eb44731a3
+
+    env:
+      DATABASE_URL: postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_test
+      SHADOW_DATABASE_URL: postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_shadow
+      PG_ADMIN_URL: postgresql://scrolith_test:local_test_password@127.0.0.1:5432/postgres
+      NODE_ENV: test
+      APP_RUNTIME: test
+      DISABLE_BACKGROUND_WORKERS: 'true'
+      TEST_DB_KIND: cloudbuild-postgres
+      TEST_DB_PROJECT: cloudbuild-ephemeral
+      TEST_DB_INSTANCE: cloudbuild-ephemeral-postgres-test
+      TEST_DB_NAME: scrolith_test
+      JWT_SECRET: local_ci_only_jwt_secret
+      REDIS_TEST_MODE: local
+      REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
+
+    services:
+      postgres:
+        image: ${{ matrix.postgres.image }}
+        env:
+          POSTGRES_USER: scrolith_test
+          POSTGRES_PASSWORD: local_test_password
+          POSTGRES_DB: scrolith_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrolith_test -d scrolith_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    defaults:
+      run:
+        working-directory: geezle-backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node.js 22.18.0
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: geezle-backend/package-lock.json
+
+      - name: Install locked dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --fund=false
+
+      - name: Create isolated shadow database
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+
+          const { Client } = pg;
+          const admin = new Client({ connectionString: process.env.PG_ADMIN_URL });
+          await admin.connect();
+          try {
+            const result = await admin.query(
+              'SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1',
+              ['scrolith_shadow']
+            );
+            if (result.rowCount !== 0) {
+              throw new Error('Refusing to reuse an existing shadow database.');
+            }
+            await admin.query('CREATE DATABASE scrolith_shadow OWNER scrolith_test');
+          } finally {
+            await admin.end();
+          }
+          console.log('DISPOSABLE_SHADOW_DATABASE_CREATED=true');
+          NODE
+
+      - name: Verify disposable database target
+        run: node scripts/test-db-guard.mjs --guard-only
+
+      - name: Validate Prisma schema and generate client
+        run: |
+          set -euo pipefail
+          npx prisma validate
+          npx prisma generate
+
+      - name: Replay all Prisma migrations
+        run: node scripts/run-test-db-command.mjs migrate deploy
+
+      - name: Verify migration status
+        run: node scripts/run-test-db-command.mjs migrate status
+
+      - name: Verify complete migration ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+
+          const { Client } = pg;
+          const client = new Client({ connectionString: process.env.DATABASE_URL });
+          await client.connect();
+          try {
+            const result = await client.query(`
+              SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE finished_at IS NULL)::int AS unfinished,
+                COUNT(*) FILTER (WHERE rolled_back_at IS NOT NULL)::int AS rolled_back,
+                COUNT(*) FILTER (WHERE applied_steps_count < 0)::int AS invalid_steps,
+                COUNT(DISTINCT migration_name)::int AS distinct_names
+              FROM public."_prisma_migrations"
+            `);
+            const row = result.rows[0];
+            const checks = {
+              total: 139,
+              unfinished: 0,
+              rolled_back: 0,
+              invalid_steps: 0,
+              distinct_names: 139
+            };
+            for (const [key, expected] of Object.entries(checks)) {
+              if (Number(row[key]) !== expected) {
+                throw new Error(`Migration ledger check failed for ${key}: expected ${expected}, got ${row[key]}`);
+              }
+            }
+          } finally {
+            await client.end();
+          }
+          console.log('MIGRATION_LEDGER=139_COMPLETED_UNIQUE_ROWS');
+          NODE
+
+      - name: Compare migrations with the configured database
+        run: >-
+          node scripts/run-test-db-command.mjs migrate diff
+          --exit-code
+          --from-migrations prisma/migrations
+          --to-config-datasource
+
+      - name: Compare database with Prisma schema
+        run: >-
+          node scripts/run-test-db-command.mjs migrate diff
+          --exit-code
+          --from-config-datasource
+          --to-schema prisma/schema.prisma
+
+      - name: Verify reconciled tables and authentication columns
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+
+          const { Client } = pg;
+          const client = new Client({ connectionString: process.env.DATABASE_URL });
+          const expectedTables = [
+            'QuestCatalog', 'UserQuest', 'QuestCompletionLog', 'PortfolioProof',
+            'ProofAttestation', 'ProofAuditLog', 'ProjectPod', 'PodMember',
+            'PodMilestone', 'PodActivity', 'Question', 'Answer', 'Vote', 'Bounty',
+            'ChannelSubscriptionPlan', 'ChannelSubscription', 'EventOfficeHour',
+            'UserAnalyticsDaily', 'EntityAnalyticsDaily', 'ModerationCase',
+            'ModerationAction', 'CommunityStoryLike'
+          ];
+          const expectedColumns = new Map([
+            ['requestedDeviceId', 'text'],
+            ['requestedIp', 'text'],
+            ['requestedUserAgent', 'text'],
+            ['deviceMetadata', 'jsonb'],
+            ['approvedByUserId', 'text']
+          ]);
+
+          await client.connect();
+          try {
+            const tableResult = await client.query(`
+              SELECT c.relname
+              FROM pg_catalog.pg_class AS c
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'r'
+                AND c.relname = ANY($1::text[])
+            `, [expectedTables]);
+            const actualTables = new Set(tableResult.rows.map((row) => row.relname));
+            const missingTables = expectedTables.filter((name) => !actualTables.has(name));
+            if (missingTables.length > 0) {
+              throw new Error(`Missing reconciled tables: ${missingTables.join(',')}`);
+            }
+
+            const columnResult = await client.query(`
+              SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type
+              FROM pg_catalog.pg_attribute AS a
+              JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
+              JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relname = 'LoginApprovalAttempt'
+                AND a.attnum > 0
+                AND NOT a.attisdropped
+                AND a.attname = ANY($1::text[])
+            `, [[...expectedColumns.keys()]]);
+            const actualColumns = new Map(columnResult.rows.map((row) => [row.attname, row.data_type]));
+            const missingColumns = [...expectedColumns.entries()].filter(
+              ([name, type]) => actualColumns.get(name) !== type
+            );
+            if (missingColumns.length > 0) {
+              throw new Error(`LoginApprovalAttempt mapping mismatch: ${missingColumns.map(([name, type]) => `${name}:${type}`).join(',')}`);
+            }
+          } finally {
+            await client.end();
+          }
+          console.log(`RECONCILED_TABLE_COUNT=${expectedTables.length}`);
+          console.log(`LOGIN_APPROVAL_MAPPING_COUNT=${expectedColumns.size}`);
+          NODE
+
+      - name: Run six login-approval regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f login-approval-results.json
+          npm test -- \
+            --runInBand \
+            --json \
+            --outputFile=login-approval-results.json \
+            src/services/__tests__/loginApproval.service.spec.ts
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const report = JSON.parse(await readFile('login-approval-results.json', 'utf8'));
+          const required = {
+            numTotalTests: 6,
+            numPassedTests: 6,
+            numFailedTests: 0,
+            numPendingTests: 0,
+            numTodoTests: 0
+          };
+          for (const [key, expected] of Object.entries(required)) {
+            if (Number(report[key]) !== expected) {
+              throw new Error(`Login-approval test assertion failed for ${key}: expected ${expected}, got ${report[key]}`);
+            }
+          }
+          console.log('LOGIN_APPROVAL_TESTS=6/6');
+          NODE
+
+      - name: Compile TypeScript
+        run: npm run build
+
+      - name: Verify migration files were not modified
+        run: git diff --exit-code -- prisma/migrations
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Emit verification summary
+        if: always()
+        run: |
+          echo "VERIFICATION_COMMIT=${{ github.event.pull_request.head.sha }}"
+          echo "WORKFLOW_MERGE_REF=${GITHUB_SHA}"
+          echo "POSTGRES_MAJOR=${{ matrix.postgres.major }}"
+          echo "JOB_STATUS=${{ job.status }}"
