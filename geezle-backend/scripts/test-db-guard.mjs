@@ -45,6 +45,10 @@ if (testDbKind === 'local-postgres') {
   if (!lowerUrl.includes('127.0.0.1:55432') || testDbInstance !== 'local-postgres-test') {
     throw new Error('Refusing local database tests without isolated local postgres marker.');
   }
+} else if (testDbKind === 'local-disposable') {
+  if (!lowerUrl.includes('@127.0.0.1:5432/') || testDbProject !== 'local-only' || testDbInstance !== 'local-disposable-postgres-test') {
+    throw new Error('Refusing local disposable database tests without isolated local postgres markers.');
+  }
 } else if (testDbKind === 'cloudbuild-postgres') {
   const approvedCiHost = lowerUrl.includes('@postgres-test:5432/') || lowerUrl.includes('@127.0.0.1:5432/');
   if (!approvedCiHost || testDbProject !== 'cloudbuild-ephemeral' || testDbInstance !== 'cloudbuild-ephemeral-postgres-test') {

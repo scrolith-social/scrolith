@@ -1,6 +1,8 @@
 import { Request } from 'express';
 import { createApprovalObservation } from './approvalPolicy.service';
 import { extractRequestAuditMeta, writeAdminAuditEvent } from './adminAudit.service';
+import prisma from '../utils/prismaClient';
+import type { GovernanceDb } from './governanceDb';
 
 type RecordGovernedActionInput = {
   moduleKey: string;
@@ -18,8 +20,13 @@ type RecordGovernedActionInput = {
   approvalPayload?: Record<string, any> | null;
 };
 
-export const recordGovernedAdminAction = async (req: Request, input: RecordGovernedActionInput) => {
-  const requestMeta = await extractRequestAuditMeta(req);
+export const recordGovernedAdminAction = async (
+  req: Request,
+  input: RecordGovernedActionInput,
+  db: GovernanceDb = prisma,
+  options: { resolveStaffProfile?: boolean } = {}
+) => {
+  const requestMeta = await extractRequestAuditMeta(req, options);
 
   const auditEvent = await writeAdminAuditEvent({
     ...requestMeta,
@@ -31,7 +38,7 @@ export const recordGovernedAdminAction = async (req: Request, input: RecordGover
     status: input.status,
     message: input.message || null,
     metadata: input.metadata || null
-  });
+  }, db);
 
   const approvalRecord =
     input.approvalActionKey || input.approvalEntityType || input.approvalTitle
@@ -49,7 +56,7 @@ export const recordGovernedAdminAction = async (req: Request, input: RecordGover
             auditEventId: auditEvent.id,
             ...(input.metadata || {})
           }
-        })
+        }, db)
       : null;
 
   return { auditEvent, approvalRecord };

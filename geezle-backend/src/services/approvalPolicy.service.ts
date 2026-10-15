@@ -1,4 +1,5 @@
 import prisma from '../utils/prismaClient';
+import type { GovernanceDb } from './governanceDb';
 
 type ApprovalPolicySeed = {
   moduleKey: string;
@@ -144,11 +145,11 @@ const mapRequest = (row: any) => ({
     : null
 });
 
-export const ensureApprovalPoliciesSeeded = async () => {
-  if (approvalPoliciesSeeded) return;
+export const ensureApprovalPoliciesSeeded = async (db: GovernanceDb = prisma) => {
+  if (db === prisma && approvalPoliciesSeeded) return;
 
   for (const seed of DEFAULT_APPROVAL_POLICIES) {
-    await prisma.approvalPolicy.upsert({
+    await db.approvalPolicy.upsert({
       where: {
         moduleKey_actionKey_entityType: {
           moduleKey: seed.moduleKey,
@@ -176,7 +177,7 @@ export const ensureApprovalPoliciesSeeded = async () => {
     });
   }
 
-  approvalPoliciesSeeded = true;
+  if (db === prisma) approvalPoliciesSeeded = true;
 };
 
 export const listApprovalPolicies = async () => {
@@ -249,9 +250,14 @@ export const getApprovalPolicySummary = async () => {
   return { activePolicies: policies, observed, pending, approved, rejected };
 };
 
-export const resolveApprovalPolicy = async (moduleKey: string, actionKey: string, entityType: string) => {
-  await ensureApprovalPoliciesSeeded();
-  return prisma.approvalPolicy.findFirst({
+export const resolveApprovalPolicy = async (
+  moduleKey: string,
+  actionKey: string,
+  entityType: string,
+  db: GovernanceDb = prisma
+) => {
+  await ensureApprovalPoliciesSeeded(db);
+  return db.approvalPolicy.findFirst({
     where: {
       moduleKey,
       actionKey,
@@ -261,15 +267,15 @@ export const resolveApprovalPolicy = async (moduleKey: string, actionKey: string
   });
 };
 
-export const createApprovalObservation = async (input: CreateApprovalObservationInput) => {
+export const createApprovalObservation = async (input: CreateApprovalObservationInput, db: GovernanceDb = prisma) => {
   const policy =
-    (await resolveApprovalPolicy(input.moduleKey, input.actionKey, input.entityType)) ||
-    (await resolveApprovalPolicy(input.moduleKey, input.actionKey, 'generic'));
+    (await resolveApprovalPolicy(input.moduleKey, input.actionKey, input.entityType, db)) ||
+    (await resolveApprovalPolicy(input.moduleKey, input.actionKey, 'generic', db));
 
   const effectiveMode = policy ? normalizeMode(policy.mode) : 'DISABLED';
   if (effectiveMode === 'DISABLED') return null;
 
-  const row = await prisma.approvalRequest.create({
+  const row = await db.approvalRequest.create({
     data: {
       policyId: policy?.id || null,
       moduleKey: input.moduleKey,

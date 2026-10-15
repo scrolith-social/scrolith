@@ -1,0 +1,136 @@
+name: Backend PR Verification
+
+on:
+  pull_request:
+    branches:
+      - backend/main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cms-and-security:
+    name: CMS and backend verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: geezle-backend
+    env:
+      DATABASE_URL: postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/scrolith_test
+      SHADOW_DATABASE_URL: postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/scrolith_shadow
+      PG_ADMIN_URL: postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/postgres
+      NODE_ENV: test
+      APP_RUNTIME: test
+      DISABLE_BACKGROUND_WORKERS: 'true'
+      TEST_DB_KIND: local-disposable
+      TEST_DB_PROJECT: local-only
+      TEST_DB_INSTANCE: local-disposable-postgres-test
+      TEST_DB_NAME: scrolith_test
+      JWT_SECRET: local_ci_only_jwt_secret
+      REDIS_URL: redis://127.0.0.1:6379
+      REDIS_TEST_MODE: local
+      REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
+    services:
+      postgres:
+        image: postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65
+        env:
+          POSTGRES_USER: scrolith_test
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-only
+          POSTGRES_DB: scrolith_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrolith_test -d scrolith_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      redis:
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+        ports:
+          - 127.0.0.1:6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    steps:
+      - name: Checkout PR source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Node.js 22.18.0
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: geezle-backend/package-lock.json
+
+      - name: Install locked dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --fund=false
+
+      - name: Create isolated shadow database
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const admin = new pg.Client({ connectionString: process.env.PG_ADMIN_URL });
+          await admin.connect();
+          try {
+            const result = await admin.query(
+              'SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1',
+              ['scrolith_shadow']
+            );
+            if (result.rowCount !== 0) throw new Error('Refusing to reuse an existing shadow database.');
+            await admin.query('CREATE DATABASE scrolith_shadow OWNER scrolith_test');
+          } finally {
+            await admin.end();
+          }
+          NODE
+
+      - name: Verify disposable database target
+        run: node scripts/test-db-guard.mjs --guard-only
+
+      - name: Validate Prisma schema and generate client
+        run: |
+          set -euo pipefail
+          npx prisma validate
+          npx prisma generate
+
+      - name: Apply disposable migrations
+        run: |
+          set -euo pipefail
+          npx prisma migrate deploy
+          npx prisma migrate status
+
+      - name: Run CMS transaction, governance, and controller tests
+        run: |
+          set -euo pipefail
+          node ./node_modules/jest/bin/jest.js \
+            --config jest.config.cjs \
+            --runInBand \
+            --runTestsByPath \
+              src/controllers/__tests__/cms.follow-onboarding.controller.spec.ts \
+              src/services/__tests__/enterpriseGovernance.service.spec.ts \
+              src/__tests__/integration/cms.follow-onboarding.transaction.integration.test.ts \
+            --testTimeout=60000
+
+      - name: Verify TypeScript compilation
+        run: npm run build
+
+      - name: Run dependency security gate
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Check migration files and patch formatting
+        run: |
+          set -euo pipefail
+          git diff --exit-code "${{ github.event.pull_request.base.sha }}" -- prisma/migrations
+          git diff --check

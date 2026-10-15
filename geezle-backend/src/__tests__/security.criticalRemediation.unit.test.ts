@@ -5,25 +5,47 @@
 
 import {
   isAuthoritativeAdminRole,
+  isLocalOnlyDevBypassAllowed,
   isProductionRuntime,
   isTruthyEnv
 } from '../utils/security/isProductionRuntime';
+import { isAdminRole as isRbacAdminRole } from '../services/rbac.service';
+import { isAdminRole as isSystemControlsAdminRole } from '../services/systemControls.service';
 import fs from 'fs';
 import path from 'path';
+
+// These classifier tests must remain database-free. The imported service
+// modules expose pure role helpers but also initialize the Prisma singleton.
+jest.mock('../utils/prismaClient', () => ({}));
 
 describe('isAuthoritativeAdminRole', () => {
   test('accepts real admin roles', () => {
     expect(isAuthoritativeAdminRole('ADMIN')).toBe(true);
     expect(isAuthoritativeAdminRole('SUPER_ADMIN')).toBe(true);
     expect(isAuthoritativeAdminRole('platform_admin')).toBe(true);
+    expect(isAuthoritativeAdminRole('Owner')).toBe(true);
   });
 
   test('rejects non-admin and substring traps', () => {
     expect(isAuthoritativeAdminRole('FREELANCER')).toBe(false);
     expect(isAuthoritativeAdminRole('CLIENT')).toBe(false);
     expect(isAuthoritativeAdminRole('not_admin')).toBe(false);
+    expect(isAuthoritativeAdminRole('Finance Admin')).toBe(false);
+    expect(isAuthoritativeAdminRole('staff_admin')).toBe(false);
+    expect(isAuthoritativeAdminRole('content_admin')).toBe(false);
     expect(isAuthoritativeAdminRole('')).toBe(false);
     expect(isAuthoritativeAdminRole(null)).toBe(false);
+  });
+
+  test('RBAC and system-controls classifiers use the same exact allowlist', () => {
+    for (const role of ['ADMIN', 'SUPER_ADMIN', 'platform_admin', 'Owner']) {
+      expect(isRbacAdminRole(role)).toBe(true);
+      expect(isSystemControlsAdminRole(role)).toBe(true);
+    }
+    for (const role of ['Finance Admin', 'administrator', 'not_admin', 'content_admin']) {
+      expect(isRbacAdminRole(role)).toBe(false);
+      expect(isSystemControlsAdminRole(role)).toBe(false);
+    }
   });
 
   test('ignores client spoof strings that only contain admin as substring incorrectly', () => {
@@ -50,6 +72,43 @@ describe('production runtime flags', () => {
     expect(isTruthyEnv('1')).toBe(true);
     expect(isTruthyEnv('false')).toBe(false);
     expect(isTruthyEnv(undefined)).toBe(false);
+  });
+
+  test('development bypass requires an explicit local-only marker', () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.CONTAINER_APP_NAME;
+    delete process.env.K_SERVICE;
+    delete process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY;
+    expect(isLocalOnlyDevBypassAllowed()).toBe(false);
+
+    process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY = 'true';
+    expect(isLocalOnlyDevBypassAllowed()).toBe(true);
+
+    process.env.CONTAINER_APP_NAME = 'staging-app';
+    expect(isLocalOnlyDevBypassAllowed()).toBe(false);
+  });
+});
+
+describe('administrator middleware trust boundaries', () => {
+  test('middleware delegates administrator classification to the exact allowlist', () => {
+    const adminMiddleware = fs.readFileSync(
+      path.join(__dirname, '../middleware/admin.middleware.ts'),
+      'utf8'
+    );
+    const authMiddleware = fs.readFileSync(
+      path.join(__dirname, '../middleware/auth.middleware.ts'),
+      'utf8'
+    );
+    const systemControls = fs.readFileSync(
+      path.join(__dirname, '../services/systemControls.service.ts'),
+      'utf8'
+    );
+
+    expect(adminMiddleware).toMatch(/isAuthoritativeAdminRole/);
+    expect(adminMiddleware).not.toMatch(/roleName\.includes\(['"]admin['"]\)/);
+    expect(authMiddleware).toMatch(/isAuthoritativeAdminRole/);
+    expect(authMiddleware).not.toMatch(/v\.includes\(['"]admin['"]\)/);
+    expect(systemControls).not.toMatch(/r\.includes\(['"]ADMIN['"]\)/);
   });
 });
 

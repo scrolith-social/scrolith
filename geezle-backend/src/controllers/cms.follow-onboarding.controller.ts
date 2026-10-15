@@ -36,12 +36,13 @@ export const saveFollowOnboardingContent = async (req: Request, res: Response) =
 
   try {
     const content = { ...parsed.data, updatedAt: new Date().toISOString() };
-    await prisma.appSetting.upsert({
-      where: { scope: CONTENT_SCOPE },
-      create: { scope: CONTENT_SCOPE, data: content },
-      update: { data: content }
-    });
-    try {
+    const committedContent = await prisma.$transaction(async (tx) => {
+      await tx.appSetting.upsert({
+        where: { scope: CONTENT_SCOPE },
+        create: { scope: CONTENT_SCOPE, data: content },
+        update: { data: content }
+      });
+
       await recordGovernedAdminAction(req, {
         moduleKey: 'cms',
         actionKey: 'follow_onboarding.content.update',
@@ -49,12 +50,19 @@ export const saveFollowOnboardingContent = async (req: Request, res: Response) =
         entityId: CONTENT_SCOPE,
         message: 'Updated follow-onboarding presentation content',
         metadata: { featureCardCount: content.featureCards.length }
-      });
+      }, tx, { resolveStaffProfile: false });
+
+      return content;
+    });
+
+    try {
+      emitContentUpdate(req, committedContent);
     } catch {
-      console.warn('[cms] Follow-onboarding content saved but audit recording failed');
+      // Persistence is already committed; notification delivery is best-effort
+      // and must not turn a durable update into a false failure.
+      console.warn('[cms] Follow-onboarding content committed but refresh notification failed');
     }
-    emitContentUpdate(req, content);
-    return res.json({ success: true, data: content });
+    return res.json({ success: true, data: committedContent });
   } catch {
     return res.status(500).json({ error: 'Unable to save onboarding content' });
   }

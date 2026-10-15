@@ -1,4 +1,7 @@
-const mockPrisma = { appSetting: { findUnique: jest.fn(), upsert: jest.fn() } };
+const mockPrisma = {
+  appSetting: { findUnique: jest.fn(), upsert: jest.fn() },
+  $transaction: jest.fn(async (callback: (tx: any) => unknown) => callback(mockPrisma))
+};
 const mockRecordGovernedAdminAction = jest.fn();
 
 jest.mock('../../utils/prismaClient', () => ({ __esModule: true, default: mockPrisma }));
@@ -72,19 +75,32 @@ describe('follow onboarding CMS controller', () => {
     }));
     expect(mockRecordGovernedAdminAction).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       actionKey: 'follow_onboarding.content.update', entityId: 'cms_follow_onboarding'
-    }));
+    }), mockPrisma, { resolveStaffProfile: false });
     expect(io.emit).toHaveBeenCalledWith('cms:follow_onboarding_updated', expect.objectContaining({ hero: body.hero }));
     expect(communityIo.emit).toHaveBeenCalledWith('cms:follow_onboarding_updated', expect.anything());
     expect(res.json).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ hero: body.hero, updatedAt: expect.any(String) }) });
   });
 
-  it('does not turn a committed content save into a false failure if audit storage is unavailable', async () => {
+  it('rolls back the content save and suppresses success when mandatory audit storage is unavailable', async () => {
     mockPrisma.appSetting.upsert.mockResolvedValue({});
     mockRecordGovernedAdminAction.mockRejectedValue(new Error('audit store unavailable'));
     const { req, io } = request();
     const res = response();
     await saveFollowOnboardingContent({ ...req, body: DEFAULT_FOLLOW_ONBOARDING_CONTENT } as any, res);
-    expect(res.status).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Unable to save onboarding content' });
+    expect(io.emit).not.toHaveBeenCalled();
+  });
+
+  it('keeps a committed update successful when post-commit notification delivery throws', async () => {
+    mockPrisma.appSetting.upsert.mockResolvedValue({});
+    mockRecordGovernedAdminAction.mockResolvedValue({});
+    const { req, io, communityIo } = request();
+    communityIo.emit.mockImplementation(() => { throw new Error('socket unavailable'); });
+    const res = response();
+
+    await saveFollowOnboardingContent({ ...req, body: DEFAULT_FOLLOW_ONBOARDING_CONTENT } as any, res);
+
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     expect(io.emit).toHaveBeenCalled();
   });

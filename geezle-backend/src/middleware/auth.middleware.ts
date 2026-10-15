@@ -5,6 +5,10 @@ import prisma from '../utils/prismaClient';
 import { Role } from '@prisma/client';
 import { jwtSecret } from '../utils/security/requiredSecret';
 import { setSafeObjectValue } from '../utils/security/safeObjectKey';
+import {
+  isAuthoritativeAdminRole,
+  isLocalOnlyDevBypassAllowed
+} from '../utils/security/isProductionRuntime';
 
 // Extend Express Request type to include user
 declare global {
@@ -130,13 +134,10 @@ export const authMiddleware = async (
       return;
     }
 
-    // Optional dev bypass (explicit opt-in only) — hard refuse in production / Cloud Run
+    // Optional dev bypass (explicit local-only opt-in); managed runtimes always fail closed.
     if (process.env.ALLOW_DEV_AUTH_BYPASS === 'true') {
-      const nodeEnv = String(process.env.NODE_ENV || '')
-        .trim()
-        .toLowerCase();
-      if (!['development', 'test'].includes(nodeEnv) || process.env.K_SERVICE) {
-        console.error('[auth] ALLOW_DEV_AUTH_BYPASS rejected in production runtime');
+      if (!isLocalOnlyDevBypassAllowed()) {
+        console.error('[auth] ALLOW_DEV_AUTH_BYPASS rejected outside an explicitly marked local runtime');
         sendAuthFailure(res, 401, 'Authentication failed');
         return;
       }
@@ -159,7 +160,7 @@ export const authMiddleware = async (
 
       const normalizeRole = (value?: string) => {
         const v = (value || '').toString().toLowerCase();
-        if (v.includes('admin')) return 'ADMIN';
+        if (isAuthoritativeAdminRole(v)) return 'ADMIN';
         if (v.includes('freelancer') || v.includes('seller')) return 'FREELANCER';
         if (v.includes('client') || v.includes('employer') || v.includes('buyer')) return 'CLIENT';
         return 'FREELANCER';

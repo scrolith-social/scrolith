@@ -8,8 +8,16 @@ export const isProductionRuntime = (): boolean => {
     .trim()
     .toLowerCase();
   if (nodeEnv === 'production') return true;
-  // Cloud Run always sets K_SERVICE
-  if (process.env.K_SERVICE && nodeEnv !== 'development' && nodeEnv !== 'test') {
+  // Cloud and managed-container runtimes are never eligible for local bypasses,
+  // even if an incorrectly configured deployment reports development/test.
+  if (
+    process.env.K_SERVICE ||
+    process.env.CONTAINER_APP_NAME ||
+    process.env.CONTAINER_APP_REVISION ||
+    process.env.WEBSITE_SITE_NAME ||
+    process.env.WEBSITE_INSTANCE_ID ||
+    process.env.AZURE_CONTAINER_APPS_ENVIRONMENT_ID
+  ) {
     return true;
   }
   return false;
@@ -32,7 +40,24 @@ export const isAuthoritativeAdminRole = (role: unknown): boolean => {
     'super_admin',
     'platform_admin',
     'platformadmin',
-    'staff_admin'
+    'owner'
   ]);
   return allowed.has(r);
+};
+
+/**
+ * Development authentication/admin bypasses are permitted only for an
+ * explicitly marked local test runtime. The marker is intentionally separate
+ * from NODE_ENV so a staging deployment cannot enable a bypass by setting a
+ * familiar development value.
+ */
+export const isLocalOnlyDevBypassAllowed = (): boolean => {
+  const nodeEnv = String(process.env.NODE_ENV || '')
+    .trim()
+    .toLowerCase();
+  return (
+    ['development', 'test'].includes(nodeEnv) &&
+    isTruthyEnv(process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY) &&
+    !isProductionRuntime()
+  );
 };

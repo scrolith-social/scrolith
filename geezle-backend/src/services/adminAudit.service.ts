@@ -2,6 +2,7 @@ import { Request } from 'express';
 import prisma from '../utils/prismaClient';
 import { ensureAdminStaffProfile, isAdminRole } from './rbac.service';
 import { getTrustedClientIp } from '../utils/security/clientIdentity';
+import type { GovernanceDb } from './governanceDb';
 
 type AdminAuditSeverity = 'info' | 'warning' | 'critical';
 type AdminAuditStatus = 'success' | 'denied' | 'error' | 'pending';
@@ -67,31 +68,49 @@ const inferSeverityFromAuthEvent = (event: string) => {
   return 'info';
 };
 
-const ensureActorStaffId = async (userId?: string | null, actorStaffId?: string | null, actorRole?: string | null) => {
+const ensureActorStaffId = async (
+  userId?: string | null,
+  actorStaffId?: string | null,
+  actorRole?: string | null,
+  resolveStaffProfile = true
+) => {
   if (actorStaffId) return actorStaffId;
-  if (userId && isAdminRole(actorRole)) {
+  if (resolveStaffProfile && userId && isAdminRole(actorRole)) {
     return ensureAdminStaffProfile(userId);
   }
   return null;
 };
 
-export const extractRequestAuditMeta = async (req: Request) => {
+export const extractRequestAuditMeta = async (
+  req: Request,
+  options: { resolveStaffProfile?: boolean } = {}
+) => {
   const actorUserId = String(req.user?.id || '').trim() || null;
   const actorRole = String(req.user?.role || '').trim() || null;
   return {
     actorUserId,
     actorRole,
-    actorStaffId: await ensureActorStaffId(actorUserId, req.staffContext?.staffId || null, actorRole),
+    actorStaffId: await ensureActorStaffId(
+      actorUserId,
+      req.staffContext?.staffId || null,
+      actorRole,
+      options.resolveStaffProfile !== false
+    ),
     ipAddress: getTrustedClientIp(req) || null,
     userAgent: String(req.headers['user-agent'] || '').trim() || null
   };
 };
 
-export const writeAdminAuditEvent = async (input: WriteAdminAuditInput) => {
-  return prisma.adminAuditEvent.create({
+export const writeAdminAuditEvent = async (input: WriteAdminAuditInput, db: GovernanceDb = prisma) => {
+  return db.adminAuditEvent.create({
     data: {
       actorUserId: input.actorUserId || null,
-      actorStaffId: await ensureActorStaffId(input.actorUserId || null, input.actorStaffId || null, input.actorRole || null),
+      actorStaffId: await ensureActorStaffId(
+        input.actorUserId || null,
+        input.actorStaffId || null,
+        input.actorRole || null,
+        db === prisma
+      ),
       actorRole: input.actorRole || null,
       moduleKey: String(input.moduleKey || '').trim(),
       actionKey: String(input.actionKey || '').trim(),

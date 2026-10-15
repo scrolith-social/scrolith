@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../utils/prismaClient';
 import { safeLogLine } from '../utils/security/safeLog';
+import {
+  isAuthoritativeAdminRole,
+  isLocalOnlyDevBypassAllowed
+} from '../utils/security/isProductionRuntime';
 
 export const adminMiddleware = (req: Request, res: Response, next: NextFunction) => {
   console.log('Admin middleware:', safeLogLine(req.method), safeLogLine(req.path));
@@ -8,13 +12,10 @@ export const adminMiddleware = (req: Request, res: Response, next: NextFunction)
   // Get user from request (added by authMiddleware)
   const user = req.user;
 
-  // Optional dev bypass (explicit opt-in only) — hard refuse in production / Cloud Run
+  // Optional dev bypass (explicit local-only opt-in); managed runtimes always fail closed.
   if (process.env.ALLOW_DEV_ADMIN_BYPASS === 'true') {
-    const nodeEnv = String(process.env.NODE_ENV || '')
-      .trim()
-      .toLowerCase();
-    if (nodeEnv === 'production' || process.env.K_SERVICE) {
-      console.error('[admin] ALLOW_DEV_ADMIN_BYPASS rejected in production runtime');
+    if (!isLocalOnlyDevBypassAllowed()) {
+      console.error('[admin] ALLOW_DEV_ADMIN_BYPASS rejected outside an explicitly marked local runtime');
       return res.status(403).json({ error: 'Admin access denied' });
     }
     console.log('Admin bypass enabled via ALLOW_DEV_ADMIN_BYPASS');
@@ -26,15 +27,7 @@ export const adminMiddleware = (req: Request, res: Response, next: NextFunction)
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  // Align with rbac isAdminRole: admin, superadmin, super_admin, platform_admin, etc.
-  const role = (user.role || '').toString().toLowerCase().replace(/[\s-]+/g, '_');
-  const isPlatformAdmin =
-    role === 'admin' ||
-    role === 'superadmin' ||
-    role === 'super_admin' ||
-    role.includes('admin');
-
-  if (isPlatformAdmin) {
+  if (isAuthoritativeAdminRole(user.role)) {
     return next();
   }
 
@@ -56,8 +49,7 @@ export const adminMiddleware = (req: Request, res: Response, next: NextFunction)
         return res.status(403).json({ error: 'Admin access required' });
       }
       // Staff with Admin/Owner role name always allowed for admin dashboard surface.
-      const roleName = String(staff.role?.name || '').toLowerCase();
-      if (roleName.includes('admin') || roleName === 'owner') {
+      if (isAuthoritativeAdminRole(staff.role?.name)) {
         return next();
       }
       // Any active staff role with at least one permission can enter admin shell;
