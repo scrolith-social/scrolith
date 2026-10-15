@@ -76,4 +76,18 @@ describe('identifier-based authentication rate limits', () => {
     } as any;
     expect(getTrustedClientIp(req)).toBe('resolved-by-express');
   });
+
+  test('does not trust arbitrary IPv4 clients through a short IPv4-mapped IPv6 subnet', async () => {
+    const app = express();
+    app.set('trust proxy', '::ffff:10.0.0.0/8');
+    app.get('/client-ip', (req, res) => res.json({ ip: req.ip }));
+
+    const spoofedIp = '198.51.100.23';
+    const response = await request(app)
+      .get('/client-ip')
+      .set('X-Forwarded-For', spoofedIp)
+      .expect(200);
+
+    expect(response.body.ip).not.toBe(spoofedIp);
+  });
 });

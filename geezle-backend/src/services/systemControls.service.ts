@@ -2,6 +2,7 @@
  * Runtime readers for General System Settings toggles (cached, fail-open where safe).
  */
 import prisma from '../utils/prismaClient';
+import { isAuthoritativeAdminRole } from '../utils/security/isProductionRuntime';
 
 export type MaintenancePageConfig = {
   slug: string;
@@ -112,10 +113,7 @@ export const getSystemControls = async (): Promise<SystemControls> => {
   }
 };
 
-export const isAdminRole = (role?: string | null): boolean => {
-  const r = String(role || '').toUpperCase();
-  return r === 'ADMIN' || r === 'SUPER_ADMIN' || r.includes('ADMIN');
-};
+export const isAdminRole = isAuthoritativeAdminRole;
 
 export const isKycSatisfied = (user: { kycStatus?: string | null; isVerified?: boolean | null }): boolean => {
   if (user?.isVerified === true) return true;

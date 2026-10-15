@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import prisma from '../utils/prismaClient';
 import { ANALYST_PERMISSION_KEYS, isAnalystRole } from './analystRole';
+import { isAuthoritativeAdminRole } from '../utils/security/isProductionRuntime';
 
 export { ANALYST_PERMISSION_KEYS, isAnalystRole } from './analystRole';
 
@@ -405,19 +406,7 @@ const DEFAULT_ROLE_SEEDS: RoleSeed[] = [
 
 let seeded = false;
 
-export const isAdminRole = (role?: string | null) => {
-  const normalized = String(role || '')
-    .toLowerCase()
-    .replace(/[\s-]+/g, '_');
-  // admin, superadmin, super_admin, platform_admin, site_admin, etc.
-  return (
-    normalized === 'admin' ||
-    normalized === 'superadmin' ||
-    normalized === 'super_admin' ||
-    normalized === 'owner' ||
-    normalized.includes('admin')
-  );
-};
+export const isAdminRole = isAuthoritativeAdminRole;
 
 const normalizeUsernameBase = (email?: string | null, userId?: string | null) => {
   const fromEmail = String(email || '')
