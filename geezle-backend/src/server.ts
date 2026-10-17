@@ -104,6 +104,7 @@ import scrolithMatchRoutes from './routes/scrolithMatch.routes';
 import professionalDiscoveryRoutes from './routes/professionalDiscovery.routes';
 import intelligenceFeedbackRoutes from './routes/intelligenceFeedback.routes';
 import scrolithaRoutes from './routes/scrolitha.routes';
+import scrolithaMcpRoutes from './routes/scrolithaMcp.routes';
 import phase3Routes from './routes/phase3.routes';
 import procurementRoutes from './routes/procurement.routes';
 import ecosystemRoutes from './routes/ecosystem.routes';
@@ -3961,6 +3962,11 @@ app.use((req: Request, res: Response, next) => {
 // Stripe webhook for wallet top-ups (must be raw body)
 app.post('/api/payments/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWalletWebhook);
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWalletWebhook);
+
+// Optional private MCP transport. Mount before the broad application JSON
+// parser so its stricter 1 MiB request limit is effective. Disabled unless
+// MCP_ENABLED=true and OAuth configuration is complete.
+app.use('/mcp', scrolithaMcpRoutes());
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
