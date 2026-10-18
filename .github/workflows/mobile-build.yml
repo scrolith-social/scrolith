@@ -3,9 +3,42 @@ name: Mobile Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  detect-platforms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      android: ${{ steps.platforms.outputs.android }}
+      ios: ${{ steps.platforms.outputs.ios }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect mobile platforms
+        id: platforms
+        shell: bash
+        env:
+          ANDROID_FILES: ${{ hashFiles('mobile/android/**') }}
+          IOS_FILES: ${{ hashFiles('mobile/ios/**') }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ANDROID_FILES" ]]; then
+            echo 'android=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'android=false' >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$IOS_FILES" ]]; then
+            echo 'ios=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ios=false' >> "$GITHUB_OUTPUT"
+          fi
+
   android:
-    if: ${{ hashFiles('mobile/android/**') != '' }}
+    needs: detect-platforms
+    if: ${{ needs.detect-platforms.outputs.android == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,7 +65,8 @@ jobs:
         run: ./gradlew bundleRelease
 
   ios:
-    if: ${{ hashFiles('mobile/ios/**') != '' }}
+    needs: detect-platforms
+    if: ${{ needs.detect-platforms.outputs.ios == 'true' }}
     runs-on: macos-latest
     steps:
       - name: Checkout
