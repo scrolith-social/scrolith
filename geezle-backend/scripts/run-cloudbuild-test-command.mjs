@@ -11,6 +11,7 @@ Object.assign(process.env, {
   APP_RUNTIME: 'test',
   DISABLE_BACKGROUND_WORKERS: 'true',
   DATABASE_URL: 'postgresql://scrolith_test@postgres-test:5432/scrolith_test',
+  SHADOW_DATABASE_URL: 'postgresql://scrolith_test@postgres-test:5432/scrolith_shadow',
   TEST_DB_KIND: 'cloudbuild-postgres',
   TEST_DB_PROJECT: 'cloudbuild-ephemeral',
   TEST_DB_INSTANCE: 'cloudbuild-ephemeral-postgres-test',

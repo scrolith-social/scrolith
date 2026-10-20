@@ -8,11 +8,16 @@ process.env.APP_RUNTIME = 'test';
 process.env.DISABLE_BACKGROUND_WORKERS = 'true';
 process.env.DATABASE_URL =
   process.env.DATABASE_URL ||
-  'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_test';
-process.env.TEST_DB_KIND = process.env.TEST_DB_KIND || 'local-postgres';
+  'postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_test';
+process.env.SHADOW_DATABASE_URL =
+  process.env.SHADOW_DATABASE_URL ||
+  'postgresql://scrolith_test:local_test_password@127.0.0.1:5432/scrolith_shadow';
+process.env.TEST_DB_KIND = process.env.TEST_DB_KIND || 'local-disposable';
 process.env.TEST_DB_PROJECT = process.env.TEST_DB_PROJECT || 'local-only';
-process.env.TEST_DB_INSTANCE = process.env.TEST_DB_INSTANCE || 'local-postgres-test';
+process.env.TEST_DB_INSTANCE = process.env.TEST_DB_INSTANCE || 'local-disposable-postgres-test';
 process.env.TEST_DB_NAME = process.env.TEST_DB_NAME || 'scrolith_test';
+process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:56379';
+process.env.REDIS_TEST_MODE = process.env.REDIS_TEST_MODE || 'local';
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'local_test_jwt_secret';
 process.env.JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1h';
 process.env.FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -21,6 +26,37 @@ process.env.NOTIFICATION_DIGEST_CRON_ENABLED = process.env.NOTIFICATION_DIGEST_C
 process.env.NOTIFICATION_RETENTION_PURGE_ENABLED = process.env.NOTIFICATION_RETENTION_PURGE_ENABLED || 'false';
 process.env.ALLOW_DEV_AUTH_BYPASS = process.env.ALLOW_DEV_AUTH_BYPASS || 'true';
 process.env.ALLOW_DEV_ADMIN_BYPASS = process.env.ALLOW_DEV_ADMIN_BYPASS || 'true';
+// The bypass flags are usable only for this explicitly marked local test runtime.
+// Managed runtimes remain fail-closed through isLocalOnlyDevBypassAllowed().
+process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY = process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY || 'true';
+
+const assertLocalRedisTarget = () => {
+  if (process.env.REDIS_TEST_MODE !== 'local') {
+    throw new Error('Refusing full Jest run unless REDIS_TEST_MODE=local.');
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(process.env.REDIS_URL);
+  } catch {
+    throw new Error('Refusing full Jest run: REDIS_URL is not parseable.');
+  }
+
+  const allowedHosts = new Set(['127.0.0.1', 'localhost']);
+  if (process.env.TEST_DB_KIND === 'cloudbuild-postgres') allowedHosts.add('redis-test');
+  const allowedPorts = new Set(['6379', '56379']);
+  if (
+    parsed.protocol !== 'redis:' ||
+    !allowedHosts.has(parsed.hostname.toLowerCase()) ||
+    !allowedPorts.has(parsed.port || '6379') ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new Error('Refusing full Jest run: REDIS_URL must target a disposable unauthenticated Redis service.');
+  }
+};
+
+assertLocalRedisTarget();
 
 await import('./test-db-guard.mjs');
 
