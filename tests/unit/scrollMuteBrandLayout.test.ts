@@ -36,8 +36,8 @@ test('touch Scroll keeps the engagement rail visible after overlay controls rece
 
 test('touch Scroll keeps Follow and Remix/Duet controls visible after chrome recedes', () => {
   assert.match(scrollCard, /const persistentTouchControlsVisible = overlayControlsVisible \|\| touchOverlayMode/);
-  assert.match(scrollCard, /persistentTouchControlsVisible\n\s+\? 'max-h-10 opacity-100'/);
-  assert.match(scrollCard, /!persistentTouchControlsVisible\n\s+\? 'translate-y-4 opacity-0 pointer-events-none'/);
+  assert.match(scrollCard, /persistentTouchControlsVisible\r?\n\s+\? 'max-h-10 opacity-100'/);
+  assert.match(scrollCard, /!persistentTouchControlsVisible\r?\n\s+\? 'translate-y-4 opacity-0 pointer-events-none'/);
   assert.match(scrollCard, /void onRemix\(scroll, 'remix'\)/);
   assert.match(scrollCard, /void onRemix\(scroll, 'duet'\)/);
 });

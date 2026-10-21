@@ -129,9 +129,9 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   const [loginError, setLoginError] = React.useState("");
   const [signupErrors, setSignupErrors] = React.useState<Record<string, string>>({});
   const [loginHvToken, setLoginHvToken] = React.useState<string | null>(null);
-  const [loginHvRequired, setLoginHvRequired] = React.useState(false);
+  const [loginHvRequired, setLoginHvRequired] = React.useState(true);
   const [signupHvToken, setSignupHvToken] = React.useState<string | null>(null);
-  const [signupHvRequired, setSignupHvRequired] = React.useState(false);
+  const [signupHvRequired, setSignupHvRequired] = React.useState(true);
   const [loginApproval, setLoginApproval] = React.useState<LoginApprovalState | null>(null);
   const approvalStatusInFlightRef = React.useRef(false);
   const approvalExchangeInFlightRef = React.useRef(false);
@@ -172,7 +172,19 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
 
   React.useEffect(() => {
     setActiveTab(normalizeGuestAuthTab(defaultTab || content?.defaultTab));
+    setLoginHvToken(null);
+    setLoginHvRequired(true);
+    setSignupHvToken(null);
+    setSignupHvRequired(true);
   }, [content?.defaultTab, defaultTab]);
+
+  const selectAuthTab = (tab: "login" | "signup") => {
+    setLoginHvToken(null);
+    setLoginHvRequired(true);
+    setSignupHvToken(null);
+    setSignupHvRequired(true);
+    setActiveTab(tab);
+  };
 
   React.useEffect(() => {
     let mounted = true;
@@ -382,7 +394,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
       <div className={`${embeddedModalSurface ? "mb-3" : "mb-4"} flex min-w-0 rounded-full border border-slate-200 bg-slate-50 p-1`}>
         <button
           type="button"
-          onClick={() => setActiveTab("login")}
+          onClick={() => selectAuthTab("login")}
           className={`min-w-0 flex-1 rounded-full px-3 py-2.5 text-sm font-semibold transition ${
             activeTab === "login" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"
           }`}
@@ -391,7 +403,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
         </button>
         <button
           type="button"
-          onClick={() => setActiveTab("signup")}
+          onClick={() => selectAuthTab("signup")}
           className={`min-w-0 flex-1 rounded-full px-3 py-2.5 text-sm font-semibold transition ${
             activeTab === "signup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"
           }`}
@@ -489,7 +501,8 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
           <div className={embeddedModalSurface ? "pt-1" : ""}>
             <button
               type="submit"
-              disabled={loginLoading || Boolean(loginApproval) || (loginHvRequired && !loginHvToken)}
+                disabled={loginLoading || (loginHvRequired && !loginHvToken)}
+                aria-disabled={Boolean(loginApproval)}
               className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loginApproval ? "Waiting for approval..." : loginLoading ? "Signing in..." : content?.loginCtaLabel || "Login"}
@@ -630,7 +643,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
           <div className="flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
-              onClick={() => setActiveTab("login")}
+              onClick={() => selectAuthTab("login")}
               className="text-left font-semibold text-blue-700 hover:text-blue-800"
             >
               Already have an account?
@@ -1176,7 +1189,6 @@ export const GuestAuthModal: React.FC<GuestAuthModalProps> = ({ open, onClose, c
             title={popup.headline || content?.authPanelTitle || "Welcome to Scrolith"}
             subtitle={popup.subheadline || content?.authPanelSubtitle}
             footerNote={popup.trustNote}
-            hideStandaloneLinks
             surfaceClassName={
               compactSurface
                 ? "rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm sm:rounded-[28px] sm:p-4"

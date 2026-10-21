@@ -1004,9 +1004,11 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
               <div
                 className={`transition-all duration-300 ${
                   touchOverlayMode
-                    ? persistentTouchControlsVisible
-                      ? 'max-h-10 opacity-100'
-                      : 'max-h-0 overflow-hidden opacity-0 pointer-events-none'
+                    ? (
+                      persistentTouchControlsVisible
+                        ? 'max-h-10 opacity-100'
+                        : 'max-h-0 overflow-hidden opacity-0 pointer-events-none'
+                    )
                     : ''
                 }`}
               >
