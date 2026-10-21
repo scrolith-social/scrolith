@@ -8,6 +8,7 @@ import AuthSocialButtons from './AuthSocialButtons';
 import { useT } from '../i18n/useT';
 import { resolveAuthenticatedEntryPath } from '../utils/authRedirect';
 import ScrolithHumanVerification from '../components/human-verification/ScrolithHumanVerification';
+import AuthPosterCard from '../components/auth/AuthPosterCard';
 
 const IS_MOBILE_APP_BUILD = import.meta.env.VITE_SCROLITH_MOBILE_APP === 'true';
 
@@ -237,6 +238,7 @@ const Login = () => {
               </p>
             </div>
           </div>
+          <AuthPosterCard mode="login" />
           <div className="relative grid gap-3 text-sm text-slate-300">
             <div className="flex items-center gap-3">
               <ShieldCheck className="h-5 w-5 text-sky-300" />

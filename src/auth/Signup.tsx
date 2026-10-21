@@ -9,6 +9,7 @@ import AuthSocialButtons from './AuthSocialButtons';
 import { executeRecaptcha } from '../services/recaptcha';
 import { useT } from '../i18n/useT';
 import ScrolithHumanVerification from '../components/human-verification/ScrolithHumanVerification';
+import AuthPosterCard from '../components/auth/AuthPosterCard';
 
 const Signup = () => {
   const t = useT();
@@ -186,6 +187,7 @@ const Signup = () => {
               </p>
             </div>
           </div>
+          <AuthPosterCard mode="signup" />
           <div className="relative grid gap-3 text-sm text-slate-300">
             <div className="flex items-center gap-3">
               <UserPlus className="h-5 w-5 text-sky-300" />
