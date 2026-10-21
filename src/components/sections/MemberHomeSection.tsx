@@ -20,7 +20,7 @@ import {
   VideoIcon as Video,
   XIcon as X
 } from '../icons/ShellIcons';
-import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Coins, Download, Repeat2, Send as SendIcon, ShoppingBag } from 'lucide-react';
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Coins, Download, Palette, Repeat2, Send as SendIcon, ShoppingBag } from 'lucide-react';
 import { useLiveFeature } from '../../context/LiveFeatureContext';
 import { useUser } from '../../context/UserContext';
 import { useContent } from '../../context/ContentContext';
@@ -59,6 +59,7 @@ import PostEngagementBar from '../../community/components/PostEngagementBar';
 import ReactionBar from '../../community/components/ReactionBar';
 import MentionText from '../../community/components/MentionText';
 import MentionHashtagTextarea from '../../community/components/MentionHashtagTextarea';
+import RichCaptionText from '../../community/components/RichCaptionText';
 import FollowButton from '../../community/components/FollowButton';
 import { applyFollowUpdatePayload, resetFollowState, setFollowStatuses, useFollowStateMap } from '../../community/followState';
 import { getDefaultStoryTextDraft, getStoryTextStyle, storyTextFonts, storyTextThemes } from '../../community/storyStyles';
@@ -105,10 +106,21 @@ import {
 import { Phase2Service } from '../../services/phase2';
 import { MemberFeedService } from '../../services/memberFeed';
 import { INLINE_VIDEO_PREVIEW_AUTOPLAY, resolveInlineMedia } from '../../utils/inlineMedia';
-import { resolvePostAttachmentMediaUrl, resolvePostAttachmentPosterUrl } from '../../utils/postAttachmentMedia';
+import {
+  resolvePostAttachmentMediaPair,
+  resolvePostAttachmentMediaUrl,
+  resolvePostAttachmentPosterUrl
+} from '../../utils/postAttachmentMedia';
 import { resolveUserAvatarUrl } from '../../utils/userAvatar';
+import { filterUnfollowedRecommendations, recommendationIsFollowing } from '../../utils/recommendationVisibility';
+import { isPubliclyActiveAvailability, resolvePublicAvailabilityFlags } from '../../utils/publicAvailability';
 import { buildScrollVideoUrl } from '../../utils/scrollVideoRoutes';
 import { hydrateStoryAuthorAvatars } from '../../utils/storyAuthorAvatarHydration';
+import {
+  filterExistingActiveStories,
+  findExistingActiveStoryById,
+  resolveStoryIdentity
+} from '../../utils/storyAvailability';
 import {
   postAiInsightPreferenceToBoolean,
   resolvePostAiInsightPreference,
@@ -121,9 +133,23 @@ import { downloadToDevice } from '../../utils/deviceDownload';
 import GraphicWarningGate from '../media/GraphicWarningGate';
 import InlineAutoplayVideo from '../media/InlineAutoplayVideo';
 import OptimizedImage from '../media/OptimizedImage';
+import EnterpriseAvatar from '../common/EnterpriseAvatar';
+import AvailabilityAvatarBadge from '../common/AvailabilityAvatarBadge';
+import JobCardMedia from '../media/JobCardMedia';
+import VideoCaptionOverlay from '../media/VideoCaptionOverlay';
 import AdVideoPlayer from '../ads/AdVideoPlayer';
 import OverlayActionRailButton from '../media/OverlayActionRailButton';
 import PostOriginPreview from '../post/PostOriginPreview';
+import PostTextBackgroundBody from '../post/PostTextBackgroundBody';
+import PostTextBackgroundPicker from '../composer/PostTextBackgroundPicker';
+import {
+  buildComposerTextBackgroundStyle,
+  buildPostPresentation,
+  isComposerTextBackgroundActive,
+  POST_TEXT_BG_NONE_ID,
+  resolvePostPresentation,
+  shouldRenderTextBackground
+} from '../../utils/postTextBackgrounds';
 import TranslatablePostText from '../translation/TranslatablePostText';
 import type { MemberHomeHighlightItem, MemberHomeHighlightPill } from '../member-home/MemberHomeHighlightsBoard';
 import StoryUploadStatusCard from '../stories/StoryUploadStatusCard';
@@ -138,6 +164,8 @@ import {
 import { DEFAULT_MEMBER_HOME_REGIONS, DEFAULT_MEMBER_HOME_TOPICS } from '../../constants/defaultAudienceOptions';
 import { normalizeContentOfferTags, type OfferTagSelection } from '../../utils/contentOffers';
 import { buildPublicAppUrl } from '../../utils/siteUrl';
+import { buildAttachmentCaptionMap, resolveFirstAttachmentCaption, resolveVideoCaption } from '../../utils/videoCaption';
+import { getJobCardMedia } from '../../utils/jobCardMedia';
 import { getHighlightedCommunityEvents, type HighlightCommunityEvent } from '../../utils/communityEventHighlights';
 import type { CommunityClub, StructuredLocationFields } from '../../types';
 import {
@@ -177,6 +205,7 @@ import {
   composerAttachmentTile,
   composerDraftBanner,
   composerEditor,
+  composerEditorTextBackground,
   composerEntryCard,
   composerEntryShortcut,
   composerEntryTrigger,
@@ -194,11 +223,23 @@ import {
 } from '../composer/composerDraftStore';
 import {
   canPublishWithAttachments,
+  COMPOSER_UPLOAD_ACCEPT,
+  COMPOSER_UPLOAD_MAX_RETRIES,
+  createLocalAttachment,
+  filesFromDataTransfer,
+  generateLocalVideoPoster,
+  hasComposerVideoAttachment,
+  revokeAttachmentPreviews,
   revokePreviewUrl,
-  validateComposerFile
+  validateComposerFile,
+  type ComposerAttachmentPreview
 } from '../composer/composerAttachments';
 import { createPublishGuard } from '../composer/composerPublishGuard';
 import ComposerShell from '../composer/ComposerShell';
+import ComposerMediaPreviewGrid from '../composer/ComposerMediaPreviewGrid';
+import CaptionEnhancementToolbar from '../composer/CaptionEnhancementToolbar';
+import AIComposerAssist from '../ai/AIComposerAssist';
+import ScrolithaMediaEnhanceOffer from '../ai/ScrolithaMediaEnhanceOffer';
 
 const LocationPicker = React.lazy(() => import('../common/LocationPicker'));
 const RepostModal = React.lazy(() => import('../../community/components/RepostModal'));
@@ -289,12 +330,15 @@ type FeedPost = {
     url: string;
     name?: string;
     type?: string;
+    caption?: string | null;
+    description?: string | null;
     mimeType?: string;
     thumbnailUrl?: string | null;
     duration?: number | null;
     width?: number | null;
     height?: number | null;
   }[];
+  attachmentCaptions?: Record<string, string>;
   author?: {
     id?: string;
     username?: string | null;
@@ -324,6 +368,15 @@ type FeedPost = {
   commentPolicy?: string | null;
   repostsEnabled?: boolean;
   offerTags?: any[];
+  presentation?: {
+    type?: string;
+    themeId?: string;
+    background?: string;
+    textColor?: string;
+  } | null;
+  textBackground?: string | null;
+  textColor?: string | null;
+  textBackgroundId?: string | null;
   originalPost?: {
     id?: string;
     authorName?: string | null;
@@ -373,6 +426,9 @@ type ProfileCard = {
   reasons?: string[];
   whyRecommended?: string;
   badge?: string;
+  isFollowing?: boolean;
+  availableForHire?: boolean;
+  weAreHiring?: boolean;
 };
 
 type RecommendedPageCard = {
@@ -401,19 +457,7 @@ type SidebarAdCard = {
   placement?: string;
 };
 
-type PostMediaItem = {
-  localId: string;
-  id?: string;
-  url: string;
-  name?: string;
-  type?: 'image' | 'video' | 'document';
-  mimeType?: string;
-  thumbnailUrl?: string | null;
-  duration?: number | null;
-  progress?: number;
-  uploading?: boolean;
-  error?: string;
-};
+type PostMediaItem = ComposerAttachmentPreview;
 
 type PostDraft = {
   title: string;
@@ -430,9 +474,12 @@ type PostDraft = {
   aiInsightPreference: PostAiInsightPreference;
   offerTags: OfferTagSelection[];
   media: PostMediaItem[];
+  mediaCaption: string;
+  /** Facebook-style text background theme id (`none` = default). */
+  textBackgroundId: string;
 };
 
-type DesktopComposerIntent = 'text' | 'photo' | 'video' | 'article';
+type DesktopComposerIntent = 'text' | 'background' | 'photo' | 'video' | 'article';
 
 type PostAuthorOption = {
   id: string;
@@ -527,7 +574,9 @@ const createEmptyPostDraft = (): PostDraft => ({
   isAIEnhanced: false,
   aiInsightPreference: 'auto',
   offerTags: [],
-  media: []
+  media: [],
+  mediaCaption: '',
+  textBackgroundId: 'none'
 });
 
 const stripHtmlToText = (value: string): string =>
@@ -918,23 +967,19 @@ const resolveStoryAuthorInitial = (story: any) => {
   return first || 'S';
 };
 
-const isStoryActive = (story: any) => {
-  if (!story?.expiresAt) return true;
-  const expiresAt = new Date(story.expiresAt).getTime();
-  return Number.isNaN(expiresAt) ? true : expiresAt > Date.now();
-};
-
 const resolveReelMedia = (scroll: ScrollVideo) => {
   const media = scroll?.media || scroll;
   const inline = resolveInlineMedia(media, { typeHint: 'video' });
   if (inline.src) return inline;
   // Fall back through attachment resolver for nested file/asset payloads.
-  const src = resolvePostAttachmentMediaUrl(media);
+  const mediaPair = resolvePostAttachmentMediaPair(media);
+  const src = mediaPair.url || resolvePostAttachmentMediaUrl(media);
   const poster = resolvePostAttachmentPosterUrl(media);
   return {
     kind: (src ? 'video' : 'unknown') as 'video' | 'image' | 'document' | 'unknown',
     src: src || '',
-    poster: poster || undefined
+    poster: poster || undefined,
+    fallbackSrc: mediaPair.fallbackUrl || undefined
   };
 };
 
@@ -1673,6 +1718,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const [activeStory, setActiveStory] = useState<any | null>(null);
   const [storyMediaPreviewOpen, setStoryMediaPreviewOpen] = useState(false);
   const [storyMediaDraftFile, setStoryMediaDraftFile] = useState<any | null>(null);
+  const [storyMediaOriginalFile, setStoryMediaOriginalFile] = useState<File | null>(null);
   const [storyTextOpen, setStoryTextOpen] = useState(false);
   const [storyEditOpen, setStoryEditOpen] = useState(false);
   const [editingStory, setEditingStory] = useState<any | null>(null);
@@ -1708,6 +1754,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const storyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const storyDeviceInputRef = useRef<HTMLInputElement | null>(null);
   const storyCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const storyRailSectionRef = useRef<HTMLDivElement | null>(null);
+  const storyDeepLinkOpenRef = useRef<string>('');
   const storyRecorderRef = useRef<MediaRecorder | null>(null);
   const storyChunksRef = useRef<Blob[]>([]);
   const [storyRecording, setStoryRecording] = useState(false);
@@ -1725,6 +1773,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const publishGuardRef = useRef(createPublishGuard());
   /** Tracks media count for multi-file validation without stale-closure races. */
   const postMediaCountRef = useRef(0);
+  /** Tracks video attachment reservations for same-picker multi-select races. */
+  const postMediaVideoCountRef = useRef(0);
   /** Latest media snapshot for unmount blob cleanup. */
   const postMediaItemsRef = useRef<PostMediaItem[]>([]);
   /** Stable close/save path — avoid recreating onClose every keystroke (focus trap churn). */
@@ -1791,6 +1841,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const storyAutoAdvanceTimerRef = useRef<number | null>(null);
   const storyLastTapAtRef = useRef(0);
   const [selfProfileCover, setSelfProfileCover] = useState('');
+  const [selfAvailability, setSelfAvailability] = useState<any>(null);
+  const [selfHiring, setSelfHiring] = useState<any>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -1827,11 +1879,20 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       if (!postId || !mediaUrl) return;
       const sourcePayload: PendingPostVideoScrollViewerSource = {
         sourcePostId: postId,
-        fileId: String(media?.fileId || media?.file_id || media?.file?.id || media?.asset?.id || media?.id || '').trim() || null,
+        fileId:
+          String(
+            resolvePostAttachmentMediaPair(media).fileId ||
+              media?.fileId ||
+              media?.file_id ||
+              media?.file?.id ||
+              media?.asset?.id ||
+              media?.id ||
+              ''
+          ).trim() || null,
         mediaUrl,
         thumbnailUrl: String(resolvePostAttachmentPosterUrl(media) || media?.thumbnailUrl || '').trim() || null,
         title: String(post?.title || '').trim() || null,
-        description: String(post?.content || '').trim() || null,
+        description: resolveVideoCaption(post, media) || null,
         location: String(post?.location || '').trim() || null,
         authorName: String(post?.author?.displayName || post?.authorName || '').trim() || null,
         authorAvatar: String(resolveUserAvatarUrl(post?.author || post) || '').trim() || null,
@@ -1977,6 +2038,33 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     [triggerPostDoubleTapLike]
   );
 
+  const onPostVideoTouchEnd = useCallback(
+    (event: React.TouchEvent<HTMLElement>, post: any, media: any, mediaKey: string) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-inline-video-control="true"], button, a, input, textarea, select, label')) return;
+      const postId = String(post?.id || '').trim();
+      if (!postId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const tapKey = `${postId}:${mediaKey}`;
+      const now = Date.now();
+      const previousTap = postMediaLastTapAtRef.current[tapKey] || 0;
+      postMediaLastTapAtRef.current[tapKey] = now;
+      if (previousTap && now - previousTap <= 320) {
+        const existing = postMediaTapTimersRef.current[tapKey];
+        if (existing) {
+          window.clearTimeout(existing);
+          delete postMediaTapTimersRef.current[tapKey];
+        }
+        postMediaLastTapAtRef.current[tapKey] = 0;
+        void triggerPostDoubleTapLike(post);
+        return;
+      }
+      queueOpenPostFromMediaTap(post, media, mediaKey);
+    },
+    [queueOpenPostFromMediaTap, triggerPostDoubleTapLike]
+  );
+
   const memberHomeSettings = (settings as any)?.memberHome || {};
   const memberHomeWidgets = memberHomeSettings.widgets || {};
   const memberHomeFeed = memberHomeSettings.feed || {};
@@ -2022,6 +2110,31 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     return 'for_you';
   })();
 
+  useEffect(() => {
+    const query = new URLSearchParams(location.search);
+    const tab = String(query.get('tab') || query.get('focus') || '').toLowerCase();
+    const storyId = String(query.get('story') || query.get('storyId') || '').trim();
+    const hash = String(location.hash || '').toLowerCase();
+    const wantsStories = tab === 'stories' || tab === 'story' || hash === '#stories' || hash === '#story';
+    if ((!wantsStories && !storyId) || !showStories) return;
+    setStoryRailTab('stories');
+    const target =
+      (storyId ? findExistingActiveStoryById(stories, storyId) : null) ||
+      (wantsStories ? filterExistingActiveStories(stories)[0] || null : null);
+    const targetStoryId = resolveStoryIdentity(target);
+    if (target && targetStoryId && storyDeepLinkOpenRef.current !== targetStoryId) {
+      storyDeepLinkOpenRef.current = targetStoryId;
+      setActiveStory(target);
+      CommunityService.viewStory(targetStoryId).catch((error) => {
+        console.error('Failed to record story view', error);
+      });
+    }
+    const timer = window.setTimeout(() => {
+      storyRailSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [location.hash, location.search, showStories, stories]);
+
   const defaultFeedTab: FeedTab = (() => {
     const explicit = normalizeFeedTabValue(memberHomeFeed.defaultTab);
     if (showIntentModes) {
@@ -2042,7 +2155,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     return 'latest';
   })();
 
-  const adaptiveFeedPageSize = Math.max(6, Math.min(40, Number(profile.feedPageSize || 20)));
+  const adaptiveFeedPageSize = Math.max(10, Math.min(48, Number(profile.feedPageSize || 24)));
   const maxFeedItems = Math.max(4, Math.min(adaptiveFeedPageSize, Number(content?.maxFeedItems ?? adaptiveFeedPageSize) || adaptiveFeedPageSize));
   const maxStories = content?.maxStories ?? 12;
   const configuredMaxReels = Math.max(6, Number((content as any)?.maxReels ?? content?.maxStories ?? 12) || 12);
@@ -2134,6 +2247,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const userHeadline = user?.title || (user as any)?.headline || (user as any)?.tagline || user?.role || 'Member';
   const userLocation = user?.location || (user as any)?.country || '';
   const resolvedUserAvatar = resolveUserAvatarUrl(user);
+  const selfAvailableForHire = isPubliclyActiveAvailability(selfAvailability);
+  const selfWeAreHiring = isPubliclyActiveAvailability(selfHiring);
   const composerTitle = content?.composerTitle || 'Share a quick update or idea with your network.';
   const userPostAuthorOption = useMemo<PostAuthorOption>(
     () => ({
@@ -2218,6 +2333,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   // Keep multi-file attach validation + unmount cleanup in sync with draft media.
   useEffect(() => {
     postMediaCountRef.current = postDraft.media.length;
+    postMediaVideoCountRef.current = hasComposerVideoAttachment(postDraft.media) ? 1 : 0;
     postMediaItemsRef.current = postDraft.media;
   }, [postDraft.media]);
 
@@ -2277,10 +2393,10 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   // Revoke any remaining blob previews on unmount (navigation / teardown).
   useEffect(() => {
     return () => {
-      postMediaItemsRef.current.forEach((item) => revokePreviewUrl(item.url));
+      postMediaItemsRef.current.forEach((item) => revokeAttachmentPreviews(item));
     };
   }, []);
-  const filterActiveStories = useCallback((items: any[]) => items.filter(isStoryActive), []);
+  const filterActiveStories = useCallback((items: any[]) => filterExistingActiveStories(items), []);
   const canManageStory = useCallback((story: any) => {
     if (!user) return false;
     const authorId =
@@ -2488,6 +2604,12 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       post.author?.userId ||
       post.author?.user_id ||
       (authorType === 'user' ? authorId : null);
+    const publicAvailabilityFlags = resolvePublicAvailabilityFlags({
+      availability: post.author?.availability ?? post.author?.professionalAvailability ?? post.availability ?? post.professionalAvailability,
+      hiring: post.author?.hiring ?? post.author?.clientHiringStatus ?? post.hiring ?? post.clientHiringStatus,
+      availableForHire: post.author?.availableForHire ?? post.author?.available_for_hire ?? post.availableForHire ?? post.available_for_hire,
+      weAreHiring: post.author?.weAreHiring ?? post.author?.we_are_hiring ?? post.weAreHiring ?? post.we_are_hiring
+    });
     const aiInsightTextRaw = post.aiInsightText ?? post.ai_insight_text ?? null;
     const aiInsightText =
       aiInsightTextRaw === null || aiInsightTextRaw === undefined
@@ -2572,7 +2694,13 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         type: authorType,
         businessSlug: post.author?.businessSlug || post.businessPage?.slug || null,
         isVerified: Boolean(post.author?.isVerified),
-        isPro: Boolean(post.author?.isPro)
+        isPro: Boolean(post.author?.isPro),
+        availability: post.author?.availability ?? post.author?.professionalAvailability ?? post.availability ?? post.professionalAvailability,
+        professionalAvailability: post.author?.professionalAvailability ?? post.author?.availability ?? post.professionalAvailability ?? post.availability,
+        hiring: post.author?.hiring ?? post.author?.clientHiringStatus ?? post.hiring ?? post.clientHiringStatus,
+        clientHiringStatus: post.author?.clientHiringStatus ?? post.author?.hiring ?? post.clientHiringStatus ?? post.hiring,
+        availableForHire: publicAvailabilityFlags.availableForHire,
+        weAreHiring: publicAvailabilityFlags.weAreHiring
       },
       viewer: {
         isFollowingAuthor: post.viewer?.isFollowingAuthor
@@ -2592,6 +2720,24 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         : dedupeLabels([post.topic || '', ...(tags as string[])]),
       location: post.location || null,
       visibility: post.visibility,
+      presentation: (() => {
+        const resolved = resolvePostPresentation(post);
+        return resolved
+          ? {
+              type: resolved.type,
+              themeId: resolved.themeId,
+              background: resolved.background,
+              textColor: resolved.textColor
+            }
+          : post.presentation || null;
+      })(),
+      textBackground: post.textBackground || post.text_background || resolvePostPresentation(post)?.background || null,
+      textColor: post.textColor || post.text_color || resolvePostPresentation(post)?.textColor || null,
+      textBackgroundId:
+        post.textBackgroundId ||
+        post.text_background_id ||
+        resolvePostPresentation(post)?.themeId ||
+        null,
       commentPolicy: post.commentPolicy || post.comment_policy || 'everyone',
       repostsEnabled: post.repostsEnabled ?? post.reposts_enabled ?? true,
       offerTags: normalizeContentOfferTags(post.offerTags ?? post.offer_tags),
@@ -3597,12 +3743,15 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     return [];
   }, []);
 
-  const loadSidebar = useCallback(async () => {
+  const loadSidebar = useCallback(async (options?: { soft?: boolean }) => {
     if (!user) return;
-    setViewersLoading(true);
-    setMarketplacePreviewLoading(true);
-    setGroupPreviewLoading(true);
-    setProfessionalDiscoveryLoading(true);
+    // Soft refresh keeps existing rails visible (no skeleton flash / layout jump).
+    if (!options?.soft) {
+      setViewersLoading(true);
+      setMarketplacePreviewLoading(true);
+      setGroupPreviewLoading(true);
+      setProfessionalDiscoveryLoading(true);
+    }
     try {
       const tasks: Promise<any>[] = [];
       tasks.push(
@@ -3709,7 +3858,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         await Promise.allSettled(tasks);
 
       const nextProfiles = profilesRes.status === 'fulfilled' && Array.isArray(profilesRes.value)
-        ? profilesRes.value.slice(0, maxProfiles).map((p: any) => {
+        ? filterUnfollowedRecommendations(profilesRes.value).slice(0, maxProfiles).map((p: any) => {
             const intel = resolvePersonRecoPresentation(p);
             return {
               id: (p?.account?.id || p?.entityId || p?.id || p?.userId || p?.user_id || '').toString(),
@@ -3729,7 +3878,10 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                 : 'freelancer') as 'freelancer' | 'client',
               reasons: intel.reasons,
               whyRecommended: intel.whyRecommended,
-              badge: intel.badge
+              badge: intel.badge,
+              isFollowing: recommendationIsFollowing(p),
+              availableForHire: Boolean(p?.account?.availableForHire ?? p?.availableForHire),
+              weAreHiring: Boolean(p?.account?.weAreHiring ?? p?.weAreHiring)
             };
           })
         : [];
@@ -3830,16 +3982,39 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
           [...employerMap.values(), ...freelancerMap.values()].map((profile) => [profile.id, profile])
         ).values()
       ).slice(0, maxProfiles);
-      setProfiles(nextProfiles.length ? nextProfiles : fallbackProfiles);
+      // Soft-safe list replace: never blank existing rails on empty/failed fetches.
+      setProfiles((prev) => {
+        const incoming = nextProfiles.length ? nextProfiles : fallbackProfiles;
+        return !incoming.length && prev.length ? prev : incoming;
+      });
 
       const nextPages =
         pagesRes.status === 'fulfilled' && Array.isArray(pagesRes.value)
-          ? pagesRes.value
+          ? filterUnfollowedRecommendations(pagesRes.value)
               .map((page: any) => normalizeRecommendedPage(page))
               .filter(Boolean)
               .slice(0, maxPagesRecommendations) as RecommendedPageCard[]
           : [];
-      setRecommendedPages(nextPages);
+      setRecommendedPages((prev: RecommendedPageCard[]) => {
+        if (!nextPages.length && prev.length) return prev;
+        const prevById = new Map<string, RecommendedPageCard>(
+          prev.map((entry) => [entry.id, entry])
+        );
+        return nextPages.map((page) => {
+          const prior = prevById.get(page.id);
+          if (!prior) return page;
+          // Prefer local optimistic follow state over a stale server snapshot.
+          if (typeof prior.isFollowing === 'boolean' && prior.isFollowing !== page.isFollowing) {
+            return {
+              ...page,
+              isFollowing: prior.isFollowing,
+              followId: prior.followId ?? page.followId,
+              followersCount: prior.followersCount ?? page.followersCount
+            };
+          }
+          return page;
+        });
+      });
 
       const normalizedAds =
         adsRes.status === 'fulfilled' && Array.isArray(adsRes.value)
@@ -3961,9 +4136,10 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     if (sidebarRefreshTimeoutRef.current) {
       window.clearTimeout(sidebarRefreshTimeoutRef.current);
     }
+    // Soft by default so background reco updates never feel like a full-page refresh.
     sidebarRefreshTimeoutRef.current = window.setTimeout(() => {
-      loadSidebar();
-    }, 120);
+      void loadSidebar({ soft: true });
+    }, 350);
   }, [loadSidebar]);
 
   const buildGroupRecommendationPath = useCallback((group: CommunityClub) => {
@@ -4365,6 +4541,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   useEffect(() => {
     if (!currentUserId) {
       setSelfProfileCover('');
+      setSelfAvailability(null);
+      setSelfHiring(null);
       return;
     }
     let active = true;
@@ -4396,6 +4574,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       );
     };
     const fallbackCover = resolveCoverCandidate(user);
+    setSelfAvailability((user as any)?.availability || (user as any)?.professionalAvailability || null);
+    setSelfHiring((user as any)?.hiring || (user as any)?.clientHiringStatus || null);
     const loadSelfCover = async () => {
       try {
         // Prefer /profile/me for the signed-in owner (same source as dashboard profile).
@@ -4408,6 +4588,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         if (!active) return;
         const resolved = resolveCoverCandidate(profile) || fallbackCover;
         setSelfProfileCover(resolved);
+        setSelfAvailability(profile?.availability || profile?.professionalAvailability || (user as any)?.availability || null);
+        setSelfHiring(profile?.hiring || profile?.clientHiringStatus || (user as any)?.hiring || null);
       } catch {
         if (active) setSelfProfileCover(fallbackCover);
       }
@@ -4459,17 +4641,53 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     }));
   }, []);
 
+  const markPostMediaUploading = useCallback((localId: string, retryCount: number, file: File) => {
+    setPostDraft((prev) => ({
+      ...prev,
+      media: prev.media.map((item) => {
+        if (item.localId !== localId) return item;
+        const currentProgress = Number(item.progress || 0) || 0;
+        return {
+          ...item,
+          uploading: true,
+          progress: retryCount > 0 ? Math.max(currentProgress, 1) : currentProgress,
+          error: undefined,
+          retryCount,
+          file
+        };
+      })
+    }));
+  }, []);
+
+  const updatePostMediaProgress = useCallback((localId: string, percent: number) => {
+    const nextPercent = Math.max(0, Math.min(99, Math.round(Number(percent) || 0)));
+    setPostDraft((prev) => ({
+      ...prev,
+      media: prev.media.map((item) =>
+        item.localId === localId
+          ? { ...item, progress: Math.max(Number(item.progress || 0) || 0, nextPercent), uploading: true }
+          : item
+      )
+    }));
+  }, []);
+
   const addPostMediaItem = useCallback((item: PostMediaItem) => {
-    setPostDraft((prev) => ({ ...prev, media: [...prev.media, item] }));
+    // Text backgrounds are text-only — attaching media clears the theme selection.
+    setPostDraft((prev) => ({
+      ...prev,
+      media: [...prev.media, item],
+      textBackgroundId: POST_TEXT_BG_NONE_ID
+    }));
   }, []);
 
   const handlePostMediaRemove = useCallback((localId: string) => {
     setPostDraft((prev) => {
       const target = prev.media.find((item) => item.localId === localId);
       if (!target) return prev;
-      if (target.url) revokePreviewUrl(target.url);
+      revokeAttachmentPreviews(target);
       const nextMedia = prev.media.filter((item) => item.localId !== localId);
       postMediaCountRef.current = nextMedia.length;
+      postMediaVideoCountRef.current = hasComposerVideoAttachment(nextMedia) ? 1 : 0;
       postMediaItemsRef.current = nextMedia;
       return {
         ...prev,
@@ -4479,74 +4697,174 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     setComposerStatusMessage('Attachment removed.');
   }, []);
 
-  const uploadPostFile = useCallback(async (file: File) => {
-    if (!user) return;
-    const validation = validateComposerFile(file, {
-      currentCount: postMediaCountRef.current
-    });
-    if (!validation.ok) {
-      showNotification('warning', 'Attachments', validation.reason);
-      setComposerStatusMessage(validation.reason);
-      return;
-    }
-    // Reserve a slot immediately so concurrent multi-file picks cannot exceed the limit.
-    postMediaCountRef.current += 1;
-    const localId = `media-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const inferred = validation.kind;
-    const previewUrl = URL.createObjectURL(file);
-    addPostMediaItem({
-      localId,
-      url: previewUrl,
-      name: file.name,
-      type: inferred,
-      uploading: true,
-      progress: 0
-    });
-    setComposerStatusMessage(`Uploading ${file.name}…`);
-    try {
-      const uploaded = await FileService.uploadFile(file, 'community', {
-        role: user.role,
-        visibility: postDraft.visibility === 'private' ? 'private' : 'public',
-        userId: user.id,
-        onProgress: (percent) => {
-          updatePostMedia(localId, { progress: percent });
-          setComposerStatusMessage(`Uploading ${file.name}: ${percent}%`);
-        }
-      });
-      updatePostMedia(localId, {
-        id: uploaded.id,
-        url: uploaded.url,
-        type: uploaded.type === 'video' ? 'video' : uploaded.type === 'image' ? 'image' : 'document',
-        mimeType: uploaded.mimeType || uploaded.mime_type,
-        thumbnailUrl: uploaded.thumbnailUrl || uploaded.thumbnail_url,
-        duration: uploaded.duration,
-        uploading: false,
-        progress: 100,
-        error: undefined
-      });
-      setComposerStatusMessage(`${file.name} uploaded.`);
-    } catch (error: any) {
-      console.error('Upload failed', error);
-      const message = error?.message || 'Upload failed';
-      updatePostMedia(localId, { uploading: false, error: message });
-      setComposerStatusMessage(`${file.name} failed: ${message}`);
-    }
-  }, [addPostMediaItem, postDraft.visibility, showNotification, updatePostMedia, user]);
+  const uploadPostFile = useCallback(
+    async (file: File, opts?: { existingLocalId?: string; retryCount?: number }) => {
+      if (!user) return;
+      const existingLocalId = opts?.existingLocalId;
+      const retryCount = opts?.retryCount ?? 0;
 
-  const handlePostMedia = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-    files.forEach((file) => {
-      void uploadPostFile(file);
-    });
-    if (postMediaInputRef.current) postMediaInputRef.current.value = '';
-  }, [uploadPostFile]);
+      if (!existingLocalId) {
+        const validation = validateComposerFile(file, {
+          currentCount: postMediaCountRef.current,
+          currentVideoCount: postMediaVideoCountRef.current
+        });
+        if (validation.ok === false) {
+          showNotification('warning', 'Attachments', validation.reason);
+          setComposerStatusMessage(validation.reason);
+          return;
+        }
+        // Reserve a slot immediately so concurrent multi-file picks cannot exceed the limit.
+        postMediaCountRef.current += 1;
+        if (validation.kind === 'video') postMediaVideoCountRef.current = 1;
+        const localItem = createLocalAttachment(file, validation.kind);
+        addPostMediaItem(localItem);
+        if (validation.kind === 'video') {
+          void generateLocalVideoPoster(file).then((poster) => {
+            if (poster) updatePostMedia(localItem.localId, { localPosterUrl: poster, thumbnailUrl: poster });
+          });
+        }
+        setComposerStatusMessage(`Uploading ${file.name}…`);
+        return uploadPostFile(file, { existingLocalId: localItem.localId, retryCount: 0 });
+      }
+
+      const localId = existingLocalId;
+      markPostMediaUploading(localId, retryCount, file);
+      setComposerStatusMessage(
+        retryCount > 0 ? `Retrying ${file.name} (attempt ${retryCount + 1})…` : `Uploading ${file.name}…`
+      );
+
+      try {
+        const uploaded = await FileService.uploadFile(file, 'community', {
+          role: user.role,
+          visibility: postDraft.visibility === 'private' ? 'private' : 'public',
+          userId: user.id,
+          onProgress: (percent) => {
+            updatePostMediaProgress(localId, percent);
+            setComposerStatusMessage(`Uploading ${file.name}: ${percent}%`);
+          },
+          onRetry: (attempt) => {
+            setComposerStatusMessage(`Network hiccup — retrying ${file.name} (${attempt})…`);
+          }
+        });
+        const remoteUrl = String(uploaded.url || '').trim();
+        updatePostMedia(localId, {
+          id: uploaded.id,
+          ...(remoteUrl ? { url: remoteUrl } : {}),
+          type: uploaded.type === 'video' ? 'video' : uploaded.type === 'image' ? 'image' : 'document',
+          mimeType: uploaded.mimeType || uploaded.mime_type,
+          thumbnailUrl: uploaded.thumbnailUrl || uploaded.thumbnail_url,
+          duration: uploaded.duration,
+          uploading: false,
+          progress: 100,
+          error: undefined,
+          // Keep the source in memory so the user can request an enhancement
+          // after upload without losing the original or reopening the picker.
+          file
+        });
+        // Revoke local blob only after remote URL is available (keeps preview stable).
+        if (remoteUrl) {
+          setPostDraft((prev) => {
+            const item = prev.media.find((m) => m.localId === localId);
+            if (item?.localPreviewUrl && item.localPreviewUrl !== remoteUrl) {
+              revokePreviewUrl(item.localPreviewUrl);
+              return {
+                ...prev,
+                media: prev.media.map((m) =>
+                  m.localId === localId ? { ...m, localPreviewUrl: undefined, url: remoteUrl } : m
+                )
+              };
+            }
+            return prev;
+          });
+        }
+        setComposerStatusMessage(`${file.name} ready.`);
+      } catch (error: any) {
+        console.error('Upload failed', error);
+        const message = error?.message || 'Upload failed';
+        if (retryCount < COMPOSER_UPLOAD_MAX_RETRIES) {
+          const delay = 400 * (retryCount + 1);
+          setComposerStatusMessage(`Retrying ${file.name} in ${delay}ms…`);
+          window.setTimeout(() => {
+            void uploadPostFile(file, { existingLocalId: localId, retryCount: retryCount + 1 });
+          }, delay);
+          return;
+        }
+        updatePostMedia(localId, { uploading: false, error: message, progress: 0 });
+        setComposerStatusMessage(`${file.name} failed: ${message}`);
+        showNotification('error', 'Attachments', `${file.name}: ${message}`);
+      }
+    },
+    [
+      addPostMediaItem,
+      markPostMediaUploading,
+      postDraft.visibility,
+      showNotification,
+      updatePostMedia,
+      updatePostMediaProgress,
+      user
+    ]
+  );
+
+  const retryPostMedia = useCallback(
+    (localId: string) => {
+      const item = postMediaItemsRef.current.find((m) => m.localId === localId);
+      const file = item?.file;
+      if (!file) {
+        showNotification('warning', 'Attachments', 'Original file is no longer available. Please re-add it.');
+        return;
+      }
+      void uploadPostFile(file, { existingLocalId: localId, retryCount: Number(item?.retryCount || 0) });
+    },
+    [showNotification, uploadPostFile]
+  );
+
+  const enhancePostMedia = useCallback(
+    async (item: ComposerAttachmentPreview, enhancedFile: File) => {
+      if (!item.localId) return;
+      setComposerStatusMessage(`Uploading Scrolitha enhancement for ${enhancedFile.name}…`);
+      const original = { ...item };
+      await uploadPostFile(enhancedFile, { existingLocalId: item.localId, retryCount: 0 });
+      const current = postMediaItemsRef.current.find((entry) => entry.localId === item.localId);
+      if (current?.error) {
+        updatePostMedia(item.localId, {
+          id: original.id,
+          url: original.url,
+          thumbnailUrl: original.thumbnailUrl,
+          type: original.type,
+          mimeType: original.mimeType,
+          duration: original.duration,
+          uploading: false,
+          progress: 100,
+          error: undefined,
+          file: original.file
+        });
+        showNotification('warning', 'Scrolitha', 'Enhancement failed; your original media is still selected.');
+        return;
+      }
+      updatePostMedia(item.localId, { file: enhancedFile, error: undefined });
+      setPostDraft((prev) => ({ ...prev, isAIEnhanced: true }));
+      showNotification('success', 'Scrolitha', 'Enhanced media is ready. Review it before publishing.');
+    },
+    [showNotification, updatePostMedia, uploadPostFile]
+  );
+
+  const handlePostMedia = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files || []);
+      if (!files.length) return;
+      files.forEach((file) => {
+        void uploadPostFile(file);
+      });
+      if (postMediaInputRef.current) postMediaInputRef.current.value = '';
+    },
+    [uploadPostFile]
+  );
 
   const handleComposerDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      const files = Array.from(event.dataTransfer?.files || []);
+      const files = filesFromDataTransfer(event.dataTransfer);
       if (!files.length) return;
       files.forEach((file) => {
         void uploadPostFile(file);
@@ -4557,13 +4875,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
 
   const handleComposerPaste = useCallback(
     (event: React.ClipboardEvent) => {
-      const items = Array.from(event.clipboardData?.items || []);
-      const imageItems = items.filter((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'));
-      if (!imageItems.length) return;
+      const files = filesFromDataTransfer(event.clipboardData as unknown as DataTransfer);
+      if (!files.length) return;
       event.preventDefault();
-      imageItems.forEach((item) => {
-        const file = item.getAsFile();
-        if (file) void uploadPostFile(file);
+      files.forEach((file) => {
+        void uploadPostFile(file);
       });
     },
     [uploadPostFile]
@@ -4757,10 +5073,16 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     setComposerStatusMessage('Publishing…');
     try {
       const submitLocation = composePostLocationValue(postDraft.location, postDraft.region);
+      const textBackgroundId =
+        attachmentFileIds.length > 0
+          ? POST_TEXT_BG_NONE_ID
+          : postDraft.textBackgroundId || POST_TEXT_BG_NONE_ID;
+      const presentation = buildPostPresentation(textBackgroundId);
       const created = await CommunityService.createPost({
         title: postDraft.title.trim(),
         content: postDraft.content,
         attachmentFileIds,
+        attachmentCaptions: buildAttachmentCaptionMap(postDraft.media, postDraft.mediaCaption),
         businessPageId: activePostBusinessPageId || undefined,
         topic: postDraft.topic || undefined,
         location: submitLocation || undefined,
@@ -4769,11 +5091,14 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         graphicWarning: postDraft.graphicWarning,
         isAIEnhanced: postDraft.isAIEnhanced,
         aiInsightEnabled: postAiInsightPreferenceToBoolean(postDraft.aiInsightPreference),
-        offerTags: postDraft.offerTags
+        offerTags: postDraft.offerTags,
+        textBackgroundId: presentation ? presentation.themeId : null,
+        presentation
       });
       // Clear blob previews before wiping draft.
-      postDraft.media.forEach((item) => revokePreviewUrl(item.url));
+      postDraft.media.forEach((item) => revokeAttachmentPreviews(item));
       postMediaCountRef.current = 0;
+      postMediaVideoCountRef.current = 0;
       postMediaItemsRef.current = [];
       setPostDraft(createEmptyPostDraft());
       setPostLocationDetails(null);
@@ -4782,9 +5107,29 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       setComposerDraftNotice(null);
       clearComposerDraft(composerDraftKey);
       if (created) {
-        const normalized = normalizePost(created);
+        // Prefer server presentation; fall back to the draft we just submitted so
+        // list responses that omit presentation still show the chosen background immediately.
+        const normalized = normalizePost({
+          ...created,
+          presentation: created?.presentation || presentation || null,
+          textBackground:
+            created?.textBackground ||
+            created?.text_background ||
+            presentation?.background ||
+            null,
+          textColor:
+            created?.textColor || created?.text_color || presentation?.textColor || null,
+          textBackgroundId:
+            created?.textBackgroundId ||
+            created?.text_background_id ||
+            presentation?.themeId ||
+            null
+        });
         setFeedItems((prev) => [normalized, ...prev.filter((item) => String(item.id) !== String(normalized.id))]);
         setCommentCounts((prev) => ({ ...prev, [normalized.id]: 0 }));
+        navigate(`/post/${encodeURIComponent(String(normalized.id))}`, {
+          state: { post: normalized, fromComposer: true }
+        });
       }
       setComposerStatusMessage('Your update is live.');
       showNotification('success', 'Posts', 'Your update is live.');
@@ -4802,7 +5147,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       setPosting(false);
       publishGuardRef.current.end();
     }
-  }, [activePostBusinessPageId, composerDraftKey, normalizePost, postDraft, showNotification, user]);
+  }, [activePostBusinessPageId, composerDraftKey, navigate, normalizePost, postDraft, showNotification, user]);
 
   const beginEditPost = useCallback((post: FeedPost) => {
     const policyValue = String(post.commentPolicy || 'everyone').toLowerCase();
@@ -4833,7 +5178,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         url: media.url,
         name: media.name,
         type: inferMediaType(media)
-      }))
+      })),
+      mediaCaption: resolveFirstAttachmentCaption(post, post.attachments)
     });
   }, []);
 
@@ -4990,6 +5336,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         content: editingDraft.content,
         attachmentFileIds,
         attachments: attachmentFileIds,
+        attachmentCaptions: buildAttachmentCaptionMap(editingDraft.media, editingDraft.mediaCaption),
         topic: editingDraft.topic || undefined,
         location: editingDraft.location || undefined,
         visibility: editingDraft.visibility,
@@ -5129,6 +5476,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       setStories((prev) =>
         filterActiveStories([created, ...prev.filter((item) => String(item?.id) !== String(created?.id))]).slice(0, maxStories)
       );
+      setStoryRailTab('stories');
+      setActiveStory(created);
       setStoryDraft({
         content: '',
         visibility: 'public',
@@ -5148,6 +5497,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     setStoryMediaUploadBusy(false);
     setStoryMediaUploadLabel('');
     setStoryMediaUploadProgress(0);
+    setStoryMediaOriginalFile(null);
   }, []);
 
   const openStoryEditor = useCallback((story: any, options?: { replaceMedia?: boolean }) => {
@@ -5297,6 +5647,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       setStories((prev) =>
         filterActiveStories([created, ...prev.filter((item) => String(item?.id) !== String(created?.id))]).slice(0, maxStories)
       );
+      setStoryRailTab('stories');
+      setActiveStory(created);
       showNotification('success', 'Stories', 'Your story is live.');
     } catch (error: any) {
       console.error(error);
@@ -5333,7 +5685,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
           }
         });
         setStoryMediaUploadProgress(100);
-        setStoryMediaUploadLabel(`${file.name} is ready to publish.`);
+      setStoryMediaUploadLabel(`${file.name} is ready to publish.`);
+        setStoryMediaOriginalFile(file);
         setStoryMediaDraftFile(uploaded);
         setStoryMediaPreviewOpen(true);
       } catch (error: any) {
@@ -5347,6 +5700,30 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     },
     [clearStoryMediaUploadState, showNotification, storyDraft.visibility, user]
   );
+
+  const enhanceStoryMedia = useCallback(async (enhancedFile: File) => {
+    if (!user) return;
+    setStoryMediaUploadBusy(true);
+    setStoryMediaUploadProgress(0);
+    setStoryMediaUploadLabel(`Uploading ${enhancedFile.name}`);
+    try {
+      const uploaded = await FileService.uploadFile(enhancedFile, 'community', {
+        role: user.role,
+        visibility: isPrivateStoryVisibility(storyDraft.visibility) ? 'private' : 'public',
+        userId: user.id,
+        onProgress: (percent) => setStoryMediaUploadProgress(percent || 0)
+      });
+      setStoryMediaDraftFile(uploaded);
+      setStoryMediaOriginalFile(enhancedFile);
+      setStoryMediaUploadProgress(100);
+      setStoryMediaUploadLabel('Scrolitha enhancement is ready to review.');
+      showNotification('success', 'Scrolitha', 'Enhanced story media is ready.');
+    } catch (error: any) {
+      showNotification('warning', 'Scrolitha', error?.message || 'The original story media is still available.');
+    } finally {
+      setStoryMediaUploadBusy(false);
+    }
+  }, [showNotification, storyDraft.visibility, user]);
 
   const publishStorySelectedMedia = useCallback(async () => {
     if (!user) return;
@@ -5369,6 +5746,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       setStories((prev) =>
         filterActiveStories([created, ...prev.filter((item) => String(item?.id) !== String(created?.id))]).slice(0, maxStories)
       );
+      setStoryRailTab('stories');
+      setActiveStory(created);
       setStoryMediaPreviewOpen(false);
       setStoryMediaDraftFile(null);
       setStoryDraft((prev) => ({ ...prev, content: '' }));
@@ -6200,14 +6579,43 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
 
   useEffect(() => {
     if (!user?.id) return;
+    // Follow/unfollow must stay on-card: update local state only.
+    // Full sidebar reload (loadSidebar) reshuffles rails and feels like a page refresh.
     const onFollowUpdated = (event: Event) => {
       const payload = (event as CustomEvent).detail;
       applyFollowUpdatePayload(payload, user.id);
-      scheduleSidebarRefresh();
+      const targetId = String(payload?.targetUserId || payload?.targetId || '').trim();
+      if (!targetId) return;
+      const explicit = payload?.isFollowing;
+      const isFollowing =
+        typeof explicit === 'boolean'
+          ? explicit
+          : String(payload?.action || '').toLowerCase() === 'follow';
+      const targetType = String(payload?.targetType || 'user').toLowerCase();
+
+      setFollowingIds((prev) => {
+        const has = prev.has(targetId);
+        if (isFollowing && has) return prev;
+        if (!isFollowing && !has) return prev;
+        const next = new Set(prev);
+        if (isFollowing) next.add(targetId);
+        else next.delete(targetId);
+        return next;
+      });
+
+      if (targetType === 'page') {
+        setRecommendedPages((current) =>
+          current.filter((entry) => entry.id !== targetId || !isFollowing)
+        );
+      } else if (isFollowing) {
+        setProfiles((current) => current.filter((entry) => entry.id !== targetId));
+        setEmployers((current) => current.filter((entry) => entry.id !== targetId));
+        setFreelancers((current) => current.filter((entry) => entry.id !== targetId));
+      }
     };
     window.addEventListener('community:follow_updated', onFollowUpdated as EventListener);
     return () => window.removeEventListener('community:follow_updated', onFollowUpdated as EventListener);
-  }, [user?.id, scheduleSidebarRefresh]);
+  }, [user?.id]);
 
   useEffect(() => {
     const onPostMetricsUpdated = (event: Event) => {
@@ -6395,24 +6803,82 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       if (confirm('Log in to follow people?')) window.location.href = '/auth/login';
       return;
     }
-    if (followingIds.has(target.id)) return;
-    setFollowingIds((prev) => new Set(prev).add(target.id));
+    if (followingIds.has(target.id) || pagesFollowBusy[target.id]) return;
+    const targetId = String(target.id || '').trim();
+    if (!targetId) return;
+
+    // Instant optimistic UI — stay on the card, no page/sidebar reload.
+    setPagesFollowBusy((prev) => ({ ...prev, [targetId]: true }));
+    setFollowingIds((prev) => new Set(prev).add(targetId));
     try {
-      await CommunityService.followTarget({ targetType: 'user', targetId: target.id });
+      window.dispatchEvent(
+        new CustomEvent('community:follow_updated', {
+          detail: {
+            actorUserId: user.id,
+            targetUserId: targetId,
+            targetType: 'user',
+            targetId,
+            isFollowing: true,
+            action: 'follow',
+            optimistic: true
+          }
+        })
+      );
+    } catch {
+      // ignore
+    }
+
+    try {
+      await CommunityService.followTarget({ targetType: 'user', targetId });
       void RecoService.submitFeedback({
         surface: 'who_to_follow',
         entityType: target.entityType || 'freelancer',
-        entityId: target.id,
+        entityId: targetId,
         action: 'follow'
       }).catch(() => null);
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: targetId,
+              targetType: 'user',
+              targetId,
+              isFollowing: true,
+              action: 'follow',
+              optimistic: false
+            }
+          })
+        );
+      } catch {
+        // ignore
+      }
       showNotification('success', 'Following', `You are now following ${target.name}.`);
     } catch (error: any) {
       console.error('Follow failed', error);
       setFollowingIds((prev) => {
         const next = new Set(prev);
-        next.delete(target.id);
+        next.delete(targetId);
         return next;
       });
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: targetId,
+              targetType: 'user',
+              targetId,
+              isFollowing: false,
+              action: 'unfollow',
+              optimistic: false,
+              rolledBack: true
+            }
+          })
+        );
+      } catch {
+        // ignore
+      }
       if (isUnauthorizedError(error)) {
         if (confirm('Your session has expired. Log in to continue following users?')) {
           window.location.href = '/auth/login';
@@ -6420,6 +6886,12 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         return;
       }
       showNotification('error', 'Follow failed', getApiErrorMessage(error, 'Unable to follow this profile.'));
+    } finally {
+      setPagesFollowBusy((prev) => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
     }
   };
 
@@ -6433,33 +6905,43 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     const pageId = page.id;
     const wasFollowing = Boolean(page.isFollowing);
     const previousFollowId = page.followId || null;
+    const nextFollowing = !wasFollowing;
 
     setPagesFollowBusy((prev) => ({ ...prev, [pageId]: true }));
+    // Instant optimistic toggle — remain in place on the card.
     setRecommendedPages((current) =>
       current.map((entry) =>
         entry.id === pageId
           ? {
               ...entry,
-              isFollowing: !wasFollowing,
+              isFollowing: nextFollowing,
               followersCount: Math.max(0, (entry.followersCount || 0) + (wasFollowing ? -1 : 1))
             }
           : entry
       )
     );
+    try {
+      window.dispatchEvent(
+        new CustomEvent('community:follow_updated', {
+          detail: {
+            actorUserId: user.id,
+            targetUserId: pageId,
+            targetType: 'page',
+            targetId: pageId,
+            isFollowing: nextFollowing,
+            action: nextFollowing ? 'follow' : 'unfollow',
+            optimistic: true
+          }
+        })
+      );
+    } catch {
+      // ignore
+    }
 
     try {
       if (wasFollowing) {
-        let followId = previousFollowId;
-        if (!followId) {
-          const followingData = await CommunityService.listFollowing('me');
-          const pages = Array.isArray(followingData?.pages) ? followingData.pages : [];
-          const match = pages.find((entry: any) => String(entry?.id || '') === pageId);
-          followId = match?.followId || match?.follow_id || null;
-        }
-        if (!followId) {
-          throw new Error('Unable to locate page follow record.');
-        }
-        await CommunityService.unfollowTarget(followId);
+        // DELETE accepts follow-record id OR page id for the current user.
+        await CommunityService.unfollowTarget(String(previousFollowId || pageId));
         setRecommendedPages((current) =>
           current.map((entry) => (entry.id === pageId ? { ...entry, followId: null, isFollowing: false } : entry))
         );
@@ -6480,6 +6962,23 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         );
         showNotification('success', 'Pages', `Now following ${page.name}.`);
       }
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: pageId,
+              targetType: 'page',
+              targetId: pageId,
+              isFollowing: nextFollowing,
+              action: nextFollowing ? 'follow' : 'unfollow',
+              optimistic: false
+            }
+          })
+        );
+      } catch {
+        // ignore
+      }
     } catch (error: any) {
       setRecommendedPages((current) =>
         current.map((entry) =>
@@ -6493,6 +6992,24 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
             : entry
         )
       );
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: pageId,
+              targetType: 'page',
+              targetId: pageId,
+              isFollowing: wasFollowing,
+              action: wasFollowing ? 'follow' : 'unfollow',
+              optimistic: false,
+              rolledBack: true
+            }
+          })
+        );
+      } catch {
+        // ignore
+      }
       if (isUnauthorizedError(error)) {
         if (confirm('Your session has expired. Log in to continue following pages?')) {
           window.location.href = '/auth/login';
@@ -6613,15 +7130,15 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         const contactName = String(job?.clientName || 'Employer').trim() || 'Employer';
         const canContact = Boolean(contactId);
         const listingImageKey = `job:${listingId}`;
-        const listingImageUrl = resolveListingImageUrl(job);
-        const hasListingImage = Boolean(listingImageUrl) && !listingImageErrors[listingImageKey];
+        const listingMedia = getJobCardMedia(job);
+        const hasListingMedia = Boolean(listingMedia) && !listingImageErrors[listingImageKey];
         return (
           <article
             key={`feed_listing_job_${slotIndex}_${listingId}`}
-            className="rounded-3xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50 via-white to-white p-5 shadow-sm"
+            className="min-w-0 overflow-hidden rounded-2xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50 via-white to-white p-4 shadow-sm sm:rounded-3xl sm:p-5"
           >
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600">Featured Job</p>
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <p className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600">Featured Job</p>
               {job?.isFeatured ? (
                 <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">Promoted</span>
               ) : null}
@@ -6666,22 +7183,15 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
               </div>
               <p className="mt-1 text-xs text-slate-600">Optimize title, clarity, and action intent for stronger applications.</p>
             </div>
-            <Link to={`/jobs/${encodeURIComponent(listingId)}`} className="mt-3 block overflow-hidden rounded-2xl border border-indigo-100 bg-white">
-              {hasListingImage ? (
-                <img
-                  src={listingImageUrl}
+            {hasListingMedia && listingMedia ? (
+              <Link to={`/jobs/${encodeURIComponent(listingId)}`} className="mt-3 block overflow-hidden rounded-2xl border border-indigo-100 bg-white">
+                <JobCardMedia
+                  media={listingMedia}
                   alt={job?.title || 'Featured job'}
-                  className="h-48 w-full object-cover"
-                  loading="lazy"
                   onError={() => markListingImageError(listingImageKey)}
                 />
-              ) : (
-                <div className="flex h-40 w-full items-center justify-center gap-2 bg-gradient-to-br from-indigo-100 via-white to-slate-50 text-indigo-500">
-                  <ImageIcon className="h-5 w-5" />
-                  <span className="text-xs font-semibold uppercase tracking-wide">Job image</span>
-                </div>
-              )}
-            </Link>
+              </Link>
+            ) : null}
             <div className="mt-3 grid grid-cols-3 gap-2">
               <Link
                 to={`/jobs/${encodeURIComponent(listingId)}`}
@@ -6727,10 +7237,10 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       return (
         <article
           key={`feed_listing_gig_${slotIndex}_${listingId}`}
-          className="rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-white p-5 shadow-sm"
+          className="min-w-0 overflow-hidden rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-white p-4 shadow-sm sm:rounded-3xl sm:p-5"
         >
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-600">Featured Gig</p>
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <p className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-600">Featured Gig</p>
             {gig?.isFeatured ? (
               <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Promoted</span>
             ) : null}
@@ -6846,7 +7356,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
           {attachments.map((media) => {
             const type = inferMediaType(media || {});
             const mediaKey = String(media.id || media.url || '');
-            const mediaUrl = String(resolvePostAttachmentMediaUrl(media) || (media as any)?.url || '').trim();
+            const mediaPair = resolvePostAttachmentMediaPair(media);
+            const mediaUrl = String(mediaPair.url || resolvePostAttachmentMediaUrl(media) || (media as any)?.url || '').trim();
+            const fallbackUrl = String(mediaPair.fallbackUrl || '').trim();
             const posterUrl = String(resolvePostAttachmentPosterUrl(media) || (media as any)?.thumbnailUrl || '').trim();
             const durationLabel = formatMediaDuration((media as any)?.duration);
             if (!mediaUrl && type !== 'document') return null;
@@ -6855,6 +7367,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                 posterUrl && !/__video_fallback_thumbnail|video_fallback/i.test(posterUrl)
                   ? posterUrl
                   : undefined;
+              const caption = resolveVideoCaption(post, media);
               return (
                 <div
                   key={media.id || media.url}
@@ -6868,17 +7381,19 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                     if ((event.target as HTMLElement | null)?.closest('[data-inline-video-control=\"true\"]')) return;
                     onPostMediaDoubleClick(event, post, mediaKey);
                   }}
-                  onTouchEnd={(event) => onPostMediaTouchEnd(event, post, mediaKey)}
+                  onTouchEnd={(event) => onPostVideoTouchEnd(event, post, media, mediaKey)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
                       handlePostMediaPrimaryAction(post, media);
                     }
                   }}
-                  className="group relative w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left"
+                  className="group relative w-full cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left"
+                  aria-label="Open video in Scroll"
                 >
                   <InlineAutoplayVideo
                     src={mediaUrl}
+                    fallbackSrc={fallbackUrl}
                     poster={safePoster}
                     className={`${mediaPreviewHeightClass} w-full object-cover`}
                     controls={false}
@@ -6890,7 +7405,25 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                     rootMargin="120px 0px 120px 0px"
                     preloadRootMargin="280px 0px 280px 0px"
                     loadingLabel="Video loading"
+                    overlay={() => (
+                      <div className="w-full px-2 pb-8 sm:px-3 sm:pb-9">
+                        <VideoCaptionOverlay text={caption} compact />
+                      </div>
+                    )}
                   />
+                  <button
+                    type="button"
+                    data-inline-video-control="true"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      handlePostMediaPrimaryAction(post, media);
+                    }}
+                    className="absolute bottom-2 left-2 rounded-full bg-black/70 px-3 py-1.5 text-[11px] font-semibold text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-black/80 group-hover:opacity-100 group-focus-within:opacity-100 sm:opacity-100"
+                    aria-label="Open this video in Scroll"
+                  >
+                    Open in Scroll
+                  </button>
                   {durationLabel && (
                     <span className="absolute bottom-2 right-2 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                       {durationLabel}
@@ -6900,6 +7433,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
               );
             }
             if (type === 'image') {
+              const caption = resolveVideoCaption(post, media);
               return (
                 <button
                   key={media.id || media.url}
@@ -6907,7 +7441,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                   onClick={() => handlePostMediaPrimaryAction(post, media)}
                   onDoubleClick={(event) => onPostMediaDoubleClick(event, post, mediaKey)}
                   onTouchEnd={(event) => onPostMediaTouchEnd(event, post, mediaKey)}
-                  className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left"
+                  className="relative w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left"
                 >
                   <OptimizedImage
                     src={posterUrl || mediaUrl}
@@ -6920,6 +7454,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                     loading="lazy"
                     decoding="async"
                   />
+                  {caption ? (
+                    <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2 sm:px-3 sm:pb-3">
+                      <VideoCaptionOverlay text={caption} compact />
+                    </div>
+                  ) : null}
                 </button>
               );
             }
@@ -6974,11 +7513,25 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
             aiInsightPreference: resolvePostAiInsightPreference(
               saved.aiInsightPreference,
               prev.aiInsightPreference
-            )
+            ),
+            textBackgroundId:
+              typeof saved.textBackgroundId === 'string' && saved.textBackgroundId
+                ? saved.textBackgroundId
+                : prev.textBackgroundId
           }));
           if (saved.authorScopeId) setPostAuthorScopeId(saved.authorScopeId);
           setComposerDraftNotice('Restored your unfinished draft from this session.');
         }
+      }
+      if (intent === 'background') {
+        setPostDraft((prev) => ({
+          ...prev,
+          textBackgroundId:
+            prev.media.some((item) => item.id || item.uploading) ||
+            (Boolean(prev.textBackgroundId) && prev.textBackgroundId !== POST_TEXT_BG_NONE_ID)
+              ? prev.textBackgroundId
+              : 'violet'
+        }));
       }
       composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setDesktopComposerIntent(intent);
@@ -7006,6 +7559,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
       graphicWarning: draft.graphicWarning,
       isAIEnhanced: draft.isAIEnhanced,
       aiInsightPreference: draft.aiInsightPreference,
+      textBackgroundId: draft.textBackgroundId,
       authorScopeId: postAuthorScopeIdRef.current
     });
     setDesktopComposerOpen(false);
@@ -7014,8 +7568,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
 
   const discardComposerDraft = useCallback(() => {
     if (posting || publishGuardRef.current.isBusy()) return;
-    postDraft.media.forEach((item) => revokePreviewUrl(item.url));
+    postDraft.media.forEach((item) => revokeAttachmentPreviews(item));
     postMediaCountRef.current = 0;
+    postMediaVideoCountRef.current = 0;
     postMediaItemsRef.current = [];
     setPostDraft(createEmptyPostDraft());
     setPostLocationDetails(null);
@@ -7086,7 +7641,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
               Start a post
             </button>
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <button type="button" onClick={() => openDesktopComposer('background')} className={composerEntryShortcut}>
+              <Palette className="h-4 w-4 text-violet-600" aria-hidden="true" />
+              Background
+            </button>
             <button type="button" onClick={() => openDesktopComposer('video')} className={composerEntryShortcut}>
               <Video className="h-4 w-4 text-emerald-600" aria-hidden="true" />
               Video
@@ -7251,36 +7810,143 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
             ) : null}
 
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:p-4">
-              <MentionHashtagTextarea
-                ref={composerInputRef}
-                value={postDraft.content}
-                onChange={(nextValue) => setPostDraft((prev) => ({ ...prev, content: nextValue }))}
-                placeholder="What do you want to talk about?"
-                mentionsEnabled={mentionsEnabled}
-                hashtagsEnabled={hashtagsEnabled}
-                className={composerEditor}
-              />
-              <div className="mt-3">
-                <div className="flex flex-wrap gap-2">
-                  {postAiActions.map((action) => (
-                    <button
-                      key={action.mode}
-                      type="button"
-                      onClick={() => void runPostAi(action.mode)}
-                      disabled={aiLoading || posting}
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              {(() => {
+                const hasComposerMedia = postDraft.media.some((item) => item.id || item.uploading);
+                const bgTheme = buildPostPresentation(postDraft.textBackgroundId);
+                // Activate as soon as a theme is selected (empty composer still shows canvas).
+                const textOnlyBackground = isComposerTextBackgroundActive(postDraft.textBackgroundId, {
+                  hasMedia: hasComposerMedia
+                });
+                const textareaStyle = textOnlyBackground
+                  ? buildComposerTextBackgroundStyle(postDraft.textBackgroundId)
+                  : undefined;
+                return (
+                  <>
+                    {hasComposerMedia ? (
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Media caption</p>
+                          <p className="text-[11px] text-slate-500">Captions are optional and appear only when you add one.</p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                          {postDraft.mediaCaption.trim().length} characters
+                        </span>
+                      </div>
+                    ) : null}
+                    <div
+                      className={
+                        textOnlyBackground
+                          ? 'overflow-hidden rounded-2xl ring-1 ring-black/5'
+                          : ''
+                      }
+                      style={
+                        textOnlyBackground && bgTheme
+                          ? { background: bgTheme.background, color: bgTheme.textColor }
+                          : undefined
+                      }
+                      data-testid="composer-text-background-surface"
+                      data-background-active={textOnlyBackground ? 'true' : 'false'}
                     >
-                      <Sparkles className="h-3.5 w-3.5" />
-                      {aiRunningMode === action.mode && aiLoading ? 'Working...' : action.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-3 text-[11px] text-slate-500">
-                  {hashtagsEnabled ? '#tags' : '#tags (disabled by admin)'} and{' '}
-                  {mentionsEnabled ? '@mentions' : '@mentions (disabled by admin)'} supported. AI suggestions never
-                  publish without your approval. Drag and drop or paste images to attach.
-                </p>
-              </div>
+                      <MentionHashtagTextarea
+                        ref={composerInputRef}
+                        value={postDraft.content}
+                        onChange={(nextValue) => setPostDraft((prev) => ({ ...prev, content: nextValue }))}
+                        placeholder={
+                          textOnlyBackground
+                            ? 'Say something…'
+                            : 'What do you want to talk about?'
+                        }
+                        mentionsEnabled={mentionsEnabled}
+                        hashtagsEnabled={hashtagsEnabled}
+                        className={textOnlyBackground ? composerEditorTextBackground : composerEditor}
+                        style={textareaStyle}
+                      />
+                    </div>
+                    {hasComposerMedia ? (
+                      <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                        <MentionHashtagTextarea
+                          value={postDraft.mediaCaption}
+                          onChange={(nextValue) => setPostDraft((prev) => ({ ...prev, mediaCaption: nextValue }))}
+                          placeholder="Optional media caption. Add @mentions, #tags, emojis, or a polished highlight..."
+                          mentionsEnabled={mentionsEnabled}
+                          hashtagsEnabled={hashtagsEnabled}
+                          className="min-h-[88px] w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400"
+                          disabled={posting}
+                        />
+                        <div className="mt-3">
+                          <CaptionEnhancementToolbar
+                            value={postDraft.mediaCaption}
+                            onChange={(nextValue) => setPostDraft((prev) => ({ ...prev, mediaCaption: nextValue }))}
+                            disabled={posting}
+                          />
+                        </div>
+                        {postDraft.mediaCaption.trim() ? (
+                          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs leading-5 text-white">
+                            <span className="font-semibold text-cyan-100">Caption preview:</span>{' '}
+                            <RichCaptionText text={postDraft.mediaCaption.trim()} preserveWhitespace={false} />
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 space-y-3">
+                      <PostTextBackgroundPicker
+                        value={postDraft.textBackgroundId || POST_TEXT_BG_NONE_ID}
+                        disabled={posting || hasComposerMedia}
+                        onChange={(themeId) =>
+                          setPostDraft((prev) => ({
+                            ...prev,
+                            textBackgroundId: themeId || POST_TEXT_BG_NONE_ID
+                          }))
+                        }
+                      />
+                      {hasComposerMedia ? (
+                        <p className="text-[11px] text-slate-500">
+                          Text backgrounds apply to text-only posts. Remove media to enable backgrounds.
+                        </p>
+                      ) : textOnlyBackground ? (
+                        <p className="text-[11px] text-slate-500">
+                          Live preview: your text is typed on the background (Facebook-style).
+                        </p>
+                      ) : null}
+                      <div className="flex flex-wrap gap-2">
+                        {postAiActions.map((action) => (
+                          <button
+                            key={action.mode}
+                            type="button"
+                            onClick={() => void runPostAi(action.mode)}
+                            disabled={aiLoading || posting}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            {aiRunningMode === action.mode && aiLoading ? 'Working...' : action.label}
+                          </button>
+                        ))}
+                      </div>
+                      <AIComposerAssist
+                        value={postDraft.content}
+                        surface="post-member-home"
+                        disabled={posting || aiLoading}
+                        onApplyDraft={(draft, meta) => {
+                          if (meta?.replace === false) {
+                            setPostDraft((prev) => {
+                              const base = String(prev.content || '').trim();
+                              return { ...prev, content: base ? `${base}\n\n${draft}` : draft, isAIEnhanced: true };
+                            });
+                            return;
+                          }
+                          setPostDraft((prev) => ({ ...prev, content: draft, isAIEnhanced: true }));
+                        }}
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        {hashtagsEnabled ? '#tags' : '#tags (disabled by admin)'} and{' '}
+                        {mentionsEnabled ? '@mentions' : '@mentions (disabled by admin)'} supported. No word limit on
+                        post text. Background colors auto-adjust text contrast. AI never publishes without your
+                        approval. Drag, drop, or paste photos, videos, and files — previews appear instantly.
+                      </p>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
                   <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
@@ -7464,117 +8130,14 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                         </label>
                       </div>
 
-                      {postDraft.media.length > 0 ? (
-                        <div className="grid gap-3">
-                          {postDraft.media.map((media) => {
-                            const type = media.type || inferMediaType(media);
-                            const durationLabel = formatMediaDuration(media.duration);
-                            return (
-                              <div
-                                key={media.localId}
-                                className={composerAttachmentTile}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => handlePostMediaRemove(media.localId)}
-                                  className="absolute right-3 top-3 z-10 rounded-full bg-white/90 p-1.5 text-slate-500 shadow-sm hover:text-slate-700"
-                                  aria-label={`Remove attachment ${media.name || ''}`.trim()}
-                                >
-                                  <X className="h-4 w-4" aria-hidden="true" />
-                                </button>
-                                {type === 'video' ? (
-                                  <div
-                                    role="button"
-                                    tabIndex={0}
-                                    onClick={() => setPreviewMedia(toPreviewMedia(media))}
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Enter' || event.key === ' ') {
-                                        event.preventDefault();
-                                        setPreviewMedia(toPreviewMedia(media));
-                                      }
-                                    }}
-                                    className="relative block h-48 w-full cursor-pointer overflow-hidden"
-                                  >
-                                    <InlineAutoplayVideo
-                                      src={
-                                        // Prefer local blob preview while uploading / before durable URL is ready.
-                                        (String(media.url || '').startsWith('blob:') ||
-                                        String(media.url || '').startsWith('data:')
-                                          ? media.url
-                                          : resolvePostAttachmentMediaUrl(media) || resolveAssetUrl(media.url) || media.url) ||
-                                        ''
-                                      }
-                                      poster={
-                                        resolvePostAttachmentPosterUrl(media) ||
-                                        resolveAssetUrl(media.thumbnailUrl) ||
-                                        undefined
-                                      }
-                                      className="h-48 w-full object-cover"
-                                      controls={false}
-                                      loop
-                                      eagerLoad
-                                      autoplayEnabled={INLINE_VIDEO_PREVIEW_AUTOPLAY}
-                                      preload="auto"
-                                      loadingLabel="Video preview loading"
-                                    />
-                                    <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/70 via-slate-950/10 to-transparent px-4 pb-3 pt-10">
-                                      <div className="inline-flex rounded-full bg-white/90 px-3 py-1 text-[11px] font-semibold text-slate-900 shadow-sm">
-                                        Autoplay preview
-                                      </div>
-                                    </div>
-                                    {durationLabel ? (
-                                      <span className="absolute bottom-3 right-3 rounded bg-black/75 px-2 py-1 text-[10px] font-semibold text-white">
-                                        {durationLabel}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                ) : type === 'image' ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => setPreviewMedia(toPreviewMedia(media))}
-                                    className="block h-48 w-full"
-                                  >
-                                    <OptimizedImage
-                                      src={resolvePostAttachmentPosterUrl(media) || resolveAssetUrl(media.thumbnailUrl || media.url) || ''}
-                                      fallbackSrc={resolvePostAttachmentMediaUrl(media) || resolveAssetUrl(media.url) || ''}
-                                      alt={media.name || 'Post media'}
-                                      width={960}
-                                      height={540}
-                                      sizes="(max-width: 1280px) 100vw, 420px"
-                                      className="h-48 w-full object-cover"
-                                      loading="lazy"
-                                      decoding="async"
-                                    />
-                                  </button>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setPreviewMedia(toPreviewMedia(media))}
-                                    className="flex h-40 w-full flex-col items-center justify-center p-4 text-xs text-slate-500"
-                                  >
-                                    <FileText className="mb-2 h-6 w-6 text-slate-400" />
-                                    {media.name || 'Attachment'}
-                                  </button>
-                                )}
-                                {media.uploading ? (
-                                  <div className="absolute inset-0 flex items-center justify-center bg-white/75 text-xs font-semibold text-slate-600">
-                                    Uploading {media.progress ?? 0}%
-                                  </div>
-                                ) : null}
-                                {media.error ? (
-                                  <div className="absolute inset-x-0 bottom-0 bg-red-50 px-3 py-2 text-[10px] text-red-600">
-                                    {media.error}
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="rounded-[24px] border border-dashed border-slate-300 bg-slate-50/80 p-6 text-center text-sm text-slate-500">
-                          Add media to make your post richer across desktop and mobile.
-                        </div>
-                      )}
+                      <ComposerMediaPreviewGrid
+                        media={postDraft.media}
+                        onRemove={handlePostMediaRemove}
+                        onRetry={retryPostMedia}
+                        onOpenPreview={(item) => setPreviewMedia(toPreviewMedia(item))}
+                        onEnhance={enhancePostMedia}
+                        emptyLabel="Add photos, videos, or files — previews appear instantly while uploading."
+                      />
                     </div>
                   </div>
 
@@ -7610,6 +8173,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     handlePostAuthorScopeChange,
     handlePostLocationDetailsChange,
     handlePostMediaRemove,
+    enhancePostMedia,
+    retryPostMedia,
     hashtagsEnabled,
     mentionsEnabled,
     openDesktopComposer,
@@ -7776,6 +8341,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     });
 
     if (topJob) {
+      const topJobMedia = getJobCardMedia(topJob);
       items.push({
         id: `desktop-job:${topJob.id}`,
         eyebrow: 'Featured jobs',
@@ -7785,8 +8351,10 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         badge: 'Live',
         ctaLabel: 'Browse jobs',
         href: topJob?.id ? `/jobs/${encodeURIComponent(topJob.id)}` : '/browse-jobs',
-        mediaUrl: resolveListingImageUrl(topJob),
-        icon: <Briefcase className="h-4 w-4" />,
+        mediaUrl: topJobMedia?.thumbnailUrl || topJobMedia?.url || '',
+        videoUrl: topJobMedia?.type === 'video' ? topJobMedia.url : '',
+        posterUrl: topJobMedia?.thumbnailUrl || '',
+        icon: topJobMedia ? <Briefcase className="h-4 w-4" /> : undefined,
         tone: 'blue'
       });
     }
@@ -7969,7 +8537,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         <div className="absolute top-16 right-[-10%] h-80 w-80 rounded-full bg-[radial-gradient(circle_at_center,#fef3c7,transparent_70%)]" />
       </div>
 
-      <div className={enterprisePageShell} data-testid="scrolith-member-home-shell">
+      <div
+        className={`${enterprisePageShell} mobile-home-feed`}
+        data-testid="scrolith-member-home-shell"
+        style={{ touchAction: 'pan-y pinch-zoom', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+      >
         <div className={`relative z-30 mb-6 overflow-visible flex flex-col gap-4 ${enterprisePanel} ${enterprisePanelPadding} bg-white/95 rise-fade`}>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="min-w-0 lg:flex-1">
@@ -8163,28 +8735,34 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                   top-full + -translate-y-[40%] pins the avatar to the cover bottom edge
                   with ~40% of the avatar over the cover (proportional on all breakpoints).
                 */}
-                <div
-                  className="absolute left-1/2 top-full z-20 h-[4.5rem] w-[4.5rem] -translate-x-1/2 -translate-y-[40%] overflow-hidden rounded-full bg-slate-100 shadow-[0_4px_14px_rgba(15,23,42,0.18)] ring-[5px] ring-white sm:h-20 sm:w-20"
+                <AvailabilityAvatarBadge
+                  availableForHire={selfAvailableForHire}
+                  weAreHiring={selfWeAreHiring}
+                  accountType={(user as any)?.role}
+                  size="lg"
+                  className="absolute left-1/2 top-full z-20 h-[4.5rem] w-[4.5rem] -translate-x-1/2 -translate-y-[40%] rounded-full bg-slate-100 shadow-[0_4px_14px_rgba(15,23,42,0.18)] ring-[5px] ring-white sm:h-20 sm:w-20"
                   data-testid="scrolith-member-home-profile-avatar"
                   aria-hidden={!resolvedUserAvatar}
                 >
-                  {resolvedUserAvatar ? (
-                    <OptimizedImage
-                      src={resolvedUserAvatar}
-                      alt={user.name || 'User'}
-                      width={160}
-                      height={160}
-                      sizes="80px"
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-slate-100">
-                      <Users className="h-7 w-7 text-slate-400" />
-                    </div>
-                  )}
-                </div>
+                  <div className="h-full w-full overflow-hidden rounded-full bg-slate-100">
+                    {resolvedUserAvatar ? (
+                      <OptimizedImage
+                        src={resolvedUserAvatar}
+                        alt={user.name || 'User'}
+                        width={160}
+                        height={160}
+                        sizes="80px"
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center bg-slate-100">
+                        <Users className="h-7 w-7 text-slate-400" />
+                      </div>
+                    )}
+                  </div>
+                </AvailabilityAvatarBadge>
               </div>
               {/*
                 Reserve space for the avatar portion that hangs below the cover (~60% of
@@ -8615,7 +9193,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
             data-testid="scrolith-member-home-feed"
           >
             {showSlider && sliderItems.length > 0 && (
-              <div className="rounded-3xl border border-white/70 bg-white p-3 sm:p-4 shadow-sm rise-fade-delay-1">
+              <div
+                id="stories"
+                ref={storyRailSectionRef}
+                className="scroll-mt-24 rounded-3xl border border-white/70 bg-white p-3 sm:p-4 shadow-sm rise-fade-delay-1"
+              >
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold text-slate-900">{sliderTitle}</div>
                   <span className="text-sm text-slate-400">{sliderItems.length} highlight{sliderItems.length === 1 ? '' : 's'}</span>
@@ -8808,6 +9390,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                                 <InlineAutoplayVideo
                                   key={String(story?.id || media.src)}
                                   src={media.src}
+                                  fallbackSrc={media.fallbackSrc}
                                   poster={media.poster}
                                   className="h-full w-full object-cover"
                                   containerClassName="h-full w-full"
@@ -8860,6 +9443,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                             return (
                               <StoryAuthorAvatar
                                 src={authorAvatar}
+                                user={story?.author || story}
+                                availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                                weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                                 name={authorName}
                                 initial={authorInitial}
                                 className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border-2 border-white/90 bg-slate-700 text-[11px] font-semibold text-white shadow"
@@ -8911,6 +9497,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                               <InlineAutoplayVideo
                                 key={String(scroll?.id || media.src)}
                                 src={media.src}
+                                fallbackSrc={media.fallbackSrc}
                                 poster={media.poster}
                                 className="h-full w-full object-cover"
                                 containerClassName="h-full w-full"
@@ -8927,21 +9514,17 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                             const authorAvatar = resolveReelAuthorAvatar(scroll);
                             const authorInitial = resolveReelAuthorInitial(scroll);
                             return (
-                              <div className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border-2 border-blue-300/90 bg-slate-700 text-[11px] font-semibold text-white shadow">
-                                {authorAvatar ? (
-                                  <OptimizedImage
-                                    src={authorAvatar}
-                                    alt={authorName}
-                                    width={96}
-                                    height={96}
-                                    sizes="48px"
-                                    className="h-full w-full object-cover"
-                                    loading="lazy"
-                                    decoding="async"
-                                  />
-                                ) : (
-                                  <span>{authorInitial}</span>
-                                )}
+                              <div className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-visible rounded-full border-2 border-blue-300/90 bg-slate-700 text-[11px] font-semibold text-white shadow">
+                                <EnterpriseAvatar
+                                  user={(scroll as any)?.author || scroll}
+                                  src={authorAvatar}
+                                  name={authorName}
+                                  size="sm"
+                                  availableForHire={Boolean((scroll as any)?.author?.availableForHire ?? (scroll as any)?.availableForHire)}
+                                  weAreHiring={Boolean((scroll as any)?.author?.weAreHiring ?? (scroll as any)?.weAreHiring)}
+                                  className="!h-full !w-full !text-[inherit]"
+                                  alt={authorName || authorInitial}
+                                />
                               </div>
                             );
                           })()}
@@ -9204,7 +9787,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                     readRenderableText((post as any).description) ||
                     readRenderableText(post.originalPost?.content) ||
                     '';
-                  const resolvedAuthor = {
+                  const resolvedAuthor: React.ComponentProps<typeof PostHeader>['author'] = {
                     id: post.author?.id || post.authorId,
                     username: post.author?.username ?? post.authorUsername,
                     displayName: post.author?.displayName || post.authorName,
@@ -9212,7 +9795,16 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                     type: post.author?.type || (post.businessPage ? 'business' : 'user'),
                     businessSlug: post.author?.businessSlug || post.businessPage?.slug || null,
                     isVerified: post.author?.isVerified,
-                    isPro: post.author?.isPro
+                    isPro: post.author?.isPro,
+                    availability: (post.author as any)?.availability ?? (post.author as any)?.professionalAvailability ?? (post as any)?.availability ?? (post as any)?.professionalAvailability,
+                    professionalAvailability: (post.author as any)?.professionalAvailability ?? (post.author as any)?.availability ?? (post as any)?.professionalAvailability ?? (post as any)?.availability,
+                    hiring: (post.author as any)?.hiring ?? (post.author as any)?.clientHiringStatus ?? (post as any)?.hiring ?? (post as any)?.clientHiringStatus,
+                    clientHiringStatus: (post.author as any)?.clientHiringStatus ?? (post.author as any)?.hiring ?? (post as any)?.clientHiringStatus ?? (post as any)?.hiring,
+                    availableForHire: Boolean((post.author as any)?.availableForHire ?? (post.author as any)?.available_for_hire ?? (post as any)?.availableForHire ?? (post as any)?.available_for_hire),
+                    weAreHiring: Boolean((post.author as any)?.weAreHiring ?? (post.author as any)?.we_are_hiring ?? (post as any)?.weAreHiring ?? (post as any)?.we_are_hiring),
+                    kycStatus: (post.author as any)?.kycStatus ?? (post.author as any)?.kyc_status,
+                    verificationStatus:
+                      (post.author as any)?.verificationStatus ?? (post.author as any)?.verification_status
                   };
                   const authorTypeNorm = String(resolvedAuthor.type || 'user').toLowerCase();
                   const followTargetId = String(resolvedAuthor.id || '').trim();
@@ -9448,6 +10040,37 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                               </button>
                             </div>
                             {editingDraft?.media?.length ? (
+                              <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                    Media caption
+                                  </p>
+                                  <span className="text-[11px] font-semibold text-slate-500">
+                                    {(editingDraft?.mediaCaption || '').trim().length} characters
+                                  </span>
+                                </div>
+                                <MentionHashtagTextarea
+                                  value={editingDraft?.mediaCaption || ''}
+                                  onChange={(nextValue) =>
+                                    setEditingDraft((prev) => (prev ? { ...prev, mediaCaption: nextValue } : prev))
+                                  }
+                                  mentionsEnabled={mentionsEnabled}
+                                  hashtagsEnabled={hashtagsEnabled}
+                                  placeholder="Optional media caption. Add @mentions, #tags, emojis, or a polished highlight..."
+                                  className="min-h-[88px] w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 outline-none focus:border-slate-400"
+                                />
+                                <div className="mt-3">
+                                  <CaptionEnhancementToolbar
+                                    value={editingDraft?.mediaCaption || ''}
+                                    onChange={(nextValue) =>
+                                      setEditingDraft((prev) => (prev ? { ...prev, mediaCaption: nextValue } : prev))
+                                    }
+                                    disabled={postBusy}
+                                  />
+                                </div>
+                              </div>
+                            ) : null}
+                            {editingDraft?.media?.length ? (
                               <div className="grid gap-3 md:grid-cols-2">
                                 {editingDraft.media.map((media) => {
                                   const type = media.type || inferMediaType(media);
@@ -9567,6 +10190,26 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                             ) : null}
                             <PostOriginPreview originalPost={post.originalPost} />
                             {postContent || postTitle ? (
+                              shouldRenderTextBackground(post) ? (
+                                <div>
+                                  {postTitle ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => openPostCard(post)}
+                                      className={`mb-2 block w-full text-left transition hover:opacity-90 [overflow-wrap:anywhere] ${postCardType.title}`}
+                                    >
+                                      {postTitle}
+                                    </button>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    onClick={(event) => openPostFromText(event as any, post)}
+                                    className="block w-full text-left"
+                                  >
+                                    <PostTextBackgroundBody post={post} content={String(postContent || '')} />
+                                  </button>
+                                </div>
+                              ) : (
                               <TranslatablePostText
                                 post={post}
                                 viewerId={user?.id}
@@ -9586,6 +10229,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                                   }
                                 }}
                               />
+                              )
                             ) : !post.attachments?.length ? (
                               <button
                                 type="button"
@@ -9991,18 +10635,35 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                             <p className="truncate text-sm text-slate-500">{page.tagline || page.industry || 'Business page'}</p>
                             <p className="text-xs text-slate-400">{page.followersCount || 0} followers</p>
                           </div>
-                          <button
-                            type="button"
+                          <FollowButton
+                            targetUserId={page.id}
+                            targetType="page"
+                            currentUserId={user?.id}
+                            initialIsFollowing={Boolean(page.isFollowing || followStateMap[page.id])}
                             disabled={Boolean(pagesFollowBusy[page.id])}
-                            onClick={() => handlePageFollow(page)}
-                            className={`min-h-10 shrink-0 rounded-full border px-3.5 py-2 text-xs font-semibold uppercase ${
-                              page.isFollowing
-                                ? 'border-slate-300 text-slate-600'
-                                : 'border-blue-200 text-blue-600'
-                            } disabled:cursor-not-allowed disabled:opacity-60`}
-                          >
-                            {pagesFollowBusy[page.id] ? 'Please wait...' : page.isFollowing ? 'Following' : 'Follow'}
-                          </button>
+                            onRequireLogin={() => {
+                              if (confirm('Log in to follow pages?')) window.location.href = '/auth/login';
+                            }}
+                            onSuccess={(isFollowingNow) => {
+                              void RecoService.submitFeedback({
+                                surface: 'member_home',
+                                entityType: 'page',
+                                entityId: page.id,
+                                action: isFollowingNow ? 'follow' : 'dismiss'
+                              }).catch(() => null);
+                              showNotification(
+                                'success',
+                                'Pages',
+                                isFollowingNow
+                                  ? `Now following ${page.name}.`
+                                  : `Unfollowed ${page.name}.`
+                              );
+                            }}
+                            onError={(message) =>
+                              showNotification('error', 'Pages', message || 'Unable to update page follow status.')
+                            }
+                            className="min-h-10 shrink-0 uppercase"
+                          />
                         </div>
                         <RecoSignalChips reasons={page.reasons} whyRecommended={page.whyRecommended} />
                       </div>
@@ -10070,22 +10731,21 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                       <div key={profile.id} className="rounded-xl border border-slate-200/80 p-3">
                         <div className="flex items-center justify-between gap-3">
                           <Link to={buildProfileUrl(profile)} className="flex min-w-0 items-center gap-3">
-                            <div className="h-12 w-12 overflow-hidden rounded-full bg-slate-100">
-                              {profile.avatar ? (
-                                <OptimizedImage
-                                  src={resolveAssetUrl(profile.avatar)}
-                                  alt={profile.name}
-                                  width={96}
-                                  height={96}
-                                  sizes="48px"
-                                  className="h-full w-full object-cover"
-                                  loading="lazy"
-                                  decoding="async"
-                                />
-                              ) : (
-                                <Users className="mx-auto mt-3 h-5 w-5 text-slate-400" />
-                              )}
-                            </div>
+                            <AvailabilityAvatarBadge
+                              availableForHire={profile.availableForHire}
+                              weAreHiring={profile.weAreHiring}
+                              accountType={profile.entityType}
+                              size="sm"
+                            >
+                              <EnterpriseAvatar
+                                src={profile.avatar ? resolveAssetUrl(profile.avatar) : undefined}
+                                name={profile.name}
+                                user={{ id: profile.id, username: profile.username, avatar: profile.avatar }}
+                                size="sm"
+                                className="border border-slate-200"
+                                loading="lazy"
+                              />
+                            </AvailabilityAvatarBadge>
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <p className="truncate text-[15px] font-semibold text-slate-900">{profile.name}</p>
@@ -10096,16 +10756,54 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                                 ) : null}
                               </div>
                               <p className="truncate text-sm text-slate-500">{profile.subtitle}</p>
+                              {(profile.availableForHire || profile.weAreHiring) && (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {profile.availableForHire ? (
+                                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                      Available for hire
+                                    </span>
+                                  ) : null}
+                                  {profile.weAreHiring ? (
+                                    <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                                      We are hiring
+                                    </span>
+                                  ) : null}
+                                </div>
+                              )}
                             </div>
                           </Link>
                           <div className="flex gap-2">
+                            <FollowButton
+                              targetUserId={profile.id}
+                              targetType="user"
+                              currentUserId={user?.id}
+                              initialIsFollowing={
+                                followingIds.has(profile.id) || followStateMap[profile.id] === true
+                              }
+                              onRequireLogin={() => {
+                                if (confirm('Log in to follow people?')) window.location.href = '/auth/login';
+                              }}
+                              onSuccess={(isFollowingNow) => {
+                                if (!isFollowingNow) return;
+                                void RecoService.submitFeedback({
+                                  surface: 'who_to_follow',
+                                  entityType: profile.entityType || 'freelancer',
+                                  entityId: profile.id,
+                                  action: 'follow'
+                                }).catch(() => null);
+                                showNotification(
+                                  'success',
+                                  'Following',
+                                  `You are now following ${profile.name}.`
+                                );
+                              }}
+                              onError={(message) =>
+                                showNotification('error', 'Follow failed', message || 'Unable to follow this profile.')
+                              }
+                              className="min-h-10 uppercase"
+                            />
                             <button
-                              onClick={() => handleFollow(profile)}
-                              className="min-h-10 rounded-full border border-slate-200 px-3.5 py-2 text-xs font-semibold uppercase text-slate-700"
-                            >
-                              {followingIds.has(profile.id) ? 'Following' : 'Follow'}
-                            </button>
-                            <button
+                              type="button"
                               onClick={() => handleMessage(profile)}
                               className="rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold uppercase text-white"
                             >
@@ -10198,13 +10896,20 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                           </div>
                         </div>
                         <div className="flex gap-2">
+                          <FollowButton
+                            targetUserId={employer.id}
+                            targetType="user"
+                            currentUserId={user?.id}
+                            initialIsFollowing={
+                              followingIds.has(employer.id) || followStateMap[employer.id] === true
+                            }
+                            onRequireLogin={() => {
+                              if (confirm('Log in to follow people?')) window.location.href = '/auth/login';
+                            }}
+                            className="h-7 min-w-[5.5rem] px-2 text-[10px] uppercase"
+                          />
                           <button
-                            onClick={() => handleFollow(employer)}
-                            className="rounded-full border border-slate-200 px-3 py-1 text-[10px] font-semibold uppercase text-slate-600"
-                          >
-                            {followingIds.has(employer.id) ? 'Following' : 'Follow'}
-                          </button>
-                          <button
+                            type="button"
                             onClick={() => handleMessage(employer)}
                             className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase text-white"
                           >
@@ -10288,13 +10993,20 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                           </div>
                         </div>
                         <div className="flex gap-2">
+                          <FollowButton
+                            targetUserId={freelancer.id}
+                            targetType="user"
+                            currentUserId={user?.id}
+                            initialIsFollowing={
+                              followingIds.has(freelancer.id) || followStateMap[freelancer.id] === true
+                            }
+                            onRequireLogin={() => {
+                              if (confirm('Log in to follow people?')) window.location.href = '/auth/login';
+                            }}
+                            className="h-7 min-w-[5.5rem] px-2 text-[10px] uppercase"
+                          />
                           <button
-                            onClick={() => handleFollow(freelancer)}
-                            className="rounded-full border border-slate-200 px-3 py-1 text-[10px] font-semibold uppercase text-slate-600"
-                          >
-                            {followingIds.has(freelancer.id) ? 'Following' : 'Follow'}
-                          </button>
-                          <button
+                            type="button"
                             onClick={() => handleMessage(freelancer)}
                             className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-semibold uppercase text-white"
                           >
@@ -10410,7 +11122,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         ref={postMediaInputRef}
         type="file"
         multiple
-        accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar"
+        accept={COMPOSER_UPLOAD_ACCEPT}
         className="hidden"
         onChange={handlePostMedia}
       />
@@ -10460,6 +11172,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
             onCreated={(created) => {
               setReels((prev) => [created, ...prev.filter((item) => item.id !== created.id)].slice(0, maxReels));
               setStoryRailTab('reels');
+              if (created?.id) {
+                navigate(buildScrollVideoUrl(String(created.id)));
+              }
             }}
           />
         </Suspense>
@@ -10521,6 +11236,11 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                   }
                 />
               ) : null}
+              <ScrolithaMediaEnhanceOffer
+                file={storyMediaOriginalFile}
+                kind={String(storyMediaOriginalFile?.type || '').toLowerCase().startsWith('video/') ? 'video' : 'image'}
+                onAccept={enhanceStoryMedia}
+              />
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
                 {(() => {
                   const url =
@@ -10831,6 +11551,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                         <InlineAutoplayVideo
                           key={String(editingStory?.id || media.src)}
                           src={media.src}
+                          fallbackSrc={media.fallbackSrc}
                           poster={media.poster}
                           className="h-44 sm:h-48 w-full object-cover"
                           containerClassName="h-44 sm:h-48 w-full"

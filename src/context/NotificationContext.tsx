@@ -5,6 +5,7 @@ import { useNetworkStatus } from './NetworkStatusContext';
 import { useUser } from './UserContext';
 import { useSocket } from './SocketContext';
 import { NotificationService, notificationsApi } from '../services/notifications';
+import { isLoginApprovalNotification, openLoginApprovalNotification } from '../utils/notificationRouting';
 import {
   formatNotificationTitleWithCategory,
   getNotificationCategoryMeta
@@ -310,7 +311,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       persist: true,
       localOnly: true
     });
-  }, [addNotification, showMessageReceiptNotification]);
+    const normalized = normalizeNotification({ ...payload, metadata: data });
+    if (isLoginApprovalNotification(normalized)) {
+      openLoginApprovalNotification(normalized);
+    }
+  }, [addNotification, normalizeNotification, showMessageReceiptNotification]);
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) {
@@ -403,6 +408,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   useEffect(() => {
     if (!socket || !isAuthenticated || !user?.id) return;
 
+    // These values are used by realtime handlers as well as the toast helper.
+    // Keep them scoped to the effect so role changes cannot leave stale routes.
+    const basePath = getRoleBasePath(user?.role);
+    const isAdmin = String(user?.role || '').toLowerCase().includes('admin');
+
     const onNotificationsNew = (payload: any) => {
       const normalized = normalizeNotification(payload);
       const id = String(normalized.id || '').trim();
@@ -424,6 +434,9 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         toast: normalizedType !== 'message' && normalizedType !== 'new_message',
         persist: true
       });
+      if (isLoginApprovalNotification(normalized)) {
+        openLoginApprovalNotification(normalized);
+      }
     };
 
     const onMessagesNew = (payload: any) => {
@@ -535,7 +548,16 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       socket.off('kyc.updated', onKycUpdated);
       socket.off('kyc.submitted', onKycSubmitted);
     };
-  }, [socket, isAuthenticated, user?.id, addNotification, normalizeNotification, showMessageReceiptNotification]);
+  }, [
+    socket,
+    isAuthenticated,
+    user?.id,
+    user?.role,
+    addNotification,
+    normalizeNotification,
+    showMessageReceiptNotification,
+    getRoleBasePath
+  ]);
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id) return;
@@ -549,6 +571,9 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         ''
       ).trim().toLowerCase();
       if (!type) return;
+      // Incoming calls have their own global call overlay. Do not also render
+      // them as an ordinary notification toast.
+      if (type === 'call_ringing') return;
       showForegroundPushNotification(payload);
     };
 

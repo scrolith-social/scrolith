@@ -188,6 +188,8 @@ const MarketplaceManagement: React.FC = () => {
   const [settings, setSettings] = useState<MarketplaceSettings | null>(null);
   const [search, setSearch] = useState('');
   const [selectedListingId, setSelectedListingId] = useState('');
+  const [selectedListingIds, setSelectedListingIds] = useState<string[]>([]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [listingDraft, setListingDraft] = useState<ListingDraft>(emptyListingDraft());
   const [categoryDraft, setCategoryDraft] = useState<CategoryDraft>(emptyCategoryDraft());
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>(emptySettingsDraft());
@@ -336,6 +338,17 @@ const MarketplaceManagement: React.FC = () => {
     });
   }, [listings, search]);
 
+  const visibleListingIds = useMemo(() => filteredListings.map((listing) => listing.id), [filteredListings]);
+  const allVisibleListingsSelected = visibleListingIds.length > 0 && visibleListingIds.every((id) => selectedListingIds.includes(id));
+  const activeCategoryIds = useMemo(
+    () => categories.filter((category) => category.isActive !== false).map((category) => category.id),
+    [categories]
+  );
+  const inactiveCategoryIds = useMemo(
+    () => categories.filter((category) => category.isActive === false).map((category) => category.id),
+    [categories]
+  );
+
   const stats = useMemo(() => {
     const byStatus = (status: string) => listings.filter((item) => String(item.status || '').toLowerCase() === status).length;
     return {
@@ -407,6 +420,7 @@ const MarketplaceManagement: React.FC = () => {
     action: 'approve' | 'reject' | 'suspend' | 'restore' | 'feature' | 'unfeature' | 'delete',
     listingId: string
   ) => {
+    if (action === 'delete' && !window.confirm('Remove this listing? It will be hidden from the marketplace and can be restored by an admin.')) return;
     setSaving(true);
     try {
       let ok = false;
@@ -434,7 +448,10 @@ const MarketplaceManagement: React.FC = () => {
         ...categoryDraft,
         name: String(categoryDraft.name || '').trim(),
         slug: String(categoryDraft.slug || '').trim(),
-        description: String(categoryDraft.description || '').trim() || null
+        description: String(categoryDraft.description || '').trim() || null,
+        sortOrder: Number(categoryDraft.sortOrder || 0),
+        parentId: String(categoryDraft.parentId || '').trim() || null,
+        requiresApproval: Boolean(categoryDraft.requiresApproval)
       };
       const ok = categoryDraft.id
         ? await AdminService.updateMarketplaceCategory(categoryDraft.id, payload)
@@ -451,6 +468,8 @@ const MarketplaceManagement: React.FC = () => {
   };
 
   const deleteCategory = async (id: string) => {
+    const category = categories.find((item) => item.id === id);
+    if (!category || !window.confirm('Disable “' + category.name + '”? Existing listings will remain intact, but this category will stop appearing in the marketplace.')) return;
     setSaving(true);
     try {
       const ok = await AdminService.deleteMarketplaceCategory(id);
@@ -460,6 +479,97 @@ const MarketplaceManagement: React.FC = () => {
       await loadAll();
     } catch (error: any) {
       showNotification('error', 'Category delete failed', error?.message || 'Unable to delete category.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleListingSelection = (listingId: string) => {
+    setSelectedListingIds((previous) =>
+      previous.includes(listingId) ? previous.filter((id) => id !== listingId) : [...previous, listingId]
+    );
+  };
+
+  const toggleAllVisibleListings = () => {
+    setSelectedListingIds((previous) => {
+      if (allVisibleListingsSelected) return previous.filter((id) => !visibleListingIds.includes(id));
+      return Array.from(new Set([...previous, ...visibleListingIds]));
+    });
+  };
+
+  const bulkDeleteListings = async () => {
+    if (!selectedListingIds.length) {
+      showNotification('warning', 'No listings selected', 'Select one or more listings first.');
+      return;
+    }
+    if (!window.confirm(`Remove ${selectedListingIds.length} selected listing${selectedListingIds.length === 1 ? '' : 's'}? They will be hidden and remain restorable by an admin.`)) return;
+    setSaving(true);
+    try {
+      const result = await AdminService.bulkDeleteMarketplaceListings(selectedListingIds);
+      setSelectedListingIds([]);
+      if (result.failed.length) {
+        showNotification('warning', 'Listings partially removed', `${result.count} removed; ${result.failed.length} could not be found.`);
+      } else {
+        showNotification('success', 'Listings removed', `${result.count} listing${result.count === 1 ? '' : 's'} removed successfully.`);
+      }
+      await loadAll();
+    } catch (error: any) {
+      showNotification('error', 'Bulk listing action failed', error?.message || 'Unable to remove selected listings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restoreCategory = async (id: string) => {
+    setSaving(true);
+    try {
+      const ok = await AdminService.restoreMarketplaceCategory(id);
+      if (!ok) throw new Error('Category restore failed');
+      showNotification('success', 'Category restored', 'Marketplace category is active again.');
+      await loadAll();
+    } catch (error: any) {
+      showNotification('error', 'Category restore failed', error?.message || 'Unable to restore category.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleCategorySelection = (categoryId: string) => {
+    setSelectedCategoryIds((previous) =>
+      previous.includes(categoryId) ? previous.filter((id) => id !== categoryId) : [...previous, categoryId]
+    );
+  };
+
+  const toggleAllCategories = () => {
+    const allIds = categories.map((category) => category.id);
+    setSelectedCategoryIds((previous) => {
+      if (allIds.length && allIds.every((id) => previous.includes(id))) return previous.filter((id) => !allIds.includes(id));
+      return Array.from(new Set([...previous, ...allIds]));
+    });
+  };
+
+  const bulkUpdateCategories = async (action: 'disable' | 'restore') => {
+    const ids = selectedCategoryIds.filter((id) => (action === 'disable' ? activeCategoryIds : inactiveCategoryIds).includes(id));
+    if (!ids.length) {
+      showNotification('warning', 'No applicable categories selected', `Select ${action === 'disable' ? 'active' : 'inactive'} categories first.`);
+      return;
+    }
+    const verb = action === 'disable' ? 'Disable' : 'Restore';
+    if (!window.confirm(`${verb} ${ids.length} selected categor${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+    setSaving(true);
+    try {
+      const result = action === 'disable'
+        ? await AdminService.bulkDisableMarketplaceCategories(ids)
+        : await AdminService.bulkRestoreMarketplaceCategories(ids);
+      setSelectedCategoryIds([]);
+      if (result.failed.length) {
+        showNotification('warning', `Categories partially ${action}d`, `${result.count} updated; ${result.failed.length} could not be found.`);
+      } else {
+        showNotification('success', `Categories ${action}d`, `${result.count} categor${result.count === 1 ? 'y' : 'ies'} updated successfully.`);
+      }
+      await loadAll();
+    } catch (error: any) {
+      showNotification('error', `Bulk category action failed`, error?.message || `Unable to ${action} selected categories.`);
     } finally {
       setSaving(false);
     }
@@ -612,11 +722,52 @@ const MarketplaceManagement: React.FC = () => {
               </div>
             </div>
 
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+              <div className="flex items-center gap-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={allVisibleListingsSelected}
+                  onChange={toggleAllVisibleListings}
+                  aria-label="Select all visible marketplace listings"
+                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                />
+                <span>{selectedListingIds.length ? `${selectedListingIds.length} selected` : 'Select listings for bulk actions'}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={toggleAllVisibleListings}
+                  disabled={!visibleListingIds.length || saving}
+                  className="rounded-full border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 disabled:opacity-50"
+                >
+                  {allVisibleListingsSelected ? 'Clear visible' : 'Select visible'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void bulkDeleteListings()}
+                  disabled={!selectedListingIds.length || saving}
+                  className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Remove selected
+                </button>
+              </div>
+            </div>
+
             <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
               <div className="max-h-[720px] overflow-auto">
                 <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-[0.18em] text-slate-500">
                     <tr>
+                      <th className="w-12 px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleListingsSelected}
+                          onChange={toggleAllVisibleListings}
+                          aria-label="Select all visible marketplace listings"
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                        />
+                      </th>
                       <th className="px-4 py-3">Listing</th>
                       <th className="px-4 py-3">Seller</th>
                       <th className="px-4 py-3">Status</th>
@@ -627,6 +778,15 @@ const MarketplaceManagement: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {filteredListings.map((listing) => (
                       <tr key={listing.id} className="align-top">
+                        <td className="px-4 py-4">
+                          <input
+                            type="checkbox"
+                            checked={selectedListingIds.includes(listing.id)}
+                            onChange={() => toggleListingSelection(listing.id)}
+                            aria-label={`Select ${listing.title}`}
+                            className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                          />
+                        </td>
                         <td className="px-4 py-4">
                           <p className="font-semibold text-slate-950">{listing.title}</p>
                           <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{listing.description || 'No description provided.'}</p>
@@ -669,7 +829,7 @@ const MarketplaceManagement: React.FC = () => {
                     ))}
                     {!filteredListings.length && (
                       <tr>
-                        <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
+                        <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-500">
                           No marketplace listings found.
                         </td>
                       </tr>
@@ -865,15 +1025,70 @@ const MarketplaceManagement: React.FC = () => {
       {activeSection === 'categories' && (
         <div className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
           <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-950">Categories</h3>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-950">Categories</h3>
+                <p className="mt-1 text-sm text-slate-600">Select multiple categories to disable or restore them together.</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={categories.length > 0 && categories.every((category) => selectedCategoryIds.includes(category.id))}
+                onChange={toggleAllCategories}
+                aria-label="Select all marketplace categories"
+                className="h-4 w-4 rounded border-slate-300 text-blue-600"
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2 rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+              <span className="mr-auto text-sm text-slate-700">
+                {selectedCategoryIds.length ? `${selectedCategoryIds.length} selected` : 'No categories selected'}
+              </span>
+              <button
+                type="button"
+                onClick={() => void bulkUpdateCategories('disable')}
+                disabled={!selectedCategoryIds.some((id) => activeCategoryIds.includes(id)) || saving}
+                className="rounded-full border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-50"
+              >
+                Disable selected
+              </button>
+              <button
+                type="button"
+                onClick={() => void bulkUpdateCategories('restore')}
+                disabled={!selectedCategoryIds.some((id) => inactiveCategoryIds.includes(id)) || saving}
+                className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 disabled:opacity-50"
+              >
+                Restore selected
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCategoryIds([])}
+                disabled={!selectedCategoryIds.length || saving}
+                className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Clear
+              </button>
+            </div>
             <div className="mt-5 space-y-3">
               {categories.map((category) => (
                 <div key={category.id} className="rounded-2xl border border-slate-200 p-4">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <p className="font-semibold text-slate-950">{category.name}</p>
+                    <div className="flex min-w-0 items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedCategoryIds.includes(category.id)}
+                        onChange={() => toggleCategorySelection(category.id)}
+                        aria-label={`Select ${category.name}`}
+                        className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600"
+                      />
+                      <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-semibold text-slate-950">{category.name}</p>
+                        {category.isActive === false && (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">Inactive</span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500">{category.slug || category.id}</p>
                       <p className="mt-2 text-sm text-slate-600">{category.description || 'No description provided.'}</p>
+                      </div>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -883,13 +1098,23 @@ const MarketplaceManagement: React.FC = () => {
                       >
                         Edit
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteCategory(category.id)}
-                        className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700"
-                      >
-                        Delete
-                      </button>
+                      {category.isActive === false ? (
+                        <button
+                          type="button"
+                          onClick={() => void restoreCategory(category.id)}
+                          className="rounded-full border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-700"
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void deleteCategory(category.id)}
+                          className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700"
+                        >
+                          Disable
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -905,7 +1130,21 @@ const MarketplaceManagement: React.FC = () => {
               <Input label="Slug" value={categoryDraft.slug || ''} onChange={(value) => setCategoryDraft((prev) => ({ ...prev, slug: value }))} />
               <Input label="Description" value={String(categoryDraft.description || '')} onChange={(value) => setCategoryDraft((prev) => ({ ...prev, description: value }))} multiline />
               <div className="grid gap-4 sm:grid-cols-2">
-                <Input label="Parent ID" value={String(categoryDraft.parentId || '')} onChange={(value) => setCategoryDraft((prev) => ({ ...prev, parentId: value || null }))} />
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-slate-900">Parent category</span>
+                  <select
+                    value={String(categoryDraft.parentId || '')}
+                    onChange={(event) => setCategoryDraft((prev) => ({ ...prev, parentId: event.target.value || null }))}
+                    className="input w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none"
+                  >
+                    <option value="">Root category</option>
+                    {categories
+                      .filter((category) => category.id !== categoryDraft.id && category.isActive !== false)
+                      .map((category) => (
+                        <option key={category.id} value={category.id}>{category.name}</option>
+                      ))}
+                  </select>
+                </label>
                 <Input label="Sort order" type="number" value={String(categoryDraft.sortOrder ?? 0)} onChange={(value) => setCategoryDraft((prev) => ({ ...prev, sortOrder: Number(value || 0) }))} />
               </div>
               <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">

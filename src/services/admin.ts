@@ -254,6 +254,12 @@ const normalizeUser = (user: any): User => {
     isActive,
     status,
     flags,
+    callCapabilities: {
+      videoCallsEnabled: user?.callCapabilities?.videoCallsEnabled ?? user?.call_capabilities?.video_calls_enabled ?? true,
+      videoCallsUpdatedAt: user?.callCapabilities?.videoCallsUpdatedAt ?? user?.call_capabilities?.video_calls_updated_at ?? null,
+      videoCallsUpdatedById: user?.callCapabilities?.videoCallsUpdatedById ?? user?.call_capabilities?.video_calls_updated_by_id ?? null,
+      videoCallsAdminReason: user?.callCapabilities?.videoCallsAdminReason ?? user?.call_capabilities?.video_calls_admin_reason ?? null
+    },
     profilePhotoFileId: user?.profilePhotoFileId ?? user?.profile_photo_file_id
   } as User;
 };
@@ -343,6 +349,7 @@ export const AdminService = {
     return {
       enabledVoiceCalls: Boolean(data?.enabledVoiceCalls ?? true),
       enabledConferenceCalls: Boolean(data?.enabledConferenceCalls ?? true),
+      enabledVideoCalls: Boolean(data?.enabledVideoCalls ?? true),
       enabledVoiceNotes: Boolean(data?.enabledVoiceNotes ?? true),
       maxParticipants: Number(data?.maxParticipants ?? 8),
       maxVoiceNoteDurationSeconds: Number(data?.maxVoiceNoteDurationSeconds ?? 180),
@@ -355,6 +362,7 @@ export const AdminService = {
     return {
       enabledVoiceCalls: Boolean(data?.enabledVoiceCalls ?? true),
       enabledConferenceCalls: Boolean(data?.enabledConferenceCalls ?? true),
+      enabledVideoCalls: Boolean(data?.enabledVideoCalls ?? true),
       enabledVoiceNotes: Boolean(data?.enabledVoiceNotes ?? true),
       maxParticipants: Number(data?.maxParticipants ?? 8),
       maxVoiceNoteDurationSeconds: Number(data?.maxVoiceNoteDurationSeconds ?? 180),
@@ -386,6 +394,18 @@ export const AdminService = {
 
   updateUserStatus: async (userId: string, status: any, adminId: string): Promise<void> => {
     await adminPost(`/users/${userId}/status`, { status, adminId });
+  },
+
+  updateUserCallCapabilities: async (
+    userId: string,
+    payload: { videoCallsEnabled: boolean; reason?: string },
+    adminId: string
+  ): Promise<User> => {
+    const data = await adminPatch<User>(`/users/${userId}/call-capabilities`, {
+      ...payload,
+      adminId
+    });
+    return normalizeUser(data);
   },
 
   getUserModerationStatus: async (userId: string): Promise<any> => {
@@ -936,6 +956,22 @@ export const AdminService = {
   getNotificationOpsSettings: async () => adminGet<any>('/notifications/ops/settings'),
   putNotificationOpsSettings: async (payload: Record<string, unknown>) =>
     adminPut<any>('/notifications/ops/settings', payload),
+  getEngagementAutomationRules: async () =>
+    adminGet<any[]>('/notifications/ops/engagement-automations/rules'),
+  createEngagementAutomationRule: async (payload: Record<string, unknown>) =>
+    adminPost<any>('/notifications/ops/engagement-automations/rules', payload),
+  updateEngagementAutomationRule: async (id: string, payload: Record<string, unknown>) =>
+    adminPatch<any>(`/notifications/ops/engagement-automations/rules/${encodeURIComponent(id)}`, payload),
+  getEngagementAutomationState: async () =>
+    adminGet<any>('/notifications/ops/engagement-automations/state'),
+  putEngagementAutomationState: async (payload: Record<string, unknown>) =>
+    adminPut<any>('/notifications/ops/engagement-automations/state', payload),
+  getEngagementAutomationStats: async () =>
+    adminGet<any>('/notifications/ops/engagement-automations/stats'),
+  previewEngagementAutomationRule: async (payload: Record<string, unknown>) =>
+    adminPost<any>('/notifications/ops/engagement-automations/preview', payload),
+  testEngagementAutomationRule: async (payload: Record<string, unknown>) =>
+    adminPost<any>('/notifications/ops/engagement-automations/test', payload),
 
 
   getNotificationTemplates: async (params?: {
@@ -1298,6 +1334,29 @@ export const AdminService = {
     return Boolean(response?.success);
   },
 
+  async restoreMarketplaceCategory(id: string): Promise<boolean> {
+    const response = await adminRequest<MarketplaceCategory>('post', '/marketplace/categories/' + id + '/restore');
+    return Boolean(response?.success);
+  },
+
+  async bulkDisableMarketplaceCategories(ids: string[]): Promise<{ updated: string[]; failed: Array<{ id: string; error: string }>; count: number }> {
+    const response = await adminRequest<{ updated?: string[]; failed?: Array<{ id: string; error: string }>; count?: number }>('post', '/marketplace/categories/bulk-disable', { ids });
+    return {
+      updated: Array.isArray(response?.data?.updated) ? response.data.updated : [],
+      failed: Array.isArray(response?.data?.failed) ? response.data.failed : [],
+      count: Number(response?.data?.count || 0)
+    };
+  },
+
+  async bulkRestoreMarketplaceCategories(ids: string[]): Promise<{ updated: string[]; failed: Array<{ id: string; error: string }>; count: number }> {
+    const response = await adminRequest<{ updated?: string[]; failed?: Array<{ id: string; error: string }>; count?: number }>('post', '/marketplace/categories/bulk-restore', { ids });
+    return {
+      updated: Array.isArray(response?.data?.updated) ? response.data.updated : [],
+      failed: Array.isArray(response?.data?.failed) ? response.data.failed : [],
+      count: Number(response?.data?.count || 0)
+    };
+  },
+
   async getMarketplaceListings(filters?: {
     status?: string;
     reviewStatus?: string;
@@ -1332,6 +1391,15 @@ export const AdminService = {
   async deleteMarketplaceListing(id: string): Promise<boolean> {
     const response = await adminRequest<{ id: string }>('delete', `/marketplace/listings/${id}`);
     return Boolean(response?.success);
+  },
+
+  async bulkDeleteMarketplaceListings(ids: string[]): Promise<{ updated: string[]; failed: Array<{ id: string; error: string }>; count: number }> {
+    const response = await adminRequest<{ updated?: string[]; failed?: Array<{ id: string; error: string }>; count?: number }>('post', '/marketplace/listings/bulk-delete', { ids });
+    return {
+      updated: Array.isArray(response?.data?.updated) ? response.data.updated : [],
+      failed: Array.isArray(response?.data?.failed) ? response.data.failed : [],
+      count: Number(response?.data?.count || 0)
+    };
   },
 
   async approveMarketplaceListing(id: string): Promise<boolean> {
@@ -1797,6 +1865,10 @@ export const AdminService = {
 
   getRealtimeOpsSummary: async (): Promise<any> => {
     return adminGet<any>('/realtime/summary');
+  },
+
+  getObservabilitySummary: async (): Promise<any> => {
+    return adminGet<any>('/observability/summary');
   },
 
   getRealtimeRuntime: async (): Promise<any> => {

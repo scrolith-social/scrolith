@@ -11,6 +11,7 @@ import { useUser } from '../../context/UserContext';
 import { resolveUserAvatarUrl } from '../../utils/userAvatar';
 import type { ScrollVideo } from '../../services/scroll';
 import type { PendingPostVideoScrollViewerSource } from '../../utils/postVideoScrollBridge';
+import { openVideoInScroll } from '../../utils/openVideoInScroll';
 
 import MobileHeader from './components/MobileHeader';
 import MobileBottomNav, { MobileHomeLayoutSettings, MobileTabKey } from './components/MobileBottomNav';
@@ -21,9 +22,24 @@ import MobileNetworkScreen from './screens/MobileNetworkScreen';
 import MobilePostScreen from './screens/MobilePostScreen';
 import MobileNotificationsScreen from './screens/MobileNotificationsScreen';
 import MobileJobsScreen from './screens/MobileJobsScreen';
-import ScrollFeed from '../../features/scroll/ScrollFeed';
 import MobileHomeSheets from './components/MobileHomeSheets';
-import { MOBILE_PAGE_CONTAINER_CLASS, shouldUseMobileShellViewport } from './mobileShellLayout';
+import MobileHomeErrorBoundary from './components/MobileHomeErrorBoundary';
+import { installMobileLongTaskObserver, useMobilePerformance } from '../runtime/mobilePerformance';
+import {
+  buildMessagingSoftOpenState,
+  prefetchMessagesWorkspace
+} from '../../services/messagingSoftOpen';
+
+// Lazy: soft chat chrome must not inflate mobile home initial bundle.
+const MobileMessagingOverlay = React.lazy(
+  () => import('../../components/messaging/MobileMessagingOverlay')
+);
+const ScrollFeed = React.lazy(() => import('../../features/scroll/ScrollFeed'));
+import {
+  MOBILE_PAGE_CONTAINER_CLASS,
+  MOBILE_SHELL_MAIN_PAD_CLASS,
+  shouldUseMobileShellViewport
+} from './mobileShellLayout';
 
 type MobileHomeLayoutConfig = {
   header?: {
@@ -54,9 +70,12 @@ type MobileHomeLayoutConfig = {
     switchUser?: boolean;
     browseJobs?: boolean;
     browseGigs?: boolean;
+    match?: boolean;
+    scroll?: boolean;
     community?: boolean;
     marketplace?: boolean;
     groups?: boolean;
+    foundingPartnership?: boolean;
     projectBrief?: boolean;
     gigCreation?: boolean;
     settings?: boolean;
@@ -135,9 +154,12 @@ const DEFAULT_LAYOUT: MobileHomeLayoutConfig = {
     switchUser: true,
     browseJobs: true,
     browseGigs: true,
+    match: true,
+    scroll: true,
     community: true,
     marketplace: true,
     groups: true,
+    foundingPartnership: true,
     projectBrief: true,
     gigCreation: true,
     settings: true
@@ -250,7 +272,8 @@ const MobileHome = () => {
     conversations: messageConversations,
     loading: messagesLoading,
     error: messagesError,
-    refreshMessages
+    refreshMessages,
+    ensureThreadLoaded
   } = useMessages();
   const { notifications, refreshNotifications, showNotification } = useNotification();
 
@@ -258,8 +281,17 @@ const MobileHome = () => {
   const [profileOpen, setProfileOpen] = useState(false);
   const [quickMenuOpen, setQuickMenuOpen] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
+  /** Soft-open conversation overlay — keeps MobileHome feed mounted (no platform reload). */
+  const [softConversationId, setSoftConversationId] = useState<string | null>(null);
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const routeTab = resolveActiveTab(location.pathname);
+  const normalizedPathname = location.pathname.replace(/\/+$/, '') || '/';
+  const isMemberHomeRoute =
+    normalizedPathname === '/m' ||
+    normalizedPathname === '/m/home' ||
+    normalizedPathname === '/member-home' ||
+    normalizedPathname === '/home' ||
+    normalizedPathname === '/';
   const [activePanelTab, setActivePanelTab] = useState<Exclude<MobileTabKey, 'home' | 'messages'> | null>(
     isMobileOverlayTab(routeTab) ? routeTab : null
   );
@@ -274,10 +306,6 @@ const MobileHome = () => {
   const allowDesktopOverride =
     new URLSearchParams(location.search).get('desktop') === '1' ||
     new URLSearchParams(location.search).get('view') === 'desktop';
-
-  if (!isMobileViewport && !allowDesktopOverride) {
-    return <Navigate to="/" replace />;
-  }
 
   const rawLayout = (settings as any)?.mobileHomeLayout ?? (settings as any)?.mobile_home_layout ?? null;
   const layout = useMemo(() => {
@@ -345,9 +373,30 @@ const MobileHome = () => {
   const headerMessagesEnabled = layout.header?.messagesEnabled !== false && layout.messagesPopup?.enabled !== false;
   const headerQuickMenuEnabled = layout.header?.quickMenuEnabled !== false;
 
+  useMobilePerformance(
+    `mobile-${isMemberHomeRoute ? 'member-home' : routeTab}`,
+    Boolean(user && isMobileViewport)
+  );
+
+  useEffect(() => {
+    if (!isMobileViewport) return undefined;
+    return installMobileLongTaskObserver(`mobile-${isMemberHomeRoute ? 'member-home' : routeTab}`);
+  }, [isMemberHomeRoute, isMobileViewport, routeTab]);
+
   useEffect(() => {
     setActivePanelTab(isMobileOverlayTab(routeTab) ? routeTab : null);
   }, [routeTab]);
+
+  // Native shell menu handoff: keep account and feature actions owned by the
+  // existing web sheet instead of duplicating currency/role state in Android.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get('openMenu') !== '1') return;
+    setQuickMenuOpen(true);
+    const params = new URLSearchParams(location.search);
+    params.delete('openMenu');
+    const nextQuery = params.toString();
+    navigate(`${location.pathname}${nextQuery ? `?${nextQuery}` : ''}${location.hash}`, { replace: true });
+  }, [location.hash, location.pathname, location.search, navigate]);
 
   useEffect(() => {
     if (activePanelTab !== 'notifications') return;
@@ -362,7 +411,13 @@ const MobileHome = () => {
     setCurrencyOpen(false);
     setActivePanelTab(null);
     setScrollOverlay(null);
+    setSoftConversationId(null);
   }, []);
+
+  useEffect(() => {
+    if (isMemberHomeRoute) return;
+    clearShellLayers();
+  }, [clearShellLayers, isMemberHomeRoute]);
 
   const shellLayerKey = useMemo(() => {
     if (scrollOverlay) {
@@ -373,13 +428,22 @@ const MobileHome = () => {
         scrollOverlay.key
       }`;
     }
+    if (softConversationId) return `conversation:${softConversationId}`;
     if (searchOpen) return 'search';
     if (messagesOpen) return 'messages';
     if (quickMenuOpen) return 'quick-menu';
     if (profileOpen) return 'profile';
     if (currencyOpen) return 'currency';
     return null;
-  }, [currencyOpen, messagesOpen, profileOpen, quickMenuOpen, scrollOverlay, searchOpen]);
+  }, [
+    currencyOpen,
+    messagesOpen,
+    profileOpen,
+    quickMenuOpen,
+    scrollOverlay,
+    searchOpen,
+    softConversationId
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -457,6 +521,17 @@ const MobileHome = () => {
     [dismissShellLayers, location.pathname]
   );
 
+  const closeSoftConversation = useCallback(() => {
+    if (typeof window !== 'undefined' && window.history.state?.__scrolithMobileShellLayer) {
+      const marker = String(window.history.state.__scrolithMobileShellLayer || '');
+      if (marker.startsWith('conversation:')) {
+        window.history.back();
+        return;
+      }
+    }
+    setSoftConversationId(null);
+  }, []);
+
   const openPanelFromShell = useCallback(
     (tab: Exclude<MobileTabKey, 'home' | 'messages'>) => {
       dismissShellLayers();
@@ -482,30 +557,27 @@ const MobileHome = () => {
       return;
     }
     if (tab === 'messages') {
-      flushSync(() => {
-        setMessagesOpen(true);
-      });
-      void refreshMessages({ force: true });
+      // Soft open: no full-platform reload.
+      setSoftConversationId(null);
+      setMessagesOpen(true);
+      void refreshMessages({ force: false });
       return;
     }
     if (tab === 'home') {
-      flushSync(() => {
-        setActivePanelTab(null);
-        setScrollOverlay(null);
-      });
+      setActivePanelTab(null);
+      setScrollOverlay(null);
       if (location.pathname !== '/m/home') {
         navigate('/m/home', { replace: true });
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    flushSync(() => {
-      setScrollOverlay(null);
-      setActivePanelTab(tab);
-    });
+    // Soft panel open — keep feed mounted under the sheet (no hard remount of app shell).
+    setScrollOverlay(null);
+    setActivePanelTab(tab);
     const nextPath = `/m/${tab}`;
     if (location.pathname !== nextPath) {
-      navigate(nextPath);
+      navigate(nextPath, { replace: false });
     }
   }, [activeTab, location.pathname, navigate, refreshMessages]);
 
@@ -617,18 +689,14 @@ const MobileHome = () => {
   );
   const handleOpenPostVideoScroll = useMemo(
     () => (source: PendingPostVideoScrollViewerSource) => {
-      flushSync(() => {
-        setActivePanelTab(null);
-        setScrollOverlay({
-          key: Date.now(),
-          initialItems: [],
-          initialActiveScrollId: null,
-          initialViewerSource: source,
-          initialSeriesId: null
-        });
+      flushSync(() => setActivePanelTab(null));
+      openVideoInScroll({
+        navigate,
+        source,
+        sourceSurface: 'mobile-home'
       });
     },
-    []
+    [navigate]
   );
   const handleOpenScrollSeries = useMemo(
     () => (seriesId: string, scrollId?: string | null) => {
@@ -658,6 +726,7 @@ const MobileHome = () => {
     [dismissShellLayers, location.pathname, navigate]
   );
   const renderOverlayPanel = () => {
+    if (!isMemberHomeRoute) return null;
     if (!activePanelTab) return null;
     const titleMap: Record<Exclude<MobileTabKey, 'home' | 'messages'>, string> = {
       network: 'My Network',
@@ -665,21 +734,36 @@ const MobileHome = () => {
       notifications: 'Notifications',
       jobs: 'Jobs'
     };
+    // Soft sheet: keep feed mounted underneath; panel scrolls independently (no full app reload).
     return (
-      <div className="fixed inset-0 z-[820] bg-slate-50 pt-14 pb-20">
-        <div className="sticky top-14 z-10 border-b border-slate-200 bg-white/95 backdrop-blur">
+      <div
+        className="fixed inset-0 z-[820] flex flex-col bg-slate-50/97 backdrop-blur-sm animate-in fade-in duration-150"
+        style={{ paddingTop: 'var(--scrolith-shell-header-offset, 3.25rem)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={titleMap[activePanelTab]}
+      >
+        <div className="shrink-0 border-b border-slate-200 bg-white/95 backdrop-blur">
           <div className={`${MOBILE_PAGE_CONTAINER_CLASS} flex items-center justify-between py-3`}>
             <div className="text-sm font-semibold text-slate-900">{titleMap[activePanelTab]}</div>
             <button
               type="button"
               onClick={closeActivePanel}
-              className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600"
+              className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 touch-manipulation active:bg-slate-50"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
             >
               Close
             </button>
           </div>
         </div>
-        <div className="h-[calc(100vh-113px-env(safe-area-inset-bottom))] overflow-y-auto">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
+          style={{
+            WebkitOverflowScrolling: 'touch',
+            touchAction: 'pan-y',
+            paddingBottom: 'var(--scrolith-shell-bottom-offset, 3.5rem)'
+          }}
+        >
           <Suspense
             fallback={
               <div className="px-4 py-6 text-sm font-medium text-slate-500">
@@ -689,7 +773,17 @@ const MobileHome = () => {
           >
             {activePanelTab === 'network' ? <MobileNetworkScreen /> : null}
             {activePanelTab === 'post' ? <MobilePostScreen mobileLayout={layout} onClose={closeActivePanel} /> : null}
-            {activePanelTab === 'notifications' ? <MobileNotificationsScreen onNavigate={navigateFromShell} /> : null}
+            {activePanelTab === 'notifications' ? (
+              <MobileNotificationsScreen
+                onNavigate={navigateFromShell}
+                messagesUnread={messagesUnread}
+                onOpenMessages={() => {
+                  dismissShellLayers();
+                  setMessagesOpen(true);
+                  void refreshMessages({ force: false });
+                }}
+              />
+            ) : null}
             {activePanelTab === 'jobs' ? <MobileJobsScreen /> : null}
           </Suspense>
         </div>
@@ -697,9 +791,18 @@ const MobileHome = () => {
     );
   };
 
+  // Keep this guard after every hook so a delayed viewport measurement cannot
+  // change the hook sequence and crash the signed-in home during startup.
+  if (!isMobileViewport && !allowDesktopOverride) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50">
-      <MobileHeader
+    <div className="min-h-[100%] bg-slate-50" style={{ touchAction: 'pan-y pinch-zoom' }}>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {isConnected ? 'Realtime updates connected.' : 'Realtime updates are reconnecting.'}
+      </div>
+      {isMemberHomeRoute ? <MobileHeader
         user={user}
         loading={loading}
         socketConnected={isConnected}
@@ -714,9 +817,11 @@ const MobileHome = () => {
         }}
         onOpenMessages={() => {
           flushSync(() => {
+            setSoftConversationId(null);
             setMessagesOpen(true);
           });
-          void refreshMessages({ force: true });
+          // Soft inbox preview refresh — avoid force thrash that feels like a reload.
+          void refreshMessages({ force: false });
         }}
         onOpenQuickMenu={() => {
           flushSync(() => {
@@ -728,10 +833,15 @@ const MobileHome = () => {
             setProfileOpen(true);
           });
         }}
-      />
+      /> : null}
 
-      <div className="pt-14 pb-20">
-        {/^\/m\/briefs(\/|$)/.test(location.pathname) ? (
+      <div
+        className={`${isMemberHomeRoute ? MOBILE_SHELL_MAIN_PAD_CLASS : ''} mobile-home-feed`}
+        style={{ touchAction: 'pan-y pinch-zoom', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+      >
+        {!isMemberHomeRoute ? (
+          <Outlet context={{ mobileLayout: layout }} />
+        ) : /^\/m\/briefs(\/|$)/.test(location.pathname) ? (
           <Outlet
             context={{
               mobileLayout: layout
@@ -750,15 +860,16 @@ const MobileHome = () => {
               onOpenScroll={handleOpenScrollOverlay}
               onOpenPostVideoScroll={handleOpenPostVideoScroll}
               onOpenScrollSeries={handleOpenScrollSeries}
+              onOpenPost={() => onTabChange('post')}
             />
           </Suspense>
         )}
       </div>
 
-      {!scrollOverlay ? <MobileBottomNav activeTab={activeTab} onChange={onTabChange} settings={bottomNavSettings} /> : null}
+      {isMemberHomeRoute && !scrollOverlay ? <MobileBottomNav activeTab={activeTab} onChange={onTabChange} settings={bottomNavSettings} /> : null}
 
-      {searchOpen ? (
-        <div className="fixed inset-0 z-[900] overflow-y-auto bg-slate-50 pt-14 pb-20">
+      {isMemberHomeRoute && searchOpen ? (
+        <div className={`fixed inset-0 z-[900] overflow-y-auto overscroll-contain bg-slate-50 ${MOBILE_SHELL_MAIN_PAD_CLASS}`}>
           <Suspense
             fallback={
               <div className="px-4 py-6 text-sm font-medium text-slate-500">
@@ -801,108 +912,116 @@ const MobileHome = () => {
         </div>
       ) : null}
 
-      {anySheetOpen ? (
-        <MobileHomeSheets
-          profileOpen={profileOpen}
-          messagesOpen={messagesOpen}
-          currencyOpen={currencyOpen}
-          quickMenuOpen={quickMenuOpen}
-          onCloseProfile={closeTopShellLayer}
-          onCloseMessages={closeTopShellLayer}
-          onCloseCurrency={closeTopShellLayer}
-          onCloseQuickMenu={closeTopShellLayer}
-          accountMenu={accountMenu}
-          quickMenu={quickMenu}
-          currencyCode={currency?.code || 'USD'}
-          availableCurrencies={Array.isArray(availableCurrencies) ? availableCurrencies : []}
-          onSelectCurrency={(code: string) => {
-            setCurrency(code);
-            setCurrencyOpen(false);
-          }}
-          messagesUnread={messagesUnread}
-          notificationsUnread={notificationsUnread}
-          socketConnected={Boolean(isConnected)}
-          messagesLoading={messagesLoading}
-          messagesError={messagesError}
-          previewConversations={previewConversations}
-          currentUserId={user?.id ? String(user.id) : null}
-          userName={user?.name || null}
-          userAvatar={resolvedUserAvatar || null}
-          onRefreshMessages={() => void refreshMessages({ force: true })}
-          onOpenConversation={(conversationId: string) => {
-            if (conversationId) navigateFromShell(`/messages/${encodeURIComponent(conversationId)}`);
-          }}
-          onOpenAllMessages={() => {
-            navigateFromShell('/messages');
-          }}
-          onOpenNotifications={() => {
-            openPanelFromShell('notifications');
-          }}
-          normalizedRole={normalizedRole}
-          isFreelancerMode={isFreelancerMode}
-          onDashboard={() => {
-            navigateFromShell(accountDashboardPath);
-          }}
-          onViewAs={() => {
-            navigateFromShell(accountProfilePath);
-          }}
-          onSwitchCurrency={() => {
-            setProfileOpen(false);
-            setCurrencyOpen(true);
-          }}
-          onPostProject={() => {
-            navigateFromShell(postProjectPath);
-          }}
-          onYourBriefs={() => {
-            navigateFromShell('/m/briefs');
-          }}
-          onReferFriend={() => {
-            navigateFromShell('/affiliate-program');
-          }}
-          onBilling={() => {
-            navigateFromShell(billingPath);
-          }}
-          onSettings={() => {
-            navigateFromShell('/settings');
-          }}
-          onLogout={() => {
-            pendingShellNavigationRef.current = null;
-            dismissShellLayers();
-            logout();
-          }}
-          onSwitchUserMode={() => {
-            pendingShellNavigationRef.current = null;
-            dismissShellLayers();
-            switchUserInPlace();
-            if (location.pathname !== '/m/home') {
-              navigate('/m/home');
+      {softConversationId ? (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[920] flex items-center justify-center bg-white text-sm font-medium text-slate-600">
+              Opening conversation…
+            </div>
+          }
+        >
+          <MobileMessagingOverlay
+            conversationId={softConversationId}
+            onClose={closeSoftConversation}
+          />
+        </Suspense>
+      ) : null}
+
+      {isMemberHomeRoute && anySheetOpen ? (
+        <MobileHomeErrorBoundary name="home-sheet" onClose={closeTopShellLayer}>
+          <MobileHomeSheets
+            profileOpen={profileOpen}
+            messagesOpen={messagesOpen}
+            currencyOpen={currencyOpen}
+            quickMenuOpen={quickMenuOpen}
+            onCloseProfile={closeTopShellLayer}
+            onCloseMessages={closeTopShellLayer}
+            onCloseCurrency={closeTopShellLayer}
+            onCloseQuickMenu={closeTopShellLayer}
+            accountMenu={accountMenu}
+            quickMenu={quickMenu}
+            currencyCode={currency?.code || 'USD'}
+            availableCurrencies={Array.isArray(availableCurrencies) ? availableCurrencies : []}
+            onSelectCurrency={(code: string) => {
+              setCurrency(code);
+              setCurrencyOpen(false);
+            }}
+            messagesUnread={messagesUnread}
+            notificationsUnread={notificationsUnread}
+            socketConnected={Boolean(isConnected)}
+            messagesLoading={messagesLoading}
+            messagesError={messagesError}
+            previewConversations={previewConversations}
+            currentUserId={user?.id ? String(user.id) : null}
+            userName={user?.name || null}
+            userAvatar={resolvedUserAvatar || null}
+            onRefreshMessages={() => void refreshMessages({ force: false })}
+            onOpenConversation={(conversationId: string) => {
+              const id = String(conversationId || '').trim();
+              if (!id) return;
+              void ensureThreadLoaded(id);
+              prefetchMessagesWorkspace();
+              flushSync(() => {
+                setMessagesOpen(false);
+                setSoftConversationId(id);
+              });
+            }}
+            onOpenParticipantProfile={(profilePath: string) => {
+              const path = String(profilePath || '').trim();
+              if (!path) return;
+              navigateFromShell(path);
+            }}
+            onOpenAllMessages={() => {
+              prefetchMessagesWorkspace();
+              navigateFromShell('/messages', {
+                state: buildMessagingSoftOpenState({
+                  fromHeaderMessages: true,
+                  fromMobileHome: true
+                })
+              });
+            }}
+            onOpenNotifications={() => {
+              openPanelFromShell('notifications');
+            }}
+            normalizedRole={normalizedRole}
+            isFreelancerMode={isFreelancerMode}
+            onDashboard={() => navigateFromShell(accountDashboardPath)}
+            onViewAs={() => navigateFromShell(accountProfilePath)}
+            onSwitchCurrency={() => {
+              setProfileOpen(false);
+              setCurrencyOpen(true);
+            }}
+            onPostProject={() => navigateFromShell(postProjectPath)}
+            onYourBriefs={() => navigateFromShell('/m/briefs')}
+            onReferFriend={() => navigateFromShell('/affiliate-program')}
+            onBilling={() => navigateFromShell(billingPath)}
+            onSettings={() => navigateFromShell('/settings')}
+            onLogout={() => {
+              pendingShellNavigationRef.current = null;
+              dismissShellLayers();
+              logout();
+            }}
+            onSwitchUserMode={() => {
+              pendingShellNavigationRef.current = null;
+              dismissShellLayers();
+              switchUserInPlace();
+              if (location.pathname !== '/m/home') navigate('/m/home');
+            }}
+            onCreatePost={() => openPanelFromShell('post')}
+            onBrowseJobs={() => openPanelFromShell('jobs')}
+            onBrowseGigs={() => navigateFromShell('/browse')}
+            onMatch={() => navigateFromShell('/match')}
+            onScroll={() => navigateFromShell('/scroll')}
+            onCommunity={() => navigateFromShell('/community')}
+            onMarketplace={() => navigateFromShell('/marketplace')}
+            onGroups={() => navigateFromShell('/community/clubs')}
+            onFoundingPartnership={() =>
+              navigateFromShell(`${isClientMode ? '/client' : '/freelancer'}/dashboard?tab=founding-partners`)
             }
-          }}
-          onCreatePost={() => {
-            openPanelFromShell('post');
-          }}
-          onBrowseJobs={() => {
-            openPanelFromShell('jobs');
-          }}
-          onBrowseGigs={() => {
-            navigateFromShell('/browse');
-          }}
-          onCommunity={() => {
-            navigateFromShell('/community');
-          }}
-          onMarketplace={() => {
-            navigateFromShell('/marketplace');
-          }}
-          onGroups={() => {
-            navigateFromShell('/community/clubs');
-          }}
-          onProjectBriefs={() => {
-            navigateFromShell('/m/briefs');
-          }}
-          onGigCreation={() => {
-            navigateFromShell('/create-gig');
-          }}
-        />
+            onProjectBriefs={() => navigateFromShell('/m/briefs')}
+            onGigCreation={() => navigateFromShell('/create-gig')}
+          />
+        </MobileHomeErrorBoundary>
       ) : null}
     </div>
   );

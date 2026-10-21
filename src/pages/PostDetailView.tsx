@@ -20,10 +20,17 @@ import PostOptionsButton from '../community/components/post-options/PostOptionsB
 import GraphicWarningGate from '../components/media/GraphicWarningGate';
 import InlineAutoplayVideo from '../components/media/InlineAutoplayVideo';
 import PostVideoActionBar from '../components/media/PostVideoActionBar';
+import VideoCaptionOverlay from '../components/media/VideoCaptionOverlay';
 import TranslatablePostText from '../components/translation/TranslatablePostText';
+import PostTextBackgroundBody from '../components/post/PostTextBackgroundBody';
 import FeedAdCard from '../mobile/home/components/FeedAdCard';
 import RecommendedListingCard from '../mobile/home/components/RecommendedListingCard';
 import SuggestedCard from '../mobile/home/components/SuggestedCard';
+import {
+  resolvePostPresentation,
+  shouldRenderTextBackground
+} from '../utils/postTextBackgrounds';
+import { resolveVideoCaption } from '../utils/videoCaption';
 
 const inferMediaType = (media: { url?: string; mimeType?: string; type?: string }) => {
   const explicit = String(media.type || '').toLowerCase();
@@ -130,6 +137,8 @@ const normalizePost = (post: any) => {
       ? null
       : String(aiInsightTextRaw).trim() || null;
 
+  const resolvedPresentation = resolvePostPresentation(post);
+
   return {
     id: post.id,
     title: post.title,
@@ -171,6 +180,25 @@ const normalizePost = (post: any) => {
     topic: post.topic || null,
     location: post.location || null,
     visibility: post.visibility,
+    presentation: resolvedPresentation
+      ? {
+          type: resolvedPresentation.type,
+          themeId: resolvedPresentation.themeId,
+          background: resolvedPresentation.background,
+          textColor: resolvedPresentation.textColor
+        }
+      : post.presentation || null,
+    textBackground:
+      post.textBackground ||
+      post.text_background ||
+      resolvedPresentation?.background ||
+      null,
+    textColor: post.textColor || post.text_color || resolvedPresentation?.textColor || null,
+    textBackgroundId:
+      post.textBackgroundId ||
+      post.text_background_id ||
+      resolvedPresentation?.themeId ||
+      null,
     commentPolicy: post.commentPolicy || post.comment_policy || 'everyone',
     repostsEnabled: post.repostsEnabled ?? post.reposts_enabled,
     isPinned: post.isPinned ?? post.is_pinned ?? false,
@@ -355,6 +383,8 @@ type FeedPostCardProps = {
   onHideFromFeed: (postId: string) => void;
   onEditPost: (post: any) => void;
   onDeletePost: (post: any) => void;
+  onTogglePin?: (post: any) => void | Promise<void>;
+  onToggleHighlight?: (post: any) => void | Promise<void>;
 };
 
 const FeedPostCard: React.FC<FeedPostCardProps> = ({
@@ -366,7 +396,9 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
   onCommentCountChange,
   onHideFromFeed,
   onEditPost,
-  onDeletePost
+  onDeletePost,
+  onTogglePin,
+  onToggleHighlight
 }) => {
   const attachments = Array.isArray(post.attachments) ? post.attachments : [];
   const contentText = String(post?.content || '');
@@ -430,6 +462,8 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
             onHideFromFeed={onHideFromFeed}
             onEditPost={() => onEditPost(post)}
             onDeletePost={() => onDeletePost(post)}
+            onTogglePin={onTogglePin ? () => onTogglePin(post) : undefined}
+            onToggleHighlight={onToggleHighlight ? () => onToggleHighlight(post) : undefined}
           />
         }
       />
@@ -444,20 +478,30 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
         </button>
       ) : null}
 
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => onOpenPost(post.id)}
-        className="mt-3 block w-full text-left text-[15px] leading-[1.78] text-slate-700 [overflow-wrap:anywhere]"
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onOpenPost(post.id);
-          }
-        }}
-      >
-        <MentionText text={contentText} viewerId={currentUserId || undefined} />
-      </div>
+      {shouldRenderTextBackground(post) ? (
+        <button
+          type="button"
+          onClick={() => onOpenPost(post.id)}
+          className="mt-3 block w-full text-left"
+        >
+          <PostTextBackgroundBody post={post} content={contentText} />
+        </button>
+      ) : (
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onOpenPost(post.id)}
+          className="mt-3 block w-full text-left text-[15px] leading-[1.78] text-slate-700 [overflow-wrap:anywhere]"
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpenPost(post.id);
+            }
+          }}
+        >
+          <MentionText text={contentText} viewerId={currentUserId || undefined} />
+        </div>
+      )}
 
       {post.tags?.length ? (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -484,6 +528,7 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
                 attachments.length === 1 ? FEED_SINGLE_MEDIA_HEIGHT_CLASS : FEED_MULTI_MEDIA_HEIGHT_CLASS;
 
               if (type === 'video') {
+                const caption = resolveVideoCaption(post, media);
                 return (
                   <div
                     key={media.id || media.url}
@@ -510,14 +555,17 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
                       preload="metadata"
                       loadingLabel="Video loading"
                       overlay={(videoElement) => (
-                        <PostVideoActionBar
-                          postId={post.id}
-                          postTitle={post.title}
-                          postContent={post.content}
-                          postLocation={post.location}
-                          media={media}
-                          videoElement={videoElement}
-                        />
+                        <div className="w-full space-y-2 px-2 sm:px-3">
+                          <VideoCaptionOverlay text={caption} compact />
+                          <PostVideoActionBar
+                            postId={post.id}
+                            postTitle={post.title}
+                            postContent={caption || post.content}
+                            postLocation={post.location}
+                            media={media}
+                            videoElement={videoElement}
+                          />
+                        </div>
                       )}
                     />
                   </div>
@@ -525,14 +573,20 @@ const FeedPostCard: React.FC<FeedPostCardProps> = ({
               }
 
               if (type === 'image') {
+                const caption = resolveVideoCaption(post, media);
                 return (
                   <button
                     key={media.id || media.url}
                     type="button"
                     onClick={() => onOpenPost(post.id)}
-                    className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left shadow-sm"
+                    className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left shadow-sm"
                   >
                     <img src={media.url} alt={media.name || 'Post media'} className={`${mediaHeightClass} w-full object-cover`} />
+                    {caption ? (
+                      <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2 sm:px-3 sm:pb-3">
+                        <VideoCaptionOverlay text={caption} compact />
+                      </div>
+                    ) : null}
                   </button>
                 );
               }
@@ -766,6 +820,30 @@ export default function PostDetailView() {
     },
     [navigate, patchFeedPost, showNotification]
   );
+
+  const handleTogglePin = useCallback(async (targetPost: any) => {
+    try {
+      const updated = await CommunityService.updatePost(String(targetPost?.id || ''), {
+        isPinned: !Boolean(targetPost?.isPinned)
+      });
+      setPost((current) => (current ? { ...current, ...(updated || {}), isPinned: updated?.isPinned ?? !targetPost?.isPinned } : current));
+      showNotification('success', 'Pin', targetPost?.isPinned ? 'Post unpinned.' : 'Post pinned to your profile.');
+    } catch (error: any) {
+      showNotification('error', 'Pin failed', error?.response?.data?.message || error?.response?.data?.error || 'Unable to update pin status.');
+    }
+  }, [showNotification]);
+
+  const handleToggleHighlight = useCallback(async (targetPost: any) => {
+    try {
+      const updated = await CommunityService.updatePost(String(targetPost?.id || ''), {
+        isHighlighted: !Boolean(targetPost?.isHighlighted)
+      });
+      setPost((current) => (current ? { ...current, ...(updated || {}), isHighlighted: updated?.isHighlighted ?? !targetPost?.isHighlighted } : current));
+      showNotification('success', 'Highlight', targetPost?.isHighlighted ? 'Post removed from highlights.' : 'Post highlighted on your profile.');
+    } catch (error: any) {
+      showNotification('error', 'Highlight failed', error?.response?.data?.message || error?.response?.data?.error || 'Unable to update highlight status.');
+    }
+  }, [showNotification]);
 
   const loadStreamSupplements = useCallback(async () => {
     const [adsResult, featuredJobsResult, recommendedJobsResult, randomJobsResult, featuredGigsResult, recommendedGigsResult, randomGigsResult, pagesResult] =
@@ -1253,7 +1331,11 @@ export default function PostDetailView() {
     );
   }
 
-  const isOwner = Boolean(user?.id && post.authorUserId && String(user.id) === String(post.authorUserId));
+  const isOwner = Boolean(
+    user?.id &&
+      (post.authorUserId || post.authorId || post.author?.id) &&
+      String(user.id) === String(post.authorUserId || post.authorId || post.author?.id)
+  );
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.14),_transparent_35%),linear-gradient(180deg,_#f1f5f9_0%,_#eef2ff_40%,_#e2e8f0_100%)]">
@@ -1398,6 +1480,8 @@ export default function PostDetailView() {
                   if (!isOwner) return;
                   await handleDeletePost(post, { redirectAfterDelete: true });
                 }}
+                onTogglePin={isOwner ? handleTogglePin : undefined}
+                onToggleHighlight={isOwner ? handleToggleHighlight : undefined}
               />
             }
           />
@@ -1408,16 +1492,30 @@ export default function PostDetailView() {
             </div>
           ) : null}
           <div className="mt-4">
-            <TranslatablePostText
-              post={post}
-              viewerId={user?.id}
-              viewerUsername={user?.username}
-              mentionToken={focusMentionToken || undefined}
-              expandable={false}
-              titleClassName="text-2xl font-semibold tracking-tight text-slate-950 md:text-[2rem]"
-              contentClassName="text-[15px] leading-[1.82] text-slate-700 [overflow-wrap:anywhere] md:text-base"
-              translationRowClassName="text-slate-500"
-            />
+            {shouldRenderTextBackground(post) ? (
+              <div>
+                {post.title ? (
+                  <h1 className="mb-3 text-2xl font-semibold tracking-tight text-slate-950 md:text-[2rem] [overflow-wrap:anywhere]">
+                    {post.title}
+                  </h1>
+                ) : null}
+                <PostTextBackgroundBody
+                  post={post}
+                  content={String(post.content || '')}
+                />
+              </div>
+            ) : (
+              <TranslatablePostText
+                post={post}
+                viewerId={user?.id}
+                viewerUsername={user?.username}
+                mentionToken={focusMentionToken || undefined}
+                expandable={false}
+                titleClassName="text-2xl font-semibold tracking-tight text-slate-950 md:text-[2rem]"
+                contentClassName="text-[15px] leading-[1.82] text-slate-700 [overflow-wrap:anywhere] md:text-base"
+                translationRowClassName="text-slate-500"
+              />
+            )}
           </div>
 
           {post.tags?.length ? (
@@ -1448,13 +1546,18 @@ export default function PostDetailView() {
                         <button
                           type="button"
                           onClick={() => openMediaLightbox(activeMediaIndex)}
-                          className="block w-full"
+                          className="relative block w-full"
                         >
                           <img
                             src={selectedMedia.url}
                             alt={selectedMedia.name || 'Post media'}
                             className={`${DETAIL_MEDIA_HEIGHT_CLASS} w-full object-contain`}
                           />
+                          {resolveVideoCaption(post, selectedMedia) ? (
+                            <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2 sm:px-3 sm:pb-3">
+                              <VideoCaptionOverlay text={resolveVideoCaption(post, selectedMedia)} />
+                            </div>
+                          ) : null}
                         </button>
                       ) : null}
 
@@ -1469,14 +1572,17 @@ export default function PostDetailView() {
                           className={`${DETAIL_MEDIA_HEIGHT_CLASS} w-full object-contain`}
                           loadingLabel="Video loading"
                           overlay={(videoElement) => (
-                            <PostVideoActionBar
-                              postId={post.id}
-                              postTitle={post.title}
-                              postContent={post.content}
-                              postLocation={post.location}
-                              media={selectedMedia}
-                              videoElement={videoElement}
-                            />
+                            <div className="w-full space-y-2 px-2 sm:px-3">
+                              <VideoCaptionOverlay text={resolveVideoCaption(post, selectedMedia)} />
+                              <PostVideoActionBar
+                                postId={post.id}
+                                postTitle={post.title}
+                                postContent={resolveVideoCaption(post, selectedMedia) || post.content}
+                                postLocation={post.location}
+                                media={selectedMedia}
+                                videoElement={videoElement}
+                              />
+                            </div>
                           )}
                         />
                       ) : null}
@@ -1687,6 +1793,16 @@ export default function PostDetailView() {
                     onEditPost={(targetPost) => navigate(`/community/posts/${encodeURIComponent(targetPost.id)}?edit=1`)}
                     onDeletePost={(targetPost) => {
                       void handleDeletePost(targetPost);
+                    }}
+                    onTogglePin={(targetPost) => {
+                      void CommunityService.updatePost(String(targetPost?.id || ''), { isPinned: !Boolean(targetPost?.isPinned) })
+                        .then((updated) => patchFeedPost(String(targetPost?.id || ''), (item) => ({ ...item, ...(updated || {}), isPinned: updated?.isPinned ?? !targetPost?.isPinned })))
+                        .catch((error: any) => showNotification('error', 'Pin failed', error?.response?.data?.message || 'Unable to update pin status.'));
+                    }}
+                    onToggleHighlight={(targetPost) => {
+                      void CommunityService.updatePost(String(targetPost?.id || ''), { isHighlighted: !Boolean(targetPost?.isHighlighted) })
+                        .then((updated) => patchFeedPost(String(targetPost?.id || ''), (item) => ({ ...item, ...(updated || {}), isHighlighted: updated?.isHighlighted ?? !targetPost?.isHighlighted })))
+                        .catch((error: any) => showNotification('error', 'Highlight failed', error?.response?.data?.message || 'Unable to update highlight status.'));
                     }}
                   />
 

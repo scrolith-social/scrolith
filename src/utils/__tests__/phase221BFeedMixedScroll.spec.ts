@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildScrollVideoUrl, normalizeScrollVideoRecommendation, isScrollHomeFallback } from '../scrollVideoRoutes';
 import { resolveStreamKind, toStreamEntry } from '../feedStream';
+import { buildPostVideoScrollViewerPath, hasPostVideoViewerSource, isPostVideoWatchSearch } from '../postVideoScrollBridge';
 
 describe('phase221B feed mixed scroll card routing', () => {
   it('maps SCROLL_VIDEO type to scroll kind', () => {
@@ -31,5 +32,20 @@ describe('phase221B feed mixed scroll card routing', () => {
   it('returns null target when identity missing (disable nav, no /home)', () => {
     const target = normalizeScrollVideoRecommendation({ data: { title: 'No id' }, kind: 'scroll' });
     expect(target).toBeNull();
+  });
+
+  it('builds /scroll?watch=post-video&post=&file= for a clicked post card', () => {
+    expect(buildPostVideoScrollViewerPath({ sourcePostId: 'postA', fileId: 'fileA' })).toBe(
+      '/scroll?watch=post-video&post=postA&file=fileA'
+    );
+    expect(isPostVideoWatchSearch('?watch=post-video&post=postA')).toBe(true);
+    expect(isPostVideoWatchSearch('?scroll=native1')).toBe(false);
+    expect(isPostVideoWatchSearch('')).toBe(false);
+  });
+
+  it('recognizes an embedded mobile viewer source as an explicit target', () => {
+    expect(hasPostVideoViewerSource({ sourcePostId: 'postA', mediaUrl: 'https://cdn.test/video-a.mp4' })).toBe(true);
+    expect(hasPostVideoViewerSource({ sourcePostId: 'postA', mediaUrl: '' })).toBe(false);
+    expect(hasPostVideoViewerSource(null)).toBe(false);
   });
 });

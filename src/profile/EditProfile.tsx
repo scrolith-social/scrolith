@@ -3,33 +3,69 @@ import React, { Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import { useUser } from '../context/UserContext';
 import { useContent } from '../context/ContentContext';
 import { UserService } from '../services/user';
-import { UserProfile, PortfolioItem, Experience, Education, Certification, UploadedFile } from '../types';
+import { SearchService } from '../services/search';
+import { UserProfile, ProfessionalAvailability, ClientHiringStatus, PortfolioItem, Experience, Education, Certification, UploadedFile, UserRole } from '../types';
 import { useNotification } from '../context/NotificationContext';
 import { 
     User, Briefcase, GraduationCap, Award, Layers, Video, Save, Plus, Trash2, 
-    Upload, Link as LinkIcon, CheckCircle, ArrowLeft, Camera, Loader2 
+    Upload, Link as LinkIcon, CheckCircle, ArrowLeft, Camera, Loader2, Building2, X
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import FilePickerModal from '../dashboard/shared/FilePickerModal';
 import { FileService } from '../services/files';
 import { Capacitor } from '@capacitor/core';
 import { captureAndUpload } from '../mobile/uploads';
 import { getPublicAppOrigin } from '../utils/siteUrl';
+import { resolveAssetUrl } from '../utils/assetUrl';
+import { resolvePostAttachmentMediaUrl } from '../utils/postAttachmentMedia';
+import { resolveUserAvatarUrl } from '../utils/userAvatar';
+import EnterpriseAvatar from '../components/common/EnterpriseAvatar';
+import EnterpriseImage from '../components/common/EnterpriseImage';
+import AIComposerAssist from '../components/ai/AIComposerAssist';
 
 const LocationPicker = React.lazy(() => import('../components/common/LocationPicker'));
 
 interface EditProfileProps {
     isEmbedded?: boolean;
+    activeRole?: UserRole | 'client';
 }
 
-const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
+type CompanyPageSuggestion = {
+    id: string;
+    name: string;
+    title?: string;
+    username?: string;
+    subtitle?: string;
+    url?: string;
+    avatarUrl?: string;
+};
+
+const parseCommaSeparated = (value: string) =>
+    value.split(',').map((item) => item.trim()).filter(Boolean);
+
+const formatCommaSeparated = (value: unknown) =>
+    Array.isArray(value)
+        ? value.map((item) => String(item || '').trim()).filter(Boolean).join(', ')
+        : '';
+
+const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false, activeRole }) => {
     const { user, updateUser } = useUser();
     const { settings } = useContent();
     const navigate = useNavigate();
+    const location = useLocation();
     const { showNotification } = useNotification();
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
-    const [activeTab, setActiveTab] = useState<'basic' | 'portfolio' | 'experience' | 'education' | 'skills'>('basic');
+    const [activeTab, setActiveTab] = useState<'basic' | 'portfolio' | 'experience' | 'education' | 'skills' | 'availability' | 'hiring'>('basic');
+    const [availabilityDraft, setAvailabilityDraft] = useState<ProfessionalAvailability>({
+        status: 'INACTIVE', availabilityTypes: [], services: [], workPreference: 'FLEXIBLE',
+        timing: 'FLEXIBLE', availableFrom: null, expiresAt: null, visibility: 'PUBLIC', isActive: false
+    });
+    const [hiringDraft, setHiringDraft] = useState<ClientHiringStatus>({
+        status: 'INACTIVE', hiringTypes: [], focusAreas: [], timing: 'FLEXIBLE', visibility: 'PUBLIC', isActive: false, expiresAt: null
+    });
+    const [availabilityServicesInput, setAvailabilityServicesInput] = useState('');
+    const [hiringFocusAreasInput, setHiringFocusAreasInput] = useState('');
     const [isSaving, setIsSaving] = useState(false);
     const [displayName, setDisplayName] = useState('');
     
@@ -55,6 +91,10 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
     const introChunksRef = useRef<Blob[]>([]);
     const [introRecording, setIntroRecording] = useState(false);
     const [introUploading, setIntroUploading] = useState(false);
+    const [companyLookupExperienceId, setCompanyLookupExperienceId] = useState<string | null>(null);
+    const [companyLookupQuery, setCompanyLookupQuery] = useState('');
+    const [companyLookupResults, setCompanyLookupResults] = useState<CompanyPageSuggestion[]>([]);
+    const [companyLookupLoading, setCompanyLookupLoading] = useState(false);
     const usernameRegex = /^[a-z0-9][a-z0-9._-]{2,29}$/;
     const publicBaseUrl = getPublicAppOrigin();
     const cleanBaseUrl = publicBaseUrl.replace(/\/$/, '');
@@ -78,6 +118,56 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
         ];
     }, [profileDemographics]);
 
+    // Dashboard role switches are contextual; keep the persisted user role authoritative for API access.
+    const profileViewRole = useMemo<UserRole | 'client'>(() => {
+        if (activeRole) return activeRole;
+        const asParam = new URLSearchParams(location.search).get('as')?.toLowerCase();
+        if (asParam?.startsWith('f')) return UserRole.FREELANCER;
+        if (asParam?.startsWith('e') || asParam?.startsWith('c')) return UserRole.EMPLOYER;
+        return user?.role || UserRole.GUEST;
+    }, [activeRole, location.search, user?.role]);
+
+    useEffect(() => {
+        const query = companyLookupQuery.trim();
+        if (!companyLookupExperienceId || query.length < 2) {
+            setCompanyLookupResults([]);
+            setCompanyLookupLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        setCompanyLookupLoading(true);
+        const timer = window.setTimeout(async () => {
+            try {
+                const results = await SearchService.search(query, { type: 'pages', limit: 6 });
+                if (cancelled) return;
+                setCompanyLookupResults(
+                    (Array.isArray(results) ? results : [])
+                        .filter((entry: any) => String(entry?.id || '').trim())
+                        .map((entry: any) => ({
+                            id: String(entry.id),
+                            name: String(entry.name || entry.title || '').trim(),
+                            title: entry.title,
+                            username: entry.username,
+                            subtitle: entry.subtitle || entry.description,
+                            url: entry.url,
+                            avatarUrl: entry.avatarUrl || entry.image
+                        }))
+                        .filter((entry: CompanyPageSuggestion) => entry.name)
+                );
+            } catch (error) {
+                if (!cancelled) setCompanyLookupResults([]);
+            } finally {
+                if (!cancelled) setCompanyLookupLoading(false);
+            }
+        }, 250);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [companyLookupExperienceId, companyLookupQuery]);
+
     const notifyProfileUpdate = (updatedProfile?: UserProfile | null, updatedUser?: { name?: string; avatar?: string; username?: string }) => {
         if (typeof window === 'undefined') return;
         window.dispatchEvent(new CustomEvent('profile:updated', { detail: { profile: updatedProfile, user: updatedUser } }));
@@ -97,6 +187,8 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
             setLoading(true);
             setDisplayName(user.name || '');
             setUsername(user.username || '');
+            setAvailabilityServicesInput('');
+            setHiringFocusAreasInput('');
             lastSavedUsernameRef.current = user.username || '';
             setProfile({
                 user_id: user.id,
@@ -137,7 +229,17 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
 
             try {
                 const data = await UserService.getMyProfile();
-                if (mounted) setProfile(data);
+                if (mounted) {
+                    setProfile(data);
+                    if (data.availability) {
+                        setAvailabilityDraft(data.availability);
+                        setAvailabilityServicesInput(formatCommaSeparated(data.availability.services));
+                    }
+                    if (data.hiring) {
+                        setHiringDraft(data.hiring);
+                        setHiringFocusAreasInput(formatCommaSeparated(data.hiring.focusAreas));
+                    }
+                }
             } catch (error: any) {
                 if (mounted) {
                     showNotification('alert', 'Profile Load Failed', error?.message || 'Unable to load profile.');
@@ -151,7 +253,7 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
         return () => {
             mounted = false;
         };
-    }, [user?.id, showNotification]);
+    }, [profileViewRole, user?.id, showNotification]);
 
     useEffect(() => {
         if (!user) return;
@@ -224,6 +326,32 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
         if (!profile || !user) return;
         setIsSaving(true);
         try {
+            if (activeTab === 'availability') {
+                const availabilityPayload = {
+                    ...availabilityDraft,
+                    services: parseCommaSeparated(availabilityServicesInput)
+                };
+                const savedAvailability = await UserService.updateMyAvailability(availabilityPayload);
+                const nextAvailability = savedAvailability || availabilityPayload;
+                setAvailabilityDraft(nextAvailability);
+                setAvailabilityServicesInput(formatCommaSeparated(nextAvailability.services));
+                setProfile((prev) => prev ? { ...prev, availability: nextAvailability, professionalAvailability: nextAvailability } : prev);
+                showNotification('success', 'Availability Updated', 'Your professional availability settings have been saved.');
+                return;
+            }
+            if (activeTab === 'hiring' && canEditClientHiring) {
+                const hiringPayload = {
+                    ...hiringDraft,
+                    focusAreas: parseCommaSeparated(hiringFocusAreasInput)
+                };
+                const savedHiring = await UserService.updateMyClientHiringStatus(hiringPayload);
+                const nextHiring = savedHiring || hiringPayload;
+                setHiringDraft(nextHiring);
+                setHiringFocusAreasInput(formatCommaSeparated(nextHiring.focusAreas));
+                setProfile((prev) => prev ? { ...prev, hiring: nextHiring, clientHiringStatus: nextHiring } : prev);
+                showNotification('success', 'Hiring Status Updated', 'Your We Are Hiring settings have been saved.');
+                return;
+            }
             const updated = await UserService.updateMyProfile(profile);
             setProfile(updated);
             const nextName = displayName.trim();
@@ -235,6 +363,53 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
             showNotification('success', 'Profile Updated', 'Your changes have been saved successfully.');
         } catch (e: any) {
             showNotification('alert', 'Error', e?.message || 'Failed to save profile.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleSaveAvailability = async () => {
+        setIsSaving(true);
+        try {
+            const availabilityPayload = {
+                ...availabilityDraft,
+                services: parseCommaSeparated(availabilityServicesInput)
+            };
+            const saved = await UserService.updateMyAvailability(availabilityPayload);
+            const nextAvailability = saved || availabilityPayload;
+            setAvailabilityDraft(nextAvailability);
+            setAvailabilityServicesInput(formatCommaSeparated(nextAvailability.services));
+            setProfile((prev) => prev ? { ...prev, availability: nextAvailability, professionalAvailability: nextAvailability } : prev);
+            showNotification('success', 'Availability Updated', 'Your professional availability settings have been saved.');
+        } catch (e: any) {
+            showNotification('alert', 'Error', e?.message || 'Failed to save availability.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const canEditClientHiring = profileViewRole === UserRole.EMPLOYER || profileViewRole === 'client';
+
+    const handleSaveClientHiring = async () => {
+        setIsSaving(true);
+        try {
+            const hiringPayload = {
+                ...hiringDraft,
+                focusAreas: parseCommaSeparated(hiringFocusAreasInput)
+            };
+            const saved = await UserService.updateMyClientHiringStatus(hiringPayload);
+            const nextHiring = saved || hiringPayload;
+            if (saved) {
+                setHiringDraft(nextHiring);
+                setHiringFocusAreasInput(formatCommaSeparated(nextHiring.focusAreas));
+                setProfile((prev) => prev ? { ...prev, hiring: nextHiring, clientHiringStatus: nextHiring } : prev);
+            } else {
+                setHiringDraft(nextHiring);
+                setHiringFocusAreasInput(formatCommaSeparated(nextHiring.focusAreas));
+            }
+            showNotification('success', 'Hiring status updated', 'Your We Are Hiring settings have been saved.');
+        } catch (e: any) {
+            showNotification('alert', 'Error', e?.message || 'Failed to save hiring status.');
         } finally {
             setIsSaving(false);
         }
@@ -271,19 +446,40 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
         }
     };
 
+    const resolveIdentityMediaUrl = (file: UploadedFile) => {
+        const fileId = String(file.id || (file as any).fileId || '').trim();
+        return (
+            resolvePostAttachmentMediaUrl({
+                url: file.url,
+                fileId,
+                id: fileId,
+                storageKey: (file as any).storageKey || (file as any).storage_key
+            }) ||
+            resolveAssetUrl(String(file.url || '').trim()) ||
+            (fileId ? resolveAssetUrl(`/api/files/content/${encodeURIComponent(fileId)}`) : '') ||
+            String(file.url || '').trim()
+        );
+    };
+
     const applyProfilePhoto = async (file: UploadedFile) => {
         if (!profile || !user) return;
-        updateUser({ avatar: file.url, profilePhotoFileId: file.id });
+        const durableUrl = resolveIdentityMediaUrl(file);
+        const fileId = String(file.id || (file as any).fileId || '').trim();
+        updateUser({ avatar: durableUrl, profilePhotoFileId: fileId || undefined });
         setProfile(prev => prev ? {
             ...prev,
-            avatarUrl: file.url,
-            avatar_url: file.url,
-            profilePhotoFileId: file.id,
-            profile_photo_file_id: file.id
+            avatarUrl: durableUrl,
+            avatar_url: durableUrl,
+            profilePhotoFileId: fileId,
+            profile_photo_file_id: fileId
         } : prev);
         try {
-            await UserService.updateCredentials(user.id, { avatar: file.url, profilePhotoFileId: file.id });
-            notifyProfileUpdate(null, { avatar: file.url });
+            await UserService.updateCredentials(user.id, {
+                avatar: durableUrl,
+                profilePhotoFileId: fileId || undefined
+            });
+            notifyProfileUpdate(null, { avatar: durableUrl, profilePhotoFileId: fileId });
+            showNotification('success', 'Profile', 'Profile photo updated.');
         } catch (error) {
             showNotification('alert', 'Error', 'Failed to update profile photo.');
         }
@@ -291,13 +487,23 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
 
     const applyCoverPhoto = async (file: UploadedFile) => {
         if (!profile || !user) return;
+        const durableUrl = resolveIdentityMediaUrl(file);
+        const fileId = String(file.id || (file as any).fileId || '').trim();
         setProfile(prev => prev ? {
             ...prev,
-            coverPhotoUrl: file.url,
-            cover_photo_url: file.url
+            coverPhotoUrl: durableUrl,
+            cover_photo_url: durableUrl,
+            coverPhotoFileId: fileId,
+            cover_photo_file_id: fileId
         } : prev);
         try {
-            const updated = await UserService.updateMyProfile({ coverPhotoUrl: file.url, cover_photo_url: file.url });
+            // Prefer durable content URL so <img> never depends on ephemeral hosts.
+            const updated = await UserService.updateMyProfile({
+                coverPhotoUrl: durableUrl,
+                cover_photo_url: durableUrl,
+                coverPhotoFileId: fileId || undefined,
+                cover_photo_file_id: fileId || undefined
+            });
             setProfile(updated);
             notifyProfileUpdate(updated);
             showNotification('success', 'Profile', 'Cover photo updated.');
@@ -521,6 +727,57 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
         setProfile(prev => prev ? { ...prev, experience: prev.experience.filter(e => e.id !== id) } : null);
     };
 
+    const updateExperienceCompany = (id: string, value: string) => {
+        updateExperience(id, 'company', value);
+        setProfile(prev => prev ? {
+            ...prev,
+            experience: prev.experience.map(e => e.id === id ? {
+                ...e,
+                company: value,
+                companyPageId: undefined,
+                companyPageSlug: undefined,
+                companyPageHandle: undefined,
+                companyPageUrl: undefined,
+                companyPageMatched: false
+            } : e)
+        } : null);
+        setCompanyLookupExperienceId(id);
+        setCompanyLookupQuery(value);
+    };
+
+    const selectExperienceCompanyPage = (id: string, page: CompanyPageSuggestion) => {
+        const url = page.url || `/company/${encodeURIComponent(page.username || page.id)}`;
+        setProfile(prev => prev ? {
+            ...prev,
+            experience: prev.experience.map(e => e.id === id ? {
+                ...e,
+                company: page.name,
+                companyPageId: page.id,
+                companyPageSlug: url.split('/company/')[1]?.split(/[?#]/)[0] || undefined,
+                companyPageHandle: page.username || undefined,
+                companyPageUrl: url,
+                companyPageMatched: true
+            } : e)
+        } : null);
+        setCompanyLookupExperienceId(null);
+        setCompanyLookupQuery('');
+        setCompanyLookupResults([]);
+    };
+
+    const clearExperienceCompanyPage = (id: string) => {
+        setProfile(prev => prev ? {
+            ...prev,
+            experience: prev.experience.map(e => e.id === id ? {
+                ...e,
+                companyPageId: undefined,
+                companyPageSlug: undefined,
+                companyPageHandle: undefined,
+                companyPageUrl: undefined,
+                companyPageMatched: false
+            } : e)
+        } : null);
+    };
+
     const addEducation = () => {
         setProfile(prev => prev ? { 
             ...prev, 
@@ -629,6 +886,8 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                     { id: 'experience', label: 'Experience', icon: Briefcase },
                                     { id: 'education', label: 'Education', icon: GraduationCap },
                                     { id: 'skills', label: 'Skills & Certs', icon: Award },
+                                    { id: 'availability', label: 'Available for Hire', icon: CheckCircle },
+                                    ...(canEditClientHiring ? [{ id: 'hiring', label: 'We Are Hiring', icon: Briefcase }] : []),
                                 ].map(item => (
                                     <button
                                         key={item.id}
@@ -679,8 +938,21 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                         </div>
                                         <div className="mt-3 overflow-hidden rounded-2xl border border-gray-200 bg-slate-900">
                                             <div className="relative aspect-[5/2] w-full">
-                                                {profile.coverPhotoUrl ? (
-                                                    <img src={profile.coverPhotoUrl} alt="Cover" className="h-full w-full object-cover" />
+                                                {profile.coverPhotoUrl || (profile as any).coverPhotoFileId || (profile as any).cover_photo_file_id ? (
+                                                    <EnterpriseImage
+                                                        src={profile.coverPhotoUrl}
+                                                        candidates={[
+                                                            (profile as any).coverPhotoFileId,
+                                                            (profile as any).cover_photo_file_id,
+                                                            (profile as any).cover
+                                                        ]}
+                                                        alt="Cover"
+                                                        width={1920}
+                                                        height={768}
+                                                        loading="eager"
+                                                        rounded="rounded-none"
+                                                        className="h-full w-full bg-transparent"
+                                                    />
                                                 ) : (
                                                     <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700">
                                                         <span className="text-xs font-semibold uppercase tracking-widest text-slate-200">Add cover photo</span>
@@ -696,7 +968,19 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
 
                                     <div className="flex items-center space-x-6">
                                         <div className="relative group w-24 h-24 rounded-full bg-gray-100 overflow-hidden border-2 border-gray-200 cursor-pointer" onClick={() => openPicker('avatar')}>
-                                            <img src={user?.avatar || "/placeholders/avatar.svg"} alt="Profile" className="w-full h-full object-cover" />
+                                            <EnterpriseAvatar
+                                                user={profile || user}
+                                                src={
+                                                    resolveUserAvatarUrl(user) ||
+                                                    resolveUserAvatarUrl(profile) ||
+                                                    resolveAssetUrl(String(user?.avatar || profile?.avatarUrl || '')) ||
+                                                    undefined
+                                                }
+                                                name={user?.name || profile?.name || 'Profile'}
+                                                size="xl"
+                                                className="!h-full !w-full"
+                                                alt="Profile"
+                                            />
                                             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                                                 <Camera className="w-6 h-6 text-white" />
                                             </div>
@@ -870,6 +1154,19 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                             value={profile.bio}
                                             onChange={e => setProfile({...profile, bio: e.target.value})}
                                         />
+                                        <AIComposerAssist
+                                            value={profile.bio?.trim() || [
+                                                profile.title && `Professional title: ${profile.title}`,
+                                                profile.skills?.length ? `Skills: ${profile.skills.join(', ')}` : '',
+                                                profile.experience?.length ? `Experience: ${profile.experience.map((item) => `${item.title} at ${item.company}`).filter(Boolean).join('; ')}` : '',
+                                                profile.location && `Location: ${profile.location}`
+                                            ].filter(Boolean).join('\n')}
+                                            surface="profile-about"
+                                            defaultMode="professional"
+                                            compact
+                                            className="mt-3"
+                                            onApplyDraft={(draft) => setProfile((current) => current ? { ...current, bio: draft } : current)}
+                                        />
                                     </div>
 
                                     <div>
@@ -946,20 +1243,128 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                         </button>
                                     </div>
                                     
-                                    {profile.experience.map((exp, idx) => (
+                                    {profile.experience.map((exp) => (
                                         <div key={exp.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200 relative group">
                                             <button onClick={() => removeExperience(exp.id)} className="absolute top-2 right-2 text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity">
                                                 <Trash2 className="w-4 h-4" />
                                             </button>
-                                            <div className="grid grid-cols-2 gap-4 mb-3">
-                                                <input placeholder="Job Title" className="border-gray-300 rounded text-sm font-bold p-2" value={exp.title} onChange={e => updateExperience(exp.id, 'title', e.target.value)} />
-                                                <input placeholder="Company" className="border-gray-300 rounded text-sm p-2" value={exp.company} onChange={e => updateExperience(exp.id, 'company', e.target.value)} />
-                                                <div className="flex gap-2">
-                                                    <input type="text" placeholder="Start Date" className="border-gray-300 rounded text-xs w-full p-2" value={exp.start_date} onChange={e => updateExperience(exp.id, 'start_date', e.target.value)} />
-                                                    <input type="text" placeholder="End Date" className="border-gray-300 rounded text-xs w-full p-2" value={exp.end_date} onChange={e => updateExperience(exp.id, 'end_date', e.target.value)} />
+                                            <div className="grid grid-cols-1 gap-4 mb-3 md:grid-cols-2">
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Role</label>
+                                                    <input placeholder="Job title" className="w-full rounded-lg border border-gray-300 p-2 text-sm font-bold" value={exp.title} onChange={e => updateExperience(exp.id, 'title', e.target.value)} />
+                                                </div>
+                                                <div className="relative">
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Company</label>
+                                                    <div className="flex overflow-hidden rounded-lg border border-gray-300 bg-white focus-within:ring-2 focus-within:ring-blue-100">
+                                                        <span className="flex items-center px-2 text-gray-400">
+                                                            <Building2 className="h-4 w-4" />
+                                                        </span>
+                                                        <input
+                                                            placeholder="Company name or page"
+                                                            className="min-w-0 flex-1 p-2 text-sm outline-none"
+                                                            value={exp.company}
+                                                            onFocus={() => {
+                                                                setCompanyLookupExperienceId(exp.id);
+                                                                setCompanyLookupQuery(exp.company || '');
+                                                            }}
+                                                            onBlur={() => {
+                                                                window.setTimeout(() => {
+                                                                    setCompanyLookupExperienceId(current => current === exp.id ? null : current);
+                                                                }, 150);
+                                                            }}
+                                                            onChange={e => updateExperienceCompany(exp.id, e.target.value)}
+                                                        />
+                                                        {exp.companyPageMatched && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => clearExperienceCompanyPage(exp.id)}
+                                                                className="px-2 text-gray-400 hover:text-gray-700"
+                                                                title="Unlink company page"
+                                                            >
+                                                                <X className="h-4 w-4" />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    {exp.companyPageMatched && exp.companyPageUrl && (
+                                                        <p className="mt-1 text-xs font-medium text-green-700">
+                                                            Linked to platform company page: {exp.companyPageUrl}
+                                                        </p>
+                                                    )}
+                                                    {companyLookupExperienceId === exp.id && (companyLookupLoading || companyLookupResults.length > 0) && (
+                                                        <div className="absolute z-30 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+                                                            {companyLookupLoading && (
+                                                                <div className="flex items-center gap-2 px-3 py-2 text-sm text-gray-500">
+                                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                                    Searching company pages...
+                                                                </div>
+                                                            )}
+                                                            {!companyLookupLoading && companyLookupResults.map((page) => (
+                                                                <button
+                                                                    key={page.id}
+                                                                    type="button"
+                                                                    onMouseDown={(event) => event.preventDefault()}
+                                                                    onClick={() => selectExperienceCompanyPage(exp.id, page)}
+                                                                    className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-blue-50"
+                                                                >
+                                                                    {page.avatarUrl ? (
+                                                                        <img src={page.avatarUrl} alt="" className="h-8 w-8 rounded-lg object-cover" />
+                                                                    ) : (
+                                                                        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
+                                                                            <Building2 className="h-4 w-4" />
+                                                                        </span>
+                                                                    )}
+                                                                    <span className="min-w-0">
+                                                                        <span className="block truncate text-sm font-semibold text-gray-900">{page.name}</span>
+                                                                        <span className="block truncate text-xs text-gray-500">{page.subtitle || page.url || 'Company page'}</span>
+                                                                    </span>
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Working from</label>
+                                                    <input
+                                                        type="date"
+                                                        className="w-full rounded-lg border border-gray-300 p-2 text-sm"
+                                                        value={exp.start_date}
+                                                        onChange={e => updateExperience(exp.id, 'start_date', e.target.value)}
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <div className="mb-1 flex items-center justify-between gap-3">
+                                                        <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">Working to</label>
+                                                        <label className="inline-flex items-center gap-2 text-xs font-medium text-gray-600">
+                                                            <input
+                                                                type="checkbox"
+                                                                className="rounded border-gray-300"
+                                                                checked={Boolean(exp.current)}
+                                                                onChange={e => {
+                                                                    updateExperience(exp.id, 'current', e.target.checked);
+                                                                    if (e.target.checked) updateExperience(exp.id, 'end_date', '');
+                                                                }}
+                                                            />
+                                                            Currently working
+                                                        </label>
+                                                    </div>
+                                                    <input
+                                                        type="date"
+                                                        className="w-full rounded-lg border border-gray-300 p-2 text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                                                        value={exp.current ? '' : exp.end_date}
+                                                        disabled={Boolean(exp.current)}
+                                                        onChange={e => updateExperience(exp.id, 'end_date', e.target.value)}
+                                                    />
                                                 </div>
                                             </div>
-                                            <textarea placeholder="Description of role..." className="w-full border-gray-300 rounded text-sm h-20 p-2" value={exp.description} onChange={e => updateExperience(exp.id, 'description', e.target.value)} />
+                                            <textarea placeholder="Description of role..." className="h-20 w-full rounded-lg border border-gray-300 p-2 text-sm" value={exp.description} onChange={e => updateExperience(exp.id, 'description', e.target.value)} />
+                                            <AIComposerAssist
+                                                value={exp.description?.trim() || `Role: ${exp.title || 'Professional role'}\nCompany: ${exp.company || 'Company'}\nWrite a concise, achievement-focused experience description.`}
+                                                surface="profile-experience"
+                                                defaultMode="professional"
+                                                compact
+                                                className="mt-3"
+                                                onApplyDraft={(draft) => updateExperience(exp.id, 'description', draft)}
+                                            />
                                         </div>
                                     ))}
                                     {profile.experience.length === 0 && <p className="text-center text-gray-500 italic">No experience added yet.</p>}
@@ -994,6 +1399,100 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                 </div>
                             )}
 
+                            {/* AVAILABILITY */}
+                            {activeTab === 'availability' && (
+                                <div className="space-y-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm animate-fade-in">
+                                    <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-gray-900">Available for Hire</h3>
+                                            <p className="mt-1 text-sm text-gray-500">Let verified visitors know when you are open to professional work.</p>
+                                        </div>
+                                        <label className="inline-flex min-h-11 cursor-pointer items-center gap-3 text-sm font-medium text-gray-700">
+                                            <input type="checkbox" className="h-5 w-5 accent-blue-600" checked={availabilityDraft.isActive} onChange={(e) => setAvailabilityDraft((prev) => ({ ...prev, isActive: e.target.checked, status: e.target.checked ? 'ACTIVE' : 'INACTIVE' }))} />
+                                            Accept new opportunities
+                                        </label>
+                                    </div>
+                                    <fieldset>
+                                        <legend className="mb-2 text-sm font-semibold text-gray-800">Work types</legend>
+                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                            {['FREELANCE', 'FULL_TIME', 'PART_TIME', 'CONTRACT', 'CONSULTING', 'COLLABORATION'].map((type) => (
+                                                <label key={type} className="flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 hover:bg-gray-50">
+                                                    <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={availabilityDraft.availabilityTypes.includes(type)} onChange={(e) => setAvailabilityDraft((prev) => ({ ...prev, availabilityTypes: e.target.checked ? [...prev.availabilityTypes, type] : prev.availabilityTypes.filter((item) => item !== type) }))} />
+                                                    {type.replace('_', ' ').toLowerCase().replace(/(^| )\S/g, (letter) => letter.toUpperCase())}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </fieldset>
+                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                        <label className="text-sm font-medium text-gray-700">Work preference
+                                            <select className="mt-2 min-h-11 w-full rounded-lg border border-gray-300 bg-white px-3" value={availabilityDraft.workPreference} onChange={(e) => setAvailabilityDraft((prev) => ({ ...prev, workPreference: e.target.value as ProfessionalAvailability['workPreference'] }))}>
+                                                <option value="FLEXIBLE">Flexible</option><option value="REMOTE">Remote</option><option value="HYBRID">Hybrid</option><option value="ONSITE">On-site</option>
+                                            </select>
+                                        </label>
+                                        <label className="text-sm font-medium text-gray-700">Availability timing
+                                            <select className="mt-2 min-h-11 w-full rounded-lg border border-gray-300 bg-white px-3" value={availabilityDraft.timing} onChange={(e) => setAvailabilityDraft((prev) => ({ ...prev, timing: e.target.value as ProfessionalAvailability['timing'] }))}>
+                                                <option value="FLEXIBLE">Flexible</option><option value="AVAILABLE_NOW">Available now</option><option value="WITHIN_ONE_WEEK">Within one week</option><option value="WITHIN_ONE_MONTH">Within one month</option>
+                                            </select>
+                                        </label>
+                                    </div>
+                                    <label className="block text-sm font-medium text-gray-700">Services or focus areas
+                                        <input className="mt-2 min-h-11 w-full rounded-lg border border-gray-300 px-3" placeholder="Design, consulting, engineering" value={availabilityServicesInput} onChange={(e) => setAvailabilityServicesInput(e.target.value)} />
+                                    </label>
+                                    <label className="flex min-h-11 items-center gap-3 text-sm text-gray-700">
+                                        <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={availabilityDraft.visibility === 'PUBLIC'} onChange={(e) => setAvailabilityDraft((prev) => ({ ...prev, visibility: e.target.checked ? 'PUBLIC' : 'HIDDEN' }))} />
+                                        Show this status on my public profile
+                                    </label>
+                                    <div className="flex flex-wrap gap-3">
+                                        <button type="button" onClick={handleSaveAvailability} disabled={isSaving} className="min-h-11 rounded-lg bg-blue-600 px-5 font-semibold text-white hover:bg-blue-700 disabled:opacity-60">Save availability</button>
+                                        {availabilityDraft.isActive && <button type="button" onClick={async () => { const saved = await UserService.pauseMyAvailability(); if (saved) { setAvailabilityDraft(saved); setAvailabilityServicesInput(formatCommaSeparated(saved.services)); setProfile((prev) => prev ? { ...prev, availability: saved, professionalAvailability: saved } : prev); } }} className="min-h-11 rounded-lg border border-gray-300 px-5 font-semibold text-gray-700 hover:bg-gray-50">Pause</button>}
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'hiring' && canEditClientHiring && (
+                                <div className="space-y-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm animate-fade-in">
+                                    <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-gray-900">We Are Hiring</h3>
+                                            <p className="mt-1 text-sm text-gray-500">Let qualified professionals know when your team is hiring.</p>
+                                        </div>
+                                        <label className="inline-flex min-h-11 cursor-pointer items-center gap-3 text-sm font-medium text-gray-700">
+                                            <input type="checkbox" className="h-5 w-5 accent-blue-600" checked={hiringDraft.isActive} onChange={(e) => setHiringDraft((prev) => ({ ...prev, isActive: e.target.checked, status: e.target.checked ? 'ACTIVE' : 'INACTIVE' }))} />
+                                            We are hiring
+                                        </label>
+                                    </div>
+                                    <fieldset>
+                                        <legend className="mb-2 text-sm font-semibold text-gray-800">Hiring for</legend>
+                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                            {['FREELANCE', 'FULL_TIME', 'PART_TIME', 'CONTRACT', 'CONSULTING', 'AGENCIES'].map((type) => (
+                                                <label key={type} className="flex min-h-11 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm text-gray-700 hover:bg-gray-50">
+                                                    <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={hiringDraft.hiringTypes.includes(type)} onChange={(e) => setHiringDraft((prev) => ({ ...prev, hiringTypes: e.target.checked ? [...prev.hiringTypes, type] : prev.hiringTypes.filter((item) => item !== type) }))} />
+                                                    {type.replace('_', ' ').toLowerCase().replace(/(^| )\S/g, (letter) => letter.toUpperCase())}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </fieldset>
+                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                        <label className="text-sm font-medium text-gray-700">Hiring timeline
+                                            <select className="mt-2 min-h-11 w-full rounded-lg border border-gray-300 bg-white px-3" value={hiringDraft.timing} onChange={(e) => setHiringDraft((prev) => ({ ...prev, timing: e.target.value as ClientHiringStatus['timing'] }))}>
+                                                <option value="FLEXIBLE">Flexible</option><option value="AVAILABLE_NOW">Hiring now</option><option value="WITHIN_ONE_WEEK">Within one week</option><option value="WITHIN_ONE_MONTH">Within one month</option>
+                                            </select>
+                                        </label>
+                                        <label className="block text-sm font-medium text-gray-700">Focus areas
+                                            <input className="mt-2 min-h-11 w-full rounded-lg border border-gray-300 px-3" placeholder="Product, engineering, operations" value={hiringFocusAreasInput} onChange={(e) => setHiringFocusAreasInput(e.target.value)} />
+                                        </label>
+                                    </div>
+                                    <label className="flex min-h-11 items-center gap-3 text-sm text-gray-700">
+                                        <input type="checkbox" className="h-4 w-4 accent-blue-600" checked={hiringDraft.visibility === 'PUBLIC'} onChange={(e) => setHiringDraft((prev) => ({ ...prev, visibility: e.target.checked ? 'PUBLIC' : 'HIDDEN' }))} />
+                                        Show this status on my public profile and in discovery
+                                    </label>
+                                    <div className="flex flex-wrap gap-3">
+                                        <button type="button" onClick={handleSaveClientHiring} disabled={isSaving} className="min-h-11 rounded-lg bg-blue-600 px-5 font-semibold text-white hover:bg-blue-700 disabled:opacity-60">Save hiring status</button>
+                                        {hiringDraft.isActive && <button type="button" onClick={async () => { const saved = await UserService.pauseMyClientHiringStatus(); if (saved) { setHiringDraft(saved); setHiringFocusAreasInput(formatCommaSeparated(saved.focusAreas)); setProfile((prev) => prev ? { ...prev, hiring: saved, clientHiringStatus: saved } : prev); } }} className="min-h-11 rounded-lg border border-gray-300 px-5 font-semibold text-gray-700 hover:bg-gray-50">Pause</button>}
+                                    </div>
+                                </div>
+                            )}
+
                             {/* SKILLS */}
                             {activeTab === 'skills' && (
                                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-6 animate-fade-in">
@@ -1005,6 +1504,20 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                             placeholder="React, Node.js, Design, Writing..."
                                             value={profile.skills.join(', ')}
                                             onChange={e => setProfile({...profile, skills: e.target.value.split(',').map(s => s.trim())})}
+                                        />
+                                        <AIComposerAssist
+                                            value={profile.skills.filter(Boolean).join(', ') || [
+                                                profile.title && `Position: ${profile.title}`,
+                                                profile.bio && `About: ${profile.bio}`
+                                            ].filter(Boolean).join('\n')}
+                                            surface="profile-skills"
+                                            defaultMode="keywords"
+                                            compact
+                                            className="mt-3"
+                                            onApplyDraft={(draft) => setProfile((current) => current ? {
+                                                ...current,
+                                                skills: draft.split(/[\n,;•]+/).map((skill) => skill.replace(/^[-*\d.)]+\s*/, '').trim()).filter(Boolean)
+                                            } : current)}
                                         />
                                         <div className="flex flex-wrap gap-2 mt-3">
                                             {profile.skills.filter(s => s).map((s, i) => (
@@ -1065,6 +1578,14 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                                                                 value={item.description}
                                                                 onChange={(e) => updatePortfolioItem(item.id, 'description', e.target.value)}
                                                             />
+                                                            <AIComposerAssist
+                                                                value={item.description?.trim() || `Project: ${item.title || 'Portfolio project'}\nLink: ${item.link || 'Not provided'}\nWrite a clear, outcome-focused portfolio description.`}
+                                                                surface="profile-portfolio"
+                                                                defaultMode="professional"
+                                                                compact
+                                                                className="md:col-span-2"
+                                                                onApplyDraft={(draft) => updatePortfolioItem(item.id, 'description', draft)}
+                                                            />
                                                         </div>
                                                         <button
                                                             onClick={() => removePortfolioItem(item.id)}
@@ -1091,8 +1612,10 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false }) => {
                 onSelect={handleFileSelect}
                 acceptedTypes={pickerTarget === 'video' ? 'video/*' : 'image/*'}
                 title={pickerTarget === 'video' ? 'Select Video' : 'Select Photo'}
-                allowCamera={pickerTarget === 'avatar'}
+                allowCamera={pickerTarget === 'avatar' || pickerTarget === 'cover'}
                 cameraCapture="user"
+                filterType={pickerTarget === 'video' ? 'video' : 'image'}
+                visibility="public"
             />
             <FilePickerModal
                 isOpen={portfolioPickerOpen}

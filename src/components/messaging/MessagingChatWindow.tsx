@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
+  ArrowLeft,
   ExternalLink,
   Minus,
   X,
@@ -10,8 +11,21 @@ import {
   Pencil,
   Trash2,
   RefreshCw,
-  MoreVertical
+  MoreVertical,
+  Pin,
+  Palette,
+  Phone,
+  Users,
+  Video
 } from 'lucide-react';
+import { MessagingService } from '../../services/messaging';
+import {
+  appearanceToBackgroundStyle,
+  buildChatPalette,
+  paletteToCssVars,
+  type AppearanceInput
+} from '../../services/messaging/chatTextColorEngine';
+import ChatAppearancePanel from './ChatAppearancePanel';
 import type { Message } from '../../types';
 import { useMessages } from '../../context/MessageContext';
 import { useUser } from '../../context/UserContext';
@@ -23,6 +37,7 @@ import {
   getConversationDisplayName,
   getMessagePreviewText
 } from '../../services/messagingSurfaces';
+import { useVoiceCall } from '../../messages/VoiceCallProvider';
 import {
   canDeleteForMe,
   canEditOrUnsendMessage,
@@ -35,10 +50,11 @@ import {
 } from '../../services/messagingComposer';
 import InlineMessageComposer from './InlineMessageComposer';
 import { MessageAttachmentsList } from './MessageAttachmentRenderer';
-import SafeMessageText from './SafeMessageText';
+import ExpandableMessageText from './ExpandableMessageText';
 import { extractMessageAttachments } from '../../services/messagingMedia';
 import { getRecoverableActionMessage } from '../../mobile/runtime/requestRecovery';
 import { AIService } from '../../services/ai/ai.service';
+import { countMessageWords, MAX_MESSAGE_WORDS } from '../../utils/messageText';
 
 type MessagingChatWindowProps = {
   conversationId: string;
@@ -47,16 +63,97 @@ type MessagingChatWindowProps = {
   onMinimize: () => void;
   onRestore: () => void;
   style?: React.CSSProperties;
+  /**
+   * `dock` — floating desktop chat chrome.
+   * `fullscreen` — mobile soft-open overlay (keeps host shell mounted).
+   */
+  presentation?: 'dock' | 'fullscreen';
 };
 
-const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
+/** Compact call controls for dock / soft-open chrome (uses global VoiceCallProvider). */
+const DockCallControls: React.FC<{
+  disabled?: boolean;
+  canConference?: boolean;
+  canVideo?: boolean;
+  iconOnly?: boolean;
+  conversationId: string;
+  callTargets: Array<{ id: string; name: string; avatar?: string }>;
+  onError: (message: string) => void;
+}> = ({ disabled, canConference, canVideo, iconOnly = false, conversationId, callTargets, onError }) => {
+  const { startCall } = useVoiceCall();
+
+  const handleStart = (options: { conference?: boolean; video?: boolean }) => {
+    void startCall({
+      conference: Boolean(options.conference),
+      video: Boolean(options.video),
+      conversationId,
+      callTargets,
+      participantUsers: callTargets
+    }).catch((error: any) => onError(error?.message || 'Unable to start call.'));
+  };
+
+  return (
+    <div className="flex max-w-full flex-wrap items-center justify-end gap-1">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => handleStart({ conference: false, video: false })}
+        className={iconOnly
+          ? 'inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl p-2 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:opacity-40'
+          : 'inline-flex items-center gap-1 rounded px-2 py-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:opacity-40'}
+        aria-label="Start voice call"
+        title="Start voice call"
+        data-testid="dock-voice-call-btn"
+      >
+        <Phone className="h-4 w-4" />
+        <span className={iconOnly ? 'sr-only' : 'text-[11px] font-semibold'}>Voice</span>
+      </button>
+      {canVideo ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => handleStart({ conference: false, video: true })}
+          className={iconOnly
+            ? 'inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl p-2 text-slate-500 hover:bg-slate-200 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:opacity-40'
+            : 'inline-flex items-center gap-1 rounded px-2 py-1.5 text-slate-500 hover:bg-slate-200 hover:text-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:opacity-40'}
+          aria-label="Start video call"
+          title="Start video call"
+          data-testid="dock-video-call-btn"
+        >
+          <Video className="h-4 w-4" />
+          <span className={iconOnly ? 'sr-only' : 'text-[11px] font-semibold'}>Video call</span>
+        </button>
+      ) : null}
+      {canConference ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => handleStart({ conference: true, video: false })}
+          className={iconOnly
+            ? 'inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl p-2 text-slate-500 hover:bg-slate-200 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:opacity-40'
+            : 'inline-flex items-center gap-1 rounded px-2 py-1.5 text-slate-500 hover:bg-slate-200 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:opacity-40'}
+          aria-label="Start conference call"
+          title="Start conference call"
+          data-testid="dock-conference-call-btn"
+        >
+          <Users className="h-4 w-4" />
+          <span className={iconOnly ? 'sr-only' : 'text-[11px] font-semibold'}>Conference</span>
+        </button>
+      ) : null}
+    </div>
+  );
+};
+
+const MessagingChatWindowInner: React.FC<MessagingChatWindowProps> = ({
   conversationId,
   minimized = false,
   onClose,
   onMinimize,
   onRestore,
-  style
+  style,
+  presentation = 'dock'
 }) => {
+  const isFullscreen = presentation === 'fullscreen';
   const navigate = useNavigate();
   const { user } = useUser();
   const {
@@ -100,6 +197,12 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
     : typingRaw;
   const sending = Boolean(sendingConversationIds[conversationId]);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [pins, setPins] = useState<any[]>([]);
+  const [appearance, setAppearance] = useState<AppearanceInput>({ kind: 'none' });
+  const [appearanceLoading, setAppearanceLoading] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [stickToBottom, setStickToBottom] = useState(true);
   const [hasNewBelow, setHasNewBelow] = useState(false);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
@@ -113,19 +216,114 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
 
   const title = getConversationDisplayName(conversation, user?.id);
   const other = getConversationAvatarParticipant(conversation, user?.id);
-  const avatarUrl =
-    resolveUserAvatarUrl(other) ||
-    resolveUserAvatarUrl({
-      avatar: other?.avatar,
-      avatarUrl: other?.avatarUrl,
-      profilePhotoFileId: other?.profilePhotoFileId || other?.profile_photo_file_id
-    }) ||
-    String(other?.avatar || other?.avatarUrl || '').trim();
-  const isOnline = Boolean(other?.isOnline ?? other?.is_online);
+  const isGroupConversation = Boolean(
+    conversation?.type === 'group' ||
+      String((conversation as any)?.type || '').toUpperCase() === 'GROUP' ||
+      Boolean((conversation as any)?.title && (conversation?.participants?.length || 0) > 2)
+  );
+  const isScrolithaConversation = Boolean(
+    (conversation as any)?.isScrolitha ||
+      (conversation as any)?.is_scrolitha ||
+      (other as any)?.isScrolitha ||
+      (other as any)?.is_scrolitha
+  );
+  const groupAvatarFileId = String(
+    (conversation as any)?.avatarFileId || (conversation as any)?.avatar_file_id || ''
+  ).trim();
+  const otherAny = other as any;
+  const avatarUrl = isGroupConversation
+    ? groupAvatarFileId
+      ? resolveUserAvatarUrl(groupAvatarFileId)
+      : ''
+    : resolveUserAvatarUrl(otherAny) ||
+      resolveUserAvatarUrl({
+        avatar: otherAny?.avatar,
+        avatarUrl: otherAny?.avatarUrl,
+        profilePhotoFileId: otherAny?.profilePhotoFileId || otherAny?.profile_photo_file_id
+      }) ||
+      String(otherAny?.avatar || otherAny?.avatarUrl || '').trim();
+  const isOnline = !isGroupConversation && Boolean(otherAny?.isOnline ?? otherAny?.is_online);
+  const voiceCallsBlocked =
+    Boolean(voiceRuntimeConfig.blockedForCurrentUser) ||
+    !Boolean((voiceRuntimeConfig as any).enabledVoiceCalls ?? true) ||
+    isScrolithaConversation;
+  const canVideoCall =
+    Boolean((voiceRuntimeConfig as any).enabledVideoCalls ?? true) && !isScrolithaConversation;
+  const canConferenceCall =
+    Boolean((voiceRuntimeConfig as any).enabledConferenceCalls ?? true) &&
+    !isScrolithaConversation &&
+    (conversation?.participants || []).filter((p: any) => {
+      const id = String(p?.id || p?.userId || '').trim();
+      return id && id !== String(user?.id || '').trim();
+    }).length > 1;
+  const dockCallTargets = useMemo(() => {
+    const selfId = String(user?.id || '').trim();
+    return (conversation?.participants || [])
+      .map((participant: any) => {
+        const id = String(participant?.id || participant?.userId || '').trim();
+        if (!id || id === selfId) return null;
+        const rawName = String(participant?.name || participant?.username || '').trim();
+        return {
+          id,
+          name: rawName || 'Participant',
+          avatar: String(participant?.avatar || '')
+        };
+      })
+      .filter(Boolean) as Array<{ id: string; name: string; avatar?: string }>;
+  }, [conversation?.participants, user?.id]);
 
   useEffect(() => {
     void ensureThreadLoaded(conversationId);
   }, [conversationId, ensureThreadLoaded]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      // Pins are group membership APIs — never call on DIRECT/Scrolitha (403 noise).
+      if (isGroupConversation) {
+        try {
+          const pinList = await MessagingService.listGroupPins(conversationId);
+          if (!cancelled) setPins(Array.isArray(pinList) ? pinList : []);
+        } catch {
+          if (!cancelled) setPins([]);
+        }
+      } else if (!cancelled) {
+        setPins([]);
+      }
+
+      // Appearance is personal membership state. Skip when participants are known
+      // and the viewer is not among them (avoids console 404 for foreign rows).
+      const selfId = String(user?.id || '').trim();
+      const parts = Array.isArray(conversation?.participants) ? conversation!.participants : [];
+      const hasSelf =
+        !selfId ||
+        parts.some(
+          (p: any) =>
+            String(p?.id || p?.userId || '').trim() === selfId &&
+            !p?.deletedAt &&
+            !p?.deleted_at
+        );
+      if (parts.length > 0 && selfId && !hasSelf) {
+        if (!cancelled) {
+          setAppearance({ kind: 'none' });
+          setAppearanceLoading(false);
+        }
+        return;
+      }
+      if (!cancelled) setAppearanceLoading(true);
+      try {
+        const app = await MessagingService.getChatAppearance(conversationId);
+        if (!cancelled) setAppearance(app || { kind: 'none' });
+      } catch {
+        if (!cancelled) setAppearance({ kind: 'none' });
+      } finally {
+        if (!cancelled) setAppearanceLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, isGroupConversation, user?.id, conversation?.participants]);
 
   useEffect(() => {
     if (minimized) {
@@ -135,6 +333,42 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
     registerVisibleConversation(conversationId);
     return () => unregisterVisibleConversation(conversationId);
   }, [conversationId, minimized, registerVisibleConversation, unregisterVisibleConversation]);
+
+  const scrollToPinned = (messageId: string) => {
+    const el = messageRefs.current[messageId];
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightMessageId(messageId);
+      window.setTimeout(() => setHighlightMessageId(null), 1600);
+    }
+  };
+
+  const handlePinToggle = async (messageId: string, isPinned: boolean) => {
+    setActionBusyId(messageId);
+    try {
+      if (isPinned) {
+        const data = await MessagingService.unpinGroupMessage(conversationId, messageId);
+        setPins(Array.isArray(data?.pins) ? data.pins : await MessagingService.listGroupPins(conversationId));
+      } else {
+        const data = await MessagingService.pinGroupMessage(conversationId, messageId);
+        setPins(Array.isArray(data?.pins) ? data.pins : await MessagingService.listGroupPins(conversationId));
+      }
+    } catch (error) {
+      setSendError(getRecoverableActionMessage('Pin message', error));
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const chatSurfaceStyle = useMemo(() => {
+    const vars = paletteToCssVars(buildChatPalette(appearance));
+    const kind = String(appearance?.kind || 'none').toLowerCase();
+    if (kind === 'none') {
+      return { ...vars } as React.CSSProperties;
+    }
+    const bg = appearanceToBackgroundStyle(appearance);
+    return { ...bg, ...vars } as React.CSSProperties;
+  }, [appearance]);
 
   useEffect(() => {
     setExpandedMessageId(null);
@@ -201,7 +435,7 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
     if (nearBottom) setHasNewBelow(false);
   };
 
-  if (minimized) {
+  if (minimized && !isFullscreen) {
     return (
       <div
         className="pointer-events-auto w-[280px] overflow-hidden rounded-t-xl border border-slate-200 bg-white shadow-xl"
@@ -253,29 +487,94 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
 
   return (
     <div
-      className="pointer-events-auto flex h-[520px] w-[380px] max-h-[min(620px,75vh)] flex-col overflow-hidden rounded-t-xl border border-slate-200 bg-white shadow-2xl"
+      className={
+        isFullscreen
+          ? 'pointer-events-auto flex h-full w-full flex-col overflow-hidden bg-white'
+          : 'pointer-events-auto flex h-[520px] w-[380px] max-h-[min(620px,75vh)] flex-col overflow-hidden rounded-t-xl border border-slate-200 bg-white shadow-2xl'
+      }
       style={style}
       role="dialog"
       aria-label={`Conversation with ${title}`}
+      data-messaging-presentation={presentation}
     >
-      <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <div className="relative h-8 w-8 shrink-0">
-          <EnterpriseAvatar
-            user={other}
-            src={avatarUrl}
-            name={title}
-            size="sm"
-            loading="eager"
-            className="border border-slate-200"
-          />
-          {isOnline ? (
-            <span
-              className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500"
-              title="Online"
-              aria-label="Online"
+      <div
+        className={`flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 ${
+          isFullscreen ? 'pt-[max(0.5rem,env(safe-area-inset-top))]' : ''
+        }`}
+      >
+        {isFullscreen ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="mr-0.5 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-slate-600 hover:bg-slate-200 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            aria-label="Back to inbox preview"
+            title="Back"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        ) : null}
+        {/* Avatar → profile; title stays in-thread (does not navigate away). */}
+        {(() => {
+          const otherAny = other as any;
+          const isScrolitha = Boolean(
+            (conversation as any)?.isScrolitha ||
+              (conversation as any)?.is_scrolitha ||
+              otherAny?.isScrolitha ||
+              otherAny?.is_scrolitha
+          );
+          const username = String(otherAny?.username || '').trim();
+          const profileUrl =
+            !isGroupConversation && !isScrolitha
+              ? username
+                ? `/u/${username.replace(/^@+/, '')}`
+                : otherAny?.profileUrl || otherAny?.profile_url
+                  ? String(otherAny.profileUrl || otherAny.profile_url)
+                  : otherAny?.id
+                    ? `/profile/${otherAny.id}`
+                    : null
+              : null;
+          const avatarNode = (
+            <EnterpriseAvatar
+              user={isGroupConversation ? undefined : other}
+              src={avatarUrl || undefined}
+              name={title}
+              size="sm"
+              loading="eager"
+              className={`border border-slate-200 ${
+                isGroupConversation && !groupAvatarFileId ? 'bg-indigo-50 text-indigo-700' : ''
+              }`}
             />
-          ) : null}
-        </div>
+          );
+          return profileUrl ? (
+            <button
+              type="button"
+              onClick={() => navigate(profileUrl)}
+              className="relative h-8 w-8 shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+              aria-label={`View ${title} profile`}
+              title="View profile"
+            >
+              {avatarNode}
+              {isOnline ? (
+                <span
+                  className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500"
+                  title="Online"
+                  aria-label="Online"
+                />
+              ) : null}
+            </button>
+          ) : (
+            <div className="relative h-8 w-8 shrink-0">
+              {avatarNode}
+              {isOnline ? (
+                <span
+                  className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500"
+                  title="Online"
+                  aria-label="Online"
+                />
+              ) : null}
+            </div>
+          );
+        })()}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-slate-900">{title}</div>
           <div className="truncate text-[11px] text-slate-500">
@@ -288,38 +587,99 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
                 : 'Messaging'}
           </div>
         </div>
+        <div className={isFullscreen ? 'flex w-full flex-wrap items-center gap-2' : 'contents'}>
+        <button
+          type="button"
+          onClick={() => setAppearanceOpen(true)}
+          className={isFullscreen
+            ? 'inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
+            : 'rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'}
+          aria-label="Chat appearance"
+          title="Chat appearance"
+          data-testid="chat-appearance-open"
+        >
+          <Palette className="h-4 w-4" />
+        </button>
+        {!isScrolithaConversation ? (
+          <DockCallControls
+            disabled={!conversationId || voiceCallsBlocked || dockCallTargets.length === 0}
+            canConference={canConferenceCall}
+            canVideo={canVideoCall}
+            iconOnly={isFullscreen}
+            conversationId={conversationId}
+            callTargets={dockCallTargets}
+            onError={(message) => setSendError(message)}
+          />
+        ) : null}
         <Link
           to={`/messages/${encodeURIComponent(conversationId)}`}
-          className="rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+          state={{ softOpen: true, fromHeaderMessages: true }}
+          className={isFullscreen
+            ? 'inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'
+            : 'rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40'}
           aria-label="Open full conversation"
           title="Open full conversation"
+          onClick={() => {
+            // Prefetch full workspace before SPA transition (no hard reload).
+            void import('../../messages/Messages').catch(() => undefined);
+          }}
         >
           <ExternalLink className="h-4 w-4" />
         </Link>
-        <button
-          type="button"
-          onClick={onMinimize}
-          className="rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          aria-label="Minimize conversation"
-        >
-          <Minus className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-          aria-label="Close conversation"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {!isFullscreen ? (
+          <button
+            type="button"
+            onClick={onMinimize}
+            className="rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            aria-label="Minimize conversation"
+          >
+            <Minus className="h-4 w-4" />
+          </button>
+        ) : null}
+        {!isFullscreen ? (
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+            aria-label="Close conversation"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
+        </div>
       </div>
 
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full space-y-2 overflow-y-auto bg-white px-3 py-3"
+          className="h-full space-y-2 overflow-y-auto px-3 py-3"
+          style={chatSurfaceStyle}
+          data-testid="chat-thread-surface"
         >
+          {pins.length > 0 ? (
+            <button
+              type="button"
+              data-testid="dock-pins-banner"
+              className="sticky top-0 z-10 mb-2 w-full rounded-xl border px-3 py-2 text-left text-xs shadow-sm"
+              style={{
+                background: 'var(--chat-pin-bg)',
+                color: 'var(--chat-pin-text)',
+                borderColor: 'rgba(0,0,0,0.08)'
+              }}
+              onClick={() => {
+                const mid = String(pins[0]?.messageId || pins[0]?.message?.id || '');
+                if (mid) scrollToPinned(mid);
+              }}
+            >
+              <div className="font-semibold">
+                📌 {pins.length} pinned message{pins.length === 1 ? '' : 's'}
+              </div>
+              <div className="mt-0.5 truncate opacity-90">
+                {String(pins[0]?.message?.text || pins[0]?.messageId || '').slice(0, 120)}
+              </div>
+            </button>
+          ) : null}
           {thread.loading && messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-500">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -352,8 +712,20 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
             const reactionChips = deleted ? [] : getReactionChipEntries(message);
             const mediaAttachments = deleted ? [] : extractMessageAttachments(message);
 
+            const isPinnedMsg = pins.some(
+              (p) => String(p.messageId || p.message?.id || '') === String(message.id)
+            );
             return (
-              <div key={message.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+              <div
+                key={message.id}
+                ref={(node) => {
+                  messageRefs.current[message.id] = node;
+                }}
+                className={`flex ${mine ? 'justify-end' : 'justify-start'} ${
+                  highlightMessageId === message.id ? 'animate-pulse ring-2 ring-amber-400 ring-offset-2' : ''
+                }`}
+                data-message-id={message.id}
+              >
                 <div className="max-w-[86%]">
                   <div
                     className={[
@@ -361,9 +733,22 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
                       mine
                         ? failed
                           ? 'bg-red-50 text-red-800 ring-1 ring-red-200'
-                          : 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-800'
+                          : ''
+                        : ''
                     ].join(' ')}
+                    style={
+                      mine && !failed
+                        ? {
+                            background: 'var(--chat-bubble-out)',
+                            color: 'var(--chat-bubble-out-text)'
+                          }
+                        : !mine
+                          ? {
+                              background: 'var(--chat-bubble-in)',
+                              color: 'var(--chat-bubble-in-text)'
+                            }
+                          : undefined
+                    }
                     onClick={() => {
                       if (editing) return;
                       setExpandedMessageId((prev) => (prev === message.id ? null : message.id));
@@ -422,8 +807,8 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
                             {deleted ? (
                               '[Message deleted]'
                             ) : (
-                              <SafeMessageText
-                                text={getMessagePreviewText(message) || message.text}
+                              <ExpandableMessageText
+                                text={String(message.text || '')}
                                 outgoing={mine && !failed}
                                 navigate={navigate}
                                 mentionClassName={
@@ -439,6 +824,7 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
                           <MessageAttachmentsList
                             attachments={mediaAttachments}
                             outgoing={mine && !failed}
+                            enableImageLightbox={isFullscreen}
                           />
                         ) : null}
                       </>
@@ -557,6 +943,19 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
                         >
                           <CornerUpLeft className="h-3 w-3" />
                           Reply
+                        </button>
+                      ) : null}
+                      {!deleted ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-7 items-center gap-1 rounded-full border border-slate-200 bg-white px-2 text-[10px] text-slate-600"
+                          disabled={actionBusyId === message.id}
+                          data-testid="message-pin-action"
+                          onClick={() => void handlePinToggle(message.id, isPinnedMsg)}
+                          aria-label={isPinnedMsg ? 'Unpin message' : 'Pin message'}
+                        >
+                          <Pin className="h-3 w-3" />
+                          {isPinnedMsg ? 'Unpin' : 'Pin'}
                         </button>
                       ) : null}
                       <button
@@ -679,6 +1078,13 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
         </div>
       ) : null}
 
+      <div
+        className={
+          isFullscreen
+            ? 'shrink-0 border-t border-slate-100 pb-[max(0.25rem,env(safe-area-inset-bottom))]'
+            : undefined
+        }
+      >
       <InlineMessageComposer
         conversationId={conversationId}
         value={draft}
@@ -744,6 +1150,10 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
         }}
         onSend={async () => {
           setSendError(null);
+          if (countMessageWords(draft) > MAX_MESSAGE_WORDS) {
+            setSendError(`Messages can contain up to ${MAX_MESSAGE_WORDS} words.`);
+            return;
+          }
           try {
             await sendInlineMessage(conversationId, draft, {
               replyToMessageId: replyTo?.id || null
@@ -753,8 +1163,26 @@ const MessagingChatWindow: React.FC<MessagingChatWindowProps> = ({
           }
         }}
       />
+      </div>
+
+      <ChatAppearancePanel
+        conversationId={conversationId}
+        open={appearanceOpen}
+        appearance={appearance}
+        loading={appearanceLoading}
+        onClose={() => setAppearanceOpen(false)}
+        onSaved={(next) => {
+          setAppearance(next || { kind: 'none' });
+          setAppearanceOpen(false);
+        }}
+      />
     </div>
   );
 };
+
+/** Dock/soft-open chat window — call controls use the global VoiceCallProvider. */
+const MessagingChatWindow: React.FC<MessagingChatWindowProps> = (props) => (
+  <MessagingChatWindowInner {...props} />
+);
 
 export default MessagingChatWindow;

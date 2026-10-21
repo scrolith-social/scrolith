@@ -3,6 +3,8 @@ import {
   Gig,
   StorefrontMerchantSummary,
   StorefrontSettings,
+  ProfessionalAvailability,
+  ClientHiringStatus,
   User,
   UserProfile,
   UserSettings
@@ -245,6 +247,22 @@ const normalizeProfessionalIdentity = (value: any) => {
   };
 };
 
+const mapExperience = (entry: any) => ({
+  ...entry,
+  id: String(entry?.id || Math.random().toString(36).slice(2, 11)),
+  title: String(entry?.title || ''),
+  company: String(entry?.company || entry?.companyName || ''),
+  companyPageId: entry?.companyPageId ?? entry?.company_page_id ?? undefined,
+  companyPageSlug: entry?.companyPageSlug ?? entry?.company_page_slug ?? undefined,
+  companyPageHandle: entry?.companyPageHandle ?? entry?.company_page_handle ?? undefined,
+  companyPageUrl: entry?.companyPageUrl ?? entry?.company_page_url ?? undefined,
+  companyPageMatched: Boolean(entry?.companyPageMatched ?? entry?.company_page_matched ?? false),
+  start_date: String(entry?.start_date ?? entry?.startDate ?? ''),
+  end_date: String(entry?.end_date ?? entry?.endDate ?? ''),
+  current: Boolean(entry?.current ?? entry?.isCurrent ?? false),
+  description: String(entry?.description || '')
+});
+
 const mapProfile = (p: any): UserProfile => {
   const hourlyRate = Number(p.hourly_rate ?? p.hourlyRate ?? 0);
   const introVideoUrl = p.intro_video_url ?? p.introVideoUrl ?? '';
@@ -263,6 +281,8 @@ const mapProfile = (p: any): UserProfile => {
     (coverPhotoUrl ? resolveAssetUrl(String(coverPhotoUrl)) : undefined) ||
     undefined;
   const professionalIdentity = normalizeProfessionalIdentity(p.professional_identity ?? p.professionalIdentity);
+  const availability = (p.availability ?? p.professionalAvailability) as ProfessionalAvailability | null | undefined;
+  const hiring = (p.hiring ?? p.clientHiringStatus ?? p.client_hiring_status) as ClientHiringStatus | null | undefined;
   return {
     user_id: p.user_id ?? p.userId,
     userId: p.user_id ?? p.userId,
@@ -296,7 +316,7 @@ const mapProfile = (p: any): UserProfile => {
     hourly_rate: hourlyRate,
     hourlyRate,
     portfolio: toArray(p.portfolio ?? p.portfolioItems ?? p.portfolio_items),
-    experience: toArray(p.experience ?? p.experienceItems ?? p.experience_items),
+    experience: toArray(p.experience ?? p.experienceItems ?? p.experience_items).map(mapExperience),
     education: toArray(p.education ?? p.educationItems ?? p.education_items),
     certifications: toArray(p.certifications),
     intro_video_url: introVideoUrl,
@@ -321,7 +341,11 @@ const mapProfile = (p: any): UserProfile => {
     responseRate: Number(p.response_rate ?? p.responseRate ?? 0),
     responseTime: p.response_time ?? p.responseTime ?? undefined,
     professional_identity: professionalIdentity,
-    professionalIdentity
+    professionalIdentity,
+    availability,
+    professionalAvailability: availability,
+    hiring,
+    clientHiringStatus: hiring
   };
 };
 
@@ -330,7 +354,8 @@ const mapUser = (u: any): User => {
   const resolvedAvatar =
     resolveUserAvatarUrl({ ...u, profilePhotoFileId, profile_photo_file_id: profilePhotoFileId }) || undefined;
   const normalizedKyc = String(u.kyc_status ?? u.kycStatus ?? '').toLowerCase();
-  const isVerified = Boolean(u.isVerified ?? u.is_verified ?? normalizedKyc === 'verified');
+  const isKycApproved = normalizedKyc === 'verified' || normalizedKyc === 'approved';
+  const isVerified = Boolean(u.isVerified ?? u.is_verified) || isKycApproved;
   return {
     id: u.id,
     name: u.name,
@@ -706,6 +731,56 @@ export const UserService = {
   updateMyProfile: async (data: Partial<UserProfile>): Promise<UserProfile> => {
     const response = await api.put('/profile/me', toProfilePayload(data));
     return mapProfile(extractData<UserProfile>(response));
+  },
+
+  getMyAvailability: async (): Promise<ProfessionalAvailability | null> => {
+    const response = await api.get('/profile/me/availability');
+    return extractData<ProfessionalAvailability | null>(response);
+  },
+
+  updateMyAvailability: async (data: Partial<ProfessionalAvailability>): Promise<ProfessionalAvailability | null> => {
+    const response = await api.put('/profile/me/availability', data);
+    return extractData<ProfessionalAvailability | null>(response);
+  },
+
+  pauseMyAvailability: async (): Promise<ProfessionalAvailability | null> => {
+    const response = await api.post('/profile/me/availability/pause');
+    return extractData<ProfessionalAvailability | null>(response);
+  },
+
+  resumeMyAvailability: async (): Promise<ProfessionalAvailability | null> => {
+    const response = await api.post('/profile/me/availability/resume');
+    return extractData<ProfessionalAvailability | null>(response);
+  },
+
+  disableMyAvailability: async (): Promise<ProfessionalAvailability | null> => {
+    const response = await api.delete('/profile/me/availability');
+    return extractData<ProfessionalAvailability | null>(response);
+  },
+
+  getMyClientHiringStatus: async (): Promise<ClientHiringStatus | null> => {
+    const response = await api.get('/profile/me/hiring-status');
+    return extractData<ClientHiringStatus | null>(response);
+  },
+
+  updateMyClientHiringStatus: async (data: Partial<ClientHiringStatus>): Promise<ClientHiringStatus | null> => {
+    const response = await api.put('/profile/me/hiring-status', data);
+    return extractData<ClientHiringStatus | null>(response);
+  },
+
+  pauseMyClientHiringStatus: async (): Promise<ClientHiringStatus | null> => {
+    const response = await api.post('/profile/me/hiring-status/pause');
+    return extractData<ClientHiringStatus | null>(response);
+  },
+
+  resumeMyClientHiringStatus: async (): Promise<ClientHiringStatus | null> => {
+    const response = await api.post('/profile/me/hiring-status/resume');
+    return extractData<ClientHiringStatus | null>(response);
+  },
+
+  disableMyClientHiringStatus: async (): Promise<ClientHiringStatus | null> => {
+    const response = await api.delete('/profile/me/hiring-status');
+    return extractData<ClientHiringStatus | null>(response);
   },
 
   getUserBasic: async (userId: string): Promise<User> => {

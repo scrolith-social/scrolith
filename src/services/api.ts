@@ -1,16 +1,16 @@
 import axios from 'axios';
 import { tokenStore } from './tokenStore';
-import { getApiBaseUrl } from '../utils/apiBase';
+import { getApiBaseUrl, vite } from '../utils/apiBase';
 import { resolveAssetUrl } from '../utils/assetUrl';
 
 const hasBackendEnv = Boolean(
-  import.meta.env.VITE_API_URL ||
-  import.meta.env.VITE_API_BASE_URL ||
-  import.meta.env.VITE_BACKEND_URL ||
-  import.meta.env.VITE_MOBILE_API_URL ||
-  import.meta.env.VITE_MOBILE_API_BASE_URL
+  vite.VITE_API_URL ||
+  vite.VITE_API_BASE_URL ||
+  vite.VITE_BACKEND_URL ||
+  vite.VITE_MOBILE_API_URL ||
+  vite.VITE_MOBILE_API_BASE_URL
 );
-if (import.meta.env.PROD && !hasBackendEnv) {
+if (vite.PROD && !hasBackendEnv) {
   throw new Error('VITE_BACKEND_URL (or VITE_API_URL) must be set when building for production');
 }
 
@@ -44,7 +44,7 @@ const isConstrainedNetwork = () => {
   return false;
 };
 const DEFAULT_TIMEOUT_MS = parseTimeoutMs(
-  import.meta.env.VITE_API_TIMEOUT_MS,
+  vite.VITE_API_TIMEOUT_MS,
   isNative()
     ? (isConstrainedNetwork() ? 22000 : 20000)
     : (isConstrainedNetwork() ? 18000 : 16000)
@@ -61,7 +61,10 @@ const parseRetryAfterMs = (error: any) => {
 };
 const getRetryLimit = (error: any) => {
   const status = Number(error?.response?.status || 0);
-  if (status === 429) return 1;
+  // A rate-limit response is already a server-side backpressure signal.
+  // Retrying anonymous boot/config GETs immediately multiplies the burst and
+  // can keep an otherwise healthy client locked out behind a shared IP.
+  if (status === 429) return 0;
   return isConstrainedNetwork() ? 1 : 2;
 };
 const computeRetryDelayMs = (error: any, attempt: number) => {

@@ -108,6 +108,8 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       { ev: 'community:post_updated', fn: forward('community:post_updated') },
       { ev: 'community:post_deleted', fn: forward('community:post_deleted') },
       { ev: 'community:post_comment_created', fn: forward('community:post_comment_created') },
+      { ev: 'profile:availability_updated', fn: forward('profile:availability_updated') },
+      { ev: 'profile:hiring_updated', fn: forward('profile:hiring_updated') },
       { ev: 'community:post_comment_updated', fn: forward('community:post_comment_updated') },
       { ev: 'community:post_comment_deleted', fn: forward('community:post_comment_deleted') },
       { ev: 'community:post_comment_like_toggled', fn: forward('community:post_comment_like_toggled') },
@@ -204,6 +206,11 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ,{ ev: 'cart:updated', fn: forward('cart:updated') }
       ,{ ev: 'favorites:updated', fn: forward('favorites:updated') }
       ,{ ev: 'notifications:new', fn: forward('notifications:new') }
+      ,{ ev: 'security.login_approval.requested', fn: forward('security.login_approval.requested') }
+      ,{ ev: 'security.login_approval.updated', fn: forward('security.login_approval.updated') }
+      ,{ ev: 'security.login_approval.resolved', fn: forward('security.login_approval.resolved') }
+      ,{ ev: 'security:login_approval_required', fn: forward('security:login_approval_required') }
+      ,{ ev: 'security:login_approval_updated', fn: forward('security:login_approval_updated') }
       ,{ ev: 'community:post_report_submitted', fn: forward('community:post_report_submitted') }
       ,{ ev: 'community:post_report_updated', fn: forward('community:post_report_updated') }
       ,{ ev: 'kyc.updated', fn: forward('kyc.updated') }
@@ -222,6 +229,8 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ,{ ev: 'insights:copilot_tip', fn: forward('insights:copilot_tip') }
       ,{ ev: 'insights:post_prediction_ready', fn: forward('insights:post_prediction_ready') }
       ,{ ev: 'insights:opportunity_match_ready', fn: forward('insights:opportunity_match_ready') }
+      ,{ ev: 'match:updated', fn: forward('match:updated') }
+      ,{ ev: 'match:mutual', fn: forward('match:mutual') }
       ,{ ev: 'insights:toxicity_flagged', fn: forward('insights:toxicity_flagged') }
       ,{ ev: 'dev:link_status_updated', fn: forward('dev:link_status_updated') }
       ,{ ev: 'dev:app_updated', fn: forward('dev:app_updated') }

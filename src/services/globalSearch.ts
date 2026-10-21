@@ -4,6 +4,7 @@ import type { MarketplaceListing } from '../types/marketplace';
 import { resolveAssetUrl } from '../utils/assetUrl';
 import { CMSService } from './cms';
 import { CommunityService } from './community';
+import { rankSearchItems } from '../utils/searchRanking';
 
 export type GlobalSearchGroupKey =
   | 'people'
@@ -136,6 +137,19 @@ export const resolveGlobalSearchItemUrl = (item: any, normalizedType?: GlobalSea
 export const normalizeGlobalSearchItem = (item: any): GlobalSearchItem => {
   const normalizedType = normalizeGlobalSearchType(item?.type || item?.kind || item?.entityType || item?.category);
   const title = item?.title || item?.name || item?.username || 'Result';
+  const meta = {
+    ...(item?.meta && typeof item.meta === 'object' ? item.meta : {}),
+    profilePhotoFileId:
+      item?.meta?.profilePhotoFileId ||
+      item?.profilePhotoFileId ||
+      item?.profile_photo_file_id ||
+      undefined,
+    profile_photo_file_id:
+      item?.meta?.profile_photo_file_id ||
+      item?.profile_photo_file_id ||
+      item?.profilePhotoFileId ||
+      undefined
+  };
   const image = item?.avatarUrl || item?.avatar || item?.image || item?.cover || item?.thumbnail || null;
   return {
     id: item?.id || item?._id,
@@ -150,7 +164,7 @@ export const normalizeGlobalSearchItem = (item: any): GlobalSearchItem => {
     avatarUrl: image,
     image: image || undefined,
     category: item?.category,
-    meta: item?.meta || {}
+    meta
   };
 };
 
@@ -309,7 +323,7 @@ export const searchGlobalWithMarketplace = async (
               : Array.isArray((sourceGroups as any)?.[key])
                 ? (sourceGroups as any)[key]
                 : [];
-    groups[key] = uniqueSearchItems(source.map(normalizeGlobalSearchItem)).slice(0, maxResults);
+    groups[key] = rankSearchItems(uniqueSearchItems(source.map(normalizeGlobalSearchItem)), clean).slice(0, maxResults);
   });
 
   const merged = Array.isArray(unified?.results) && unified.results.length
@@ -321,7 +335,7 @@ export const searchGlobalWithMarketplace = async (
         ...groupItems
       ]
     : GLOBAL_SEARCH_GROUP_ORDER.flatMap((key) => groups[key]);
-  const results = uniqueSearchItems(merged).slice(0, Math.max(maxResults, 12));
+  const results = rankSearchItems(uniqueSearchItems(merged), clean).slice(0, Math.max(maxResults, 12));
   const totals = {
     people: groups.people.length,
     pages: groups.pages.length,

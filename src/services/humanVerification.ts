@@ -1,4 +1,5 @@
 import api from './api';
+import { getApiBaseUrl } from '../utils/apiBase';
 
 export type HumanVerificationEndpoint =
   | 'login'
@@ -98,6 +99,135 @@ const fingerprint = (): string => {
   }
 };
 
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+
+const isTransientNetworkError = (err: any) => {
+  const status = Number(err?.response?.status || 0);
+  // 429 is recoverable after a short wait (shared carrier NATs).
+  if (status) return status >= 500 || status === 408 || status === 429;
+  const message = String(err?.message || '').toLowerCase();
+  const code = String(err?.code || '').toUpperCase();
+  return (
+    message.includes('network error') ||
+    message.includes('timeout') ||
+    message.includes('failed to fetch') ||
+    code === 'ECONNABORTED' ||
+    code === 'ERR_NETWORK' ||
+    Boolean(err?.request)
+  );
+};
+
+const friendlyHvError = (err: any, fallback: string) => {
+  const status = Number(err?.response?.status || 0);
+  const data = err?.response?.data || {};
+  const code = String(data.code || err?.code || '').toUpperCase();
+  if (status === 429 || code.includes('RATE') || code === 'HV_RATE_LIMIT' || code === 'HV_LOCKED') {
+    return data.error || data.message || 'Too many verification attempts. Please wait a moment and tap Refresh.';
+  }
+  if (status === 404) {
+    return 'Verification service is temporarily unreachable. Check your connection and tap Refresh.';
+  }
+  if (status >= 500) {
+    return data.error || 'Verification service had a temporary issue. Tap Refresh to try again.';
+  }
+  const raw = String(data.error || data.message || err?.message || fallback || '').trim();
+  if (/network error/i.test(raw)) {
+    return 'Network error. Please check your connection and tap Refresh.';
+  }
+  if (/request failed with status/i.test(raw)) {
+    return 'Unable to reach verification service. Tap Refresh to try again.';
+  }
+  return raw || fallback;
+};
+
+const withTransientRetry = async <T,>(operation: () => Promise<T>): Promise<T> => {
+  try {
+    return await operation();
+  } catch (firstError: any) {
+    if (!isTransientNetworkError(firstError)) throw firstError;
+    await wait(450);
+    return operation();
+  }
+};
+
+const getNativeRuntime = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return (window as any).Capacitor || null;
+  } catch {
+    return null;
+  }
+};
+
+const isNativeRuntime = () => {
+  const runtime = getNativeRuntime();
+  try {
+    return Boolean(runtime && typeof runtime.isNativePlatform === 'function' && runtime.isNativePlatform());
+  } catch {
+    return false;
+  }
+};
+
+const isNativeFallbackError = (err: any) => {
+  const status = Number(err?.response?.status || 0);
+  // Prefer native HTTP on Android/iOS when axios cannot reach the API (CORS, 404 HTML, network).
+  return isTransientNetworkError(err) || status === 404 || status === 0 || !err?.response;
+};
+
+const nativePostJson = async <T,>(path: string, data: Record<string, unknown>): Promise<T> => {
+  if (!isNativeRuntime()) {
+    throw new Error('Native HTTP is not available.');
+  }
+  const { CapacitorHttp } = await import('@capacitor/core');
+  if (!CapacitorHttp || typeof CapacitorHttp.post !== 'function') {
+    throw new Error('Native HTTP bridge is not available.');
+  }
+
+  const normalizeApiBase = (value: string) => {
+    const raw = String(value || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(raw)) return '';
+    return raw.endsWith('/api') ? raw : `${raw}/api`;
+  };
+
+  const bases = Array.from(
+    new Set(
+      [normalizeApiBase(getApiBaseUrl()), 'https://api.scrolith.com/api'].filter(Boolean)
+    )
+  );
+
+  let lastError: any = null;
+  for (const base of bases) {
+    const url = `${base}${path}`;
+    try {
+      const response = await CapacitorHttp.post({
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'x-scrolith-client': 'android'
+        },
+        data,
+        connectTimeout: 15000,
+        readTimeout: 24000
+      });
+      const status = Number(response?.status || 0);
+      if (status < 400) return response?.data as T;
+
+      const error = new Error(response?.data?.error || response?.data?.message || `Request failed with status ${status}`);
+      (error as any).response = { status, data: response?.data };
+      lastError = error;
+      if (status !== 404) break;
+    } catch (error: any) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Native human verification request failed.');
+};
+
 export class HumanVerificationService {
   static getFingerprint() {
     return fingerprint();
@@ -108,10 +238,12 @@ export class HumanVerificationService {
     publicSettings?: HumanVerificationPublicSettings;
   }> {
     try {
-      const res = await api.get('/human-verification/config', {
-        params: { endpoint },
-        __skipRetry: true
-      } as any);
+      const res = await withTransientRetry(() =>
+        api.get('/human-verification/config', {
+          params: { endpoint },
+          __skipRetry: true
+        } as any)
+      );
       const data = res?.data || {};
       return {
         required: Boolean(data.required),
@@ -124,22 +256,45 @@ export class HumanVerificationService {
 
   static async createChallenge(endpoint: HumanVerificationEndpoint): Promise<CreateChallengeResult> {
     try {
-      const res = await api.post(
-        '/human-verification/create',
-        {
-          endpoint,
-          fingerprint: fingerprint()
-        },
-        { __skipRetry: true } as any
+      // On native, prefer Capacitor HTTP first — avoids WebView CORS / HTML-404 traps.
+      if (isNativeRuntime()) {
+        try {
+          return await nativePostJson<CreateChallengeResult>('/human-verification/create', {
+            endpoint,
+            fingerprint: fingerprint()
+          });
+        } catch {
+          // Fall through to axios path below.
+        }
+      }
+      const res = await withTransientRetry(() =>
+        api.post(
+          '/human-verification/create',
+          {
+            endpoint,
+            fingerprint: fingerprint()
+          },
+          { __skipRetry: true } as any
+        )
       );
       return res?.data as CreateChallengeResult;
     } catch (err: any) {
+      if (isNativeFallbackError(err) && isNativeRuntime()) {
+        try {
+          return await nativePostJson<CreateChallengeResult>('/human-verification/create', {
+            endpoint,
+            fingerprint: fingerprint()
+          });
+        } catch (nativeErr: any) {
+          err = nativeErr;
+        }
+      }
       const data = err?.response?.data || {};
       return {
         success: false,
         required: true,
-        error: data.error || err?.message || 'Failed to create challenge',
-        code: data.code,
+        error: friendlyHvError(err, 'Failed to create challenge'),
+        code: data.code || (Number(err?.response?.status) === 429 ? 'HV_RATE_LIMIT' : undefined),
         retryAfter: data.retryAfter
       };
     }
@@ -152,20 +307,42 @@ export class HumanVerificationService {
     startedAt?: number;
   }): Promise<VerifyChallengeResult> {
     try {
-      const res = await api.post(
-        '/human-verification/verify',
-        {
-          ...params,
-          fingerprint: fingerprint()
-        },
-        { __skipRetry: true } as any
+      if (isNativeRuntime()) {
+        try {
+          return await nativePostJson<VerifyChallengeResult>('/human-verification/verify', {
+            ...params,
+            fingerprint: fingerprint()
+          });
+        } catch {
+          // Fall through to axios.
+        }
+      }
+      const res = await withTransientRetry(() =>
+        api.post(
+          '/human-verification/verify',
+          {
+            ...params,
+            fingerprint: fingerprint()
+          },
+          { __skipRetry: true } as any
+        )
       );
       return res?.data as VerifyChallengeResult;
     } catch (err: any) {
+      if (isNativeFallbackError(err) && isNativeRuntime()) {
+        try {
+          return await nativePostJson<VerifyChallengeResult>('/human-verification/verify', {
+            ...params,
+            fingerprint: fingerprint()
+          });
+        } catch (nativeErr: any) {
+          err = nativeErr;
+        }
+      }
       const data = err?.response?.data || {};
       return {
         success: false,
-        error: data.error || err?.message || 'Verification failed',
+        error: friendlyHvError(err, 'Verification failed'),
         code: data.code,
         attemptsRemaining: data.attemptsRemaining
       };

@@ -4,13 +4,19 @@ import { useLocation, useNavigate, useOutletContext, useSearchParams } from 'rea
 import { CommunityService } from '../../../services/community';
 import { useNotification } from '../../../context/NotificationContext';
 import { useUser } from '../../../context/UserContext';
-import { UploadedFile } from '../../../types';
+import type { StructuredLocationFields, UploadedFile } from '../../../types';
 import MentionHashtagTextarea from '../../../community/components/MentionHashtagTextarea';
+import RichCaptionText from '../../../community/components/RichCaptionText';
 import { AIService, type PostEnhanceMode } from '../../../services/ai/ai.service';
 import { FileService } from '../../../services/files';
-import { Camera, Download, Loader2, Paperclip } from 'lucide-react';
-import { downloadToDevice } from '../../../utils/deviceDownload';
+import { Camera, Loader2, MapPin, Paperclip } from 'lucide-react';
 import { getRecoverableActionMessage } from '../../../mobile/runtime/requestRecovery';
+import {
+  clearMobilePostDraft,
+  hasMobilePostDraftContent,
+  loadMobilePostDraft,
+  saveMobilePostDraft
+} from '../../../mobile/runtime/mobileDrafts';
 import {
   postAiInsightPreferenceToBoolean,
   resolvePostAiInsightPreference,
@@ -18,13 +24,76 @@ import {
   type PostAiInsightPreference
 } from '../../../utils/postAiControls';
 import { MOBILE_MODAL_CARD_CLASS, MOBILE_PAGE_SECTION_CLASS } from '../mobileShellLayout';
+import {
+  canPublishWithAttachments,
+  COMPOSER_UPLOAD_ACCEPT,
+  COMPOSER_UPLOAD_MAX_RETRIES,
+  createLocalAttachment,
+  generateLocalVideoPoster,
+  hasComposerVideoAttachment,
+  revokeAttachmentPreviews,
+  validateComposerFile,
+  type ComposerAttachmentPreview
+} from '../../../components/composer/composerAttachments';
+import ComposerMediaPreviewGrid from '../../../components/composer/ComposerMediaPreviewGrid';
+import CaptionEnhancementToolbar from '../../../components/composer/CaptionEnhancementToolbar';
+import AIComposerAssist from '../../../components/ai/AIComposerAssist';
+import PostTextBackgroundPicker from '../../../components/composer/PostTextBackgroundPicker';
+import { composerEditorTextBackground } from '../../../components/composer/composerClasses';
+import {
+  buildComposerTextBackgroundStyle,
+  buildPostPresentation,
+  isComposerTextBackgroundActive,
+  POST_TEXT_BG_NONE_ID
+} from '../../../utils/postTextBackgrounds';
+import { buildAttachmentCaptionMap, resolveFirstAttachmentCaption } from '../../../utils/videoCaption';
+import { resolvePostAttachmentMediaPair } from '../../../utils/postAttachmentMedia';
+import type { PreviewMedia } from '../../../components/media/MediaPreviewModal';
 
-const getMimeType = (file: any) =>
-  String(file?.mime_type || file?.mimeType || file?.mimetype || file?.mime || '').toLowerCase();
-const getFileType = (file: any) => String(file?.type || '').toLowerCase();
-const isVideo = (file: any) => getFileType(file) === 'video' || getMimeType(file).startsWith('video/');
-const isImage = (file: any) => getFileType(file) === 'image' || getMimeType(file).startsWith('image/');
-const POST_UPLOAD_ACCEPT = 'image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar';
+const LocationPicker = React.lazy(() => import('../../../components/common/LocationPicker'));
+const MediaPreviewModal = React.lazy(() => import('../../../components/media/MediaPreviewModal'));
+
+type PostAuthorOption = {
+  id: string;
+  type: 'user' | 'page';
+  label: string;
+  subtitle: string;
+  pageId?: string;
+};
+
+const readAuthorText = (value: unknown) => String(value || '').trim();
+
+const normalizePostAuthorPage = (page: any): PostAuthorOption | null => {
+  const pageId = readAuthorText(page?.id || page?._id);
+  const label = readAuthorText(page?.name || page?.title || page?.pageName);
+  if (!pageId || !label) return null;
+  return {
+    id: `page:${pageId}`,
+    type: 'page',
+    label,
+    subtitle:
+      readAuthorText(page?.tagline || page?.headline || page?.industry || page?.category) || 'Post as page',
+    pageId
+  };
+};
+
+const getLocationLabel = (value?: Partial<StructuredLocationFields> | null) =>
+  readAuthorText(value?.formattedAddress || value?.formatted_address || value?.location);
+
+const toPreviewMedia = (item: ComposerAttachmentPreview): PreviewMedia | null => {
+  const pair = resolvePostAttachmentMediaPair(item);
+  const url = String(pair.url || item.url || item.localPreviewUrl || '').trim();
+  if (!url) return null;
+  return {
+    id: item.id,
+    url,
+    name: item.name,
+    mimeType: item.mimeType,
+    type: item.type,
+    thumbnailUrl: pair.posterUrl || item.thumbnailUrl || item.localPosterUrl || null,
+    duration: item.duration
+  };
+};
 
 const postAiActions: Array<{ mode: PostEnhanceMode; label: string }> = [
   { mode: 'grammar', label: 'Improve Grammar' },
@@ -48,10 +117,14 @@ export default function MobilePostScreen({
   const { showNotification } = useNotification();
   const { user } = useUser();
   const [content, setContent] = useState('');
-  const [attachments, setAttachments] = useState<UploadedFile[]>([]);
+  const [mediaCaption, setMediaCaption] = useState('');
+  const [textBackgroundId, setTextBackgroundId] = useState(POST_TEXT_BG_NONE_ID);
+  const [media, setMedia] = useState<ComposerAttachmentPreview[]>([]);
+  const mediaRef = useRef(media);
+  mediaRef.current = media;
+  const mediaCountRef = useRef(0);
+  const mediaVideoCountRef = useRef(0);
   const [busy, setBusy] = useState(false);
-  const [uploadingAttachmentCount, setUploadingAttachmentCount] = useState(0);
-  const [uploadingAttachmentLabel, setUploadingAttachmentLabel] = useState('');
   const [loadingPost, setLoadingPost] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiRunningMode, setAiRunningMode] = useState<PostEnhanceMode | null>(null);
@@ -61,6 +134,7 @@ export default function MobilePostScreen({
   const [aiSuggestionWarning, setAiSuggestionWarning] = useState<string | null>(null);
   const [aiOriginalText, setAiOriginalText] = useState('');
   const [aiCompareView, setAiCompareView] = useState<'compare' | 'ai'>('compare');
+  const [statusMessage, setStatusMessage] = useState('');
 
   const layout = mobileLayout ?? ctx?.mobileLayout ?? null;
   const composer = (layout?.postComposer || layout?.post_composer || {}) as Record<string, any>;
@@ -70,16 +144,19 @@ export default function MobilePostScreen({
   const visibilityEnabled = composer.visibilityEnabled !== false;
   const allowedVisibilities = useMemo(() => {
     const raw = composer.allowedVisibilities || composer.allowed_visibilities;
-    const list = Array.isArray(raw) ? raw.map((v: any) => String(v || '').trim().toLowerCase()).filter(Boolean) : [];
+    const list = Array.isArray(raw)
+      ? raw.map((v: any) => String(v || '').trim().toLowerCase()).filter(Boolean)
+      : [];
     const fallback = ['public', 'network', 'friends', 'private'];
-    const merged = Array.from(new Set((list.length ? list : fallback).filter(Boolean)));
-    return merged;
+    return Array.from(new Set((list.length ? list : fallback).filter(Boolean)));
   }, [composer.allowedVisibilities, composer.allowed_visibilities]);
   const defaultVisibility = String(composer.defaultVisibility || composer.default_visibility || 'public')
     .trim()
     .toLowerCase();
   const graphicWarningEnabled = composer.graphicWarningEnabled !== false;
-  const graphicWarningLabel = String(composer.graphicWarningLabel || composer.graphic_warning_label || 'Graphic warning').trim();
+  const graphicWarningLabel = String(
+    composer.graphicWarningLabel || composer.graphic_warning_label || 'Graphic warning'
+  ).trim();
 
   const [visibility, setVisibility] = useState<string>(defaultVisibility);
   const [graphicWarning, setGraphicWarning] = useState(false);
@@ -87,6 +164,13 @@ export default function MobilePostScreen({
   const [aiInsightPreference, setAiInsightPreference] = useState<PostAiInsightPreference>('auto');
   const [topic, setTopic] = useState('');
   const [place, setPlace] = useState('');
+  const [locationDetails, setLocationDetails] = useState<Partial<StructuredLocationFields> | null>(null);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [ownedBusinessPages, setOwnedBusinessPages] = useState<PostAuthorOption[]>([]);
+  const [ownedBusinessPagesLoading, setOwnedBusinessPagesLoading] = useState(false);
+  const [postAuthorScopeId, setPostAuthorScopeId] = useState('user');
+  const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
+  const draftHydratedRef = useRef(false);
 
   const closeComposer = useCallback(() => {
     if (onClose) {
@@ -116,99 +200,315 @@ export default function MobilePostScreen({
   }, [routerLocation.state]);
 
   useEffect(() => {
-    // Keep composer defaults in sync if admin changes settings while user is on this screen.
-    setVisibility((prev) => (allowedVisibilities.includes(prev) ? prev : (allowedVisibilities[0] || defaultVisibility || 'public')));
+    setVisibility((prev) =>
+      allowedVisibilities.includes(prev) ? prev : allowedVisibilities[0] || defaultVisibility || 'public'
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allowedVisibilities.join('|'), defaultVisibility]);
+
+  const draftUserId = String(user?.id || '').trim();
+
+  useEffect(() => {
+    draftHydratedRef.current = false;
+    if (!draftUserId || isEditing) return undefined;
+    const saved = loadMobilePostDraft(draftUserId);
+    if (saved && hasMobilePostDraftContent(saved)) {
+      setContent(saved.content);
+      setMediaCaption(saved.mediaCaption);
+      setVisibility(saved.visibility || defaultVisibility || 'public');
+      setGraphicWarning(saved.graphicWarning);
+      setIsAIEnhanced(saved.isAIEnhanced);
+      setAiInsightPreference(resolvePostAiInsightPreference(saved.aiInsightPreference, 'auto'));
+      setTopic(saved.topic);
+      setPlace(saved.place);
+      setTextBackgroundId(saved.textBackgroundId || POST_TEXT_BG_NONE_ID);
+      setStatusMessage('Draft restored from this device.');
+    }
+    draftHydratedRef.current = true;
+    return () => {
+      draftHydratedRef.current = false;
+    };
+  }, [defaultVisibility, draftUserId, isEditing]);
+
+  useEffect(() => {
+    if (!draftUserId || isEditing || !draftHydratedRef.current) return undefined;
+    const timer = window.setTimeout(() => {
+      const draft = {
+        userId: draftUserId,
+        content,
+        mediaCaption,
+        visibility,
+        graphicWarning,
+        isAIEnhanced,
+        aiInsightPreference,
+        topic,
+        place,
+        textBackgroundId
+      };
+      if (hasMobilePostDraftContent(draft)) {
+        saveMobilePostDraft(draft);
+      } else {
+        clearMobilePostDraft(draftUserId);
+      }
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [aiInsightPreference, content, draftUserId, graphicWarning, isAIEnhanced, isEditing, mediaCaption, place, textBackgroundId, topic, visibility]);
+
+  useEffect(() => {
+    if (!user?.id || isEditing) return;
+    let active = true;
+    setOwnedBusinessPagesLoading(true);
+    CommunityService.getMyBusinessPages()
+      .then((pages) => {
+        if (!active) return;
+        setOwnedBusinessPages(
+          (Array.isArray(pages) ? pages : [])
+            .map(normalizePostAuthorPage)
+            .filter(Boolean) as PostAuthorOption[]
+        );
+      })
+      .catch(() => {
+        if (active) setOwnedBusinessPages([]);
+      })
+      .finally(() => {
+        if (active) setOwnedBusinessPagesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isEditing, user?.id]);
+
+  const postAuthorOptions = useMemo<PostAuthorOption[]>(
+    () => [
+      {
+        id: 'user',
+        type: 'user',
+        label: readAuthorText(user?.name || user?.username) || 'Your profile',
+        subtitle: 'Personal profile'
+      },
+      ...ownedBusinessPages
+    ],
+    [ownedBusinessPages, user?.name, user?.username]
+  );
+  const activePostAuthor =
+    postAuthorOptions.find((option) => option.id === postAuthorScopeId) || postAuthorOptions[0];
+  const activeBusinessPageId = activePostAuthor?.type === 'page' ? activePostAuthor.pageId : undefined;
+
+  useEffect(() => {
+    mediaCountRef.current = media.length;
+    mediaVideoCountRef.current = hasComposerVideoAttachment(media) ? 1 : 0;
+  }, [media]);
+
+  useEffect(() => {
+    return () => {
+      mediaRef.current.forEach((item) => revokeAttachmentPreviews(item));
+    };
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mediaInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
 
-  const canPost = (content.trim().length >= 1 || attachments.length > 0) && uploadingAttachmentCount === 0;
+  const uploadingCount = media.filter((m) => m.uploading).length;
+  const canPost =
+    (content.trim().length >= 1 || media.some((m) => m.id)) &&
+    canPublishWithAttachments(media).ok;
 
   const attachmentIds = useMemo(
-    () => Array.from(new Set(attachments.map((f) => String(f.id || '').trim()).filter(Boolean))),
-    [attachments]
+    () => Array.from(new Set(media.map((f) => String(f.id || '').trim()).filter(Boolean))),
+    [media]
   );
 
-  const removeAttachment = (id: string) => {
-    setAttachments((prev) => prev.filter((f) => String(f.id) !== String(id)));
-  };
-
-  const handleAttachmentDownload = useCallback(
-    async (file: UploadedFile) => {
-      const url = String(file?.url || '').trim();
-      if (!url) {
-        showNotification('warning', 'Download', 'Attachment URL is not available.');
-        return;
-      }
-      try {
-        const result = await downloadToDevice({
-          url,
-          fileName: file?.name,
-          mimeType: String(file?.mimeType || file?.mime_type || '')
-        });
-        showNotification(
-          'success',
-          'Download',
-          result.native ? `Saved to ${result.path || 'your device'}.` : 'Download started.'
-        );
-      } catch (error: any) {
-        showNotification('error', 'Download', error?.message || 'Unable to download attachment.');
-      }
-    },
-    [showNotification]
-  );
-
-  const appendAttachment = useCallback((file: UploadedFile) => {
-    setAttachments((prev) => {
-      if (prev.some((entry) => String(entry.id) === String(file.id))) return prev;
-      return [...prev, file];
-    });
+  const updateMedia = useCallback((localId: string, patch: Partial<ComposerAttachmentPreview>) => {
+    setMedia((prev) =>
+      prev.map((item) => {
+        if (item.localId !== localId) return item;
+        return { ...item, ...patch };
+      })
+    );
   }, []);
 
-  const uploadFilesFromDevice = useCallback(
-    async (files: File[]) => {
-      if (!files.length) return;
-      setUploadingAttachmentCount(files.length);
-      try {
-        for (let index = 0; index < files.length; index += 1) {
-          const file = files[index];
-          setUploadingAttachmentLabel(`Uploading ${index + 1} of ${files.length}: ${file.name}`);
-          const uploaded = await FileService.uploadFile(file, 'community' as any, {
-            role: user?.role,
-            visibility: visibility === 'private' ? 'private' : 'public',
-            userId: user?.id,
-            onRetry: (attempt) => {
-              setUploadingAttachmentLabel(
-                `Retrying ${file.name} after a temporary network issue (${attempt}/${2})`
-              );
-            }
-          });
-          appendAttachment(uploaded);
+  const markMediaUploading = useCallback((localId: string, retryCount: number, file: File) => {
+    setMedia((prev) =>
+      prev.map((item) => {
+        if (item.localId !== localId) return item;
+        const currentProgress = Number(item.progress || 0) || 0;
+        return {
+          ...item,
+          uploading: true,
+          progress: retryCount > 0 ? Math.max(currentProgress, 1) : currentProgress,
+          error: undefined,
+          retryCount,
+          file
+        };
+      })
+    );
+  }, []);
+
+  const updateMediaProgress = useCallback((localId: string, percent: number) => {
+    const nextPercent = Math.max(0, Math.min(99, Math.round(Number(percent) || 0)));
+    setMedia((prev) =>
+      prev.map((item) =>
+        item.localId === localId
+          ? { ...item, progress: Math.max(Number(item.progress || 0) || 0, nextPercent), uploading: true }
+          : item
+      )
+    );
+  }, []);
+
+  const removeAttachment = useCallback((localId: string) => {
+    setMedia((prev) => {
+      const target = prev.find((m) => m.localId === localId);
+      if (target) revokeAttachmentPreviews(target);
+      const next = prev.filter((m) => m.localId !== localId);
+      mediaCountRef.current = next.length;
+      mediaVideoCountRef.current = hasComposerVideoAttachment(next) ? 1 : 0;
+      return next;
+    });
+    setStatusMessage('Attachment removed.');
+  }, []);
+
+  const uploadOneFile = useCallback(
+    async (file: File, opts?: { existingLocalId?: string; retryCount?: number }) => {
+      if (!user) {
+        showNotification('warning', 'Attachments', 'Sign in to upload files.');
+        return;
+      }
+      const existingLocalId = opts?.existingLocalId;
+      const retryCount = opts?.retryCount ?? 0;
+
+      if (!existingLocalId) {
+        const validation = validateComposerFile(file, {
+          currentCount: mediaCountRef.current,
+          currentVideoCount: mediaVideoCountRef.current
+        });
+        if (validation.ok === false) {
+          showNotification('warning', 'Attachments', validation.reason);
+          return;
         }
+        mediaCountRef.current += 1;
+        if (validation.kind === 'video') mediaVideoCountRef.current = 1;
+        const localItem = createLocalAttachment(file, validation.kind);
+        setMedia((prev) => [...prev, localItem]);
+        setTextBackgroundId(POST_TEXT_BG_NONE_ID);
+        if (validation.kind === 'video') {
+          void generateLocalVideoPoster(file).then((poster) => {
+            if (poster) updateMedia(localItem.localId, { localPosterUrl: poster, thumbnailUrl: poster });
+          });
+        }
+        return uploadOneFile(file, { existingLocalId: localItem.localId, retryCount: 0 });
+      }
+
+      const localId = existingLocalId;
+      markMediaUploading(localId, retryCount, file);
+      setStatusMessage(
+        retryCount > 0 ? `Retrying ${file.name}…` : `Uploading ${file.name}…`
+      );
+
+      try {
+        const uploaded = await FileService.uploadFile(file, 'community' as any, {
+          role: user?.role,
+          visibility: visibility === 'private' ? 'private' : 'public',
+          userId: user?.id,
+          onProgress: (percent: number) => {
+            updateMediaProgress(localId, percent);
+            setStatusMessage(`Uploading ${file.name}: ${percent}%`);
+          },
+          onRetry: (attempt: number) => {
+            setStatusMessage(`Retrying ${file.name} after network issue (${attempt})…`);
+          }
+        });
+        const uploadedMedia = resolvePostAttachmentMediaPair(uploaded);
+        const remoteUrl = String(uploadedMedia.url || uploaded.url || '').trim();
+        const uploadedId = String(uploaded.id || uploaded.fileId || '').trim();
+        updateMedia(localId, {
+          id: uploadedId,
+          ...(remoteUrl ? { url: remoteUrl } : {}),
+          fallbackUrl: uploadedMedia.fallbackUrl || undefined,
+          type:
+            uploaded.type === 'video'
+              ? 'video'
+              : uploaded.type === 'image'
+                ? 'image'
+                : 'document',
+          mimeType: uploaded.mimeType || uploaded.mime_type,
+          thumbnailUrl: uploaded.thumbnailUrl || uploaded.thumbnail_url,
+          duration: uploaded.duration,
+          uploading: false,
+          progress: 100,
+          error: undefined,
+          // Keep the source in memory so Scrolitha can offer enhancement after upload.
+          file
+        });
+        setStatusMessage(`${file.name} ready.`);
       } catch (error: any) {
-        showNotification(
-          'error',
-          'Attachments',
-          getRecoverableActionMessage('Attachment upload', error)
-        );
-      } finally {
-        setUploadingAttachmentCount(0);
-        setUploadingAttachmentLabel('');
+        const message = getRecoverableActionMessage('Attachment upload', error);
+        if (retryCount < COMPOSER_UPLOAD_MAX_RETRIES) {
+          window.setTimeout(() => {
+            void uploadOneFile(file, { existingLocalId: localId, retryCount: retryCount + 1 });
+          }, 450 * (retryCount + 1));
+          return;
+        }
+        updateMedia(localId, { uploading: false, error: message, progress: 0 });
+        setStatusMessage(`${file.name} failed.`);
+        showNotification('error', 'Attachments', message);
       }
     },
-    [appendAttachment, showNotification, user?.id, user?.role, visibility]
+    [markMediaUploading, showNotification, updateMedia, updateMediaProgress, user, visibility]
   );
+
+  const retryAttachment = useCallback(
+    (localId: string) => {
+      const item = mediaRef.current.find((m) => m.localId === localId);
+      if (!item?.file) {
+        showNotification('warning', 'Attachments', 'Original file is no longer available. Please re-add it.');
+        return;
+      }
+      void uploadOneFile(item.file, {
+        existingLocalId: localId,
+        retryCount: Number(item.retryCount || 0)
+      });
+    },
+    [showNotification, uploadOneFile]
+  );
+
+  const enhancePostMedia = useCallback(async (item: ComposerAttachmentPreview, enhancedFile: File) => {
+    if (!item.localId) return;
+    const original = { ...item };
+    setStatusMessage(`Uploading Scrolitha enhancement for ${enhancedFile.name}…`);
+    await uploadOneFile(enhancedFile, { existingLocalId: item.localId, retryCount: 0 });
+    const current = mediaRef.current.find((entry) => entry.localId === item.localId);
+    if (current?.error) {
+      updateMedia(item.localId, {
+        id: original.id,
+        url: original.url,
+        fallbackUrl: original.fallbackUrl,
+        thumbnailUrl: original.thumbnailUrl,
+        type: original.type,
+        mimeType: original.mimeType,
+        duration: original.duration,
+        uploading: false,
+        progress: 100,
+        error: undefined,
+        file: original.file
+      });
+      showNotification('warning', 'Scrolitha', 'Enhancement failed; your original media is still selected.');
+      return;
+    }
+    updateMedia(item.localId, { file: enhancedFile, error: undefined });
+    setIsAIEnhanced(true);
+    showNotification('success', 'Scrolitha', 'Enhanced media is ready. Review it before publishing.');
+  }, [showNotification, updateMedia, uploadOneFile]);
 
   const handleInputFiles = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(event.target.files || []);
       event.currentTarget.value = '';
-      void uploadFilesFromDevice(files);
+      files.forEach((file) => {
+        void uploadOneFile(file);
+      });
     },
-    [uploadFilesFromDevice]
+    [uploadOneFile]
   );
 
   const applyPostToDraft = (post: any) => {
@@ -216,35 +516,50 @@ export default function MobilePostScreen({
     setVisibility(String(post?.visibility || defaultVisibility || 'public').toLowerCase());
     setGraphicWarning(Boolean(post?.graphicWarning ?? post?.graphic_warning ?? false));
     setIsAIEnhanced(Boolean(post?.isAIEnhanced ?? post?.is_ai_enhanced ?? false));
-    setAiInsightPreference(resolveStoredPostAiInsightPreference(post?.aiInsightEnabled ?? post?.ai_insight_enabled));
+    setAiInsightPreference(
+      resolveStoredPostAiInsightPreference(post?.aiInsightEnabled ?? post?.ai_insight_enabled)
+    );
     setTopic(String(post?.topic || '').trim());
     setPlace(String(post?.location || '').trim());
+    setLocationDetails(null);
+    setLocationPickerOpen(false);
 
     const postAttachments = Array.isArray(post?.attachments) ? post.attachments : [];
-    const normalized: UploadedFile[] = postAttachments
+    const normalized: ComposerAttachmentPreview[] = postAttachments
       .map((att: any) => {
-        const id = String(att?.id || '').trim();
+        const id = String(att?.id || att?.fileId || att?.file_id || '').trim();
         if (!id) return null;
-        const url = String(att?.url || att?.downloadUrl || att?.download_url || '').trim();
+        const mediaPair = resolvePostAttachmentMediaPair(att);
+        const url = String(mediaPair.url || att?.url || att?.downloadUrl || att?.download_url || '').trim();
         const name = String(att?.name || att?.originalName || att?.original_name || url || 'Attachment').trim();
         const mimeType = String(att?.mimeType || att?.mime_type || '').trim();
-        const type = String(att?.type || '').trim() || (mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('image/') ? 'image' : 'file');
+        const typeRaw = String(att?.type || '').trim().toLowerCase();
+        const type =
+          typeRaw === 'video' || mimeType.startsWith('video/')
+            ? 'video'
+            : typeRaw === 'image' || mimeType.startsWith('image/')
+              ? 'image'
+              : 'document';
         return {
+          localId: `existing-${id}`,
           id,
-          user_id: String(post?.authorId || post?.authorUserId || post?.author_id || post?.userId || ''),
+          url,
+          fallbackUrl: mediaPair.fallbackUrl || undefined,
           name,
           type,
+          mimeType,
           size: Number(att?.size || 0) || 0,
-          url,
-          category: (att?.category || 'other') as any,
-          created_at: String(att?.created_at || att?.createdAt || post?.createdAt || new Date().toISOString()),
-          mime_type: mimeType,
-          mimeType
-        } as UploadedFile;
+          uploading: false,
+          progress: 100
+        } as ComposerAttachmentPreview;
       })
-      .filter(Boolean) as UploadedFile[];
+      .filter(Boolean) as ComposerAttachmentPreview[];
 
-    setAttachments(normalized);
+    mediaRef.current.forEach((item) => revokeAttachmentPreviews(item));
+    mediaCountRef.current = normalized.length;
+    mediaVideoCountRef.current = hasComposerVideoAttachment(normalized) ? 1 : 0;
+    setMedia(normalized);
+    setMediaCaption(resolveFirstAttachmentCaption(post, postAttachments));
   };
 
   useEffect(() => {
@@ -314,7 +629,8 @@ export default function MobilePostScreen({
       setAiCompareView('compare');
       if (result.fallbackUsed || result.usedFallback || result.warning) {
         setAiSuggestionWarning(
-          result.warning || 'Scrolitha used backup processing for this suggestion. Please review before applying.'
+          result.warning ||
+            'Scrolitha used backup processing for this suggestion. Please review before applying.'
         );
       } else {
         setAiSuggestionWarning(null);
@@ -324,7 +640,10 @@ export default function MobilePostScreen({
       showNotification(
         'error',
         'Scrolitha',
-        error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Unable to enhance text right now.'
+        error?.response?.data?.error ||
+          error?.response?.data?.message ||
+          error?.message ||
+          'Unable to enhance text right now.'
       );
     } finally {
       setAiLoading(false);
@@ -335,6 +654,7 @@ export default function MobilePostScreen({
   const applyAiSuggestionReplace = () => {
     if (!aiSuggestion) return;
     setContent(aiSuggestion);
+    setIsAIEnhanced(true);
     closeAiSuggestionModal();
   };
 
@@ -342,13 +662,15 @@ export default function MobilePostScreen({
     if (!aiSuggestion) return;
     const base = String(content || '').trim();
     setContent(base ? `${base}\n\n${aiSuggestion}` : aiSuggestion);
+    setIsAIEnhanced(true);
     closeAiSuggestionModal();
   };
 
   const submit = async () => {
     if (!canPost || busy) return;
-    if (uploadingAttachmentCount > 0) {
-      showNotification('warning', 'Attachments', 'Wait for attachment uploads to finish before posting.');
+    const attachGate = canPublishWithAttachments(media);
+    if (!attachGate.ok) {
+      showNotification('warning', 'Attachments', attachGate.reason);
       return;
     }
     setBusy(true);
@@ -358,15 +680,17 @@ export default function MobilePostScreen({
           content: content.trim(),
           attachmentFileIds: attachmentIds,
           attachments: attachmentIds,
+          attachmentCaptions: buildAttachmentCaptionMap(media, mediaCaption),
           visibility: visibilityEnabled ? visibility : defaultVisibility,
           graphicWarning: graphicWarningEnabled ? graphicWarning : false,
           isAIEnhanced,
-          aiInsightEnabled: postAiInsightPreferenceToBoolean(resolvePostAiInsightPreference(aiInsightPreference, 'off')),
+          aiInsightEnabled: postAiInsightPreferenceToBoolean(
+            resolvePostAiInsightPreference(aiInsightPreference, 'off')
+          ),
           topic: topic.trim() || undefined,
           location: place.trim() || undefined
         } as any);
 
-        // Ensure immediate local refresh even if realtime is delayed.
         window.dispatchEvent(new CustomEvent('community:post_updated', { detail: { post: updated } }));
 
         showNotification('success', 'Saved', 'Post updated.');
@@ -374,29 +698,53 @@ export default function MobilePostScreen({
         return;
       }
 
+      const presentation =
+        attachmentIds.length > 0 ? null : buildPostPresentation(textBackgroundId);
       const created = await CommunityService.createPost({
         content: content.trim(),
         attachmentFileIds: attachmentIds,
         attachments: attachmentIds,
+        attachmentCaptions: buildAttachmentCaptionMap(media, mediaCaption),
         visibility: visibilityEnabled ? visibility : defaultVisibility,
         graphicWarning: graphicWarningEnabled ? graphicWarning : false,
         isAIEnhanced,
         aiInsightEnabled: postAiInsightPreferenceToBoolean(aiInsightPreference),
         topic: topic.trim() || undefined,
-        location: place.trim() || undefined
+        location: place.trim() || undefined,
+        businessPageId: activeBusinessPageId,
+        textBackgroundId: presentation ? presentation.themeId : null,
+        presentation
       } as any);
 
       window.dispatchEvent(new CustomEvent('community:post_created', { detail: { post: created } }));
 
+      media.forEach((item) => revokeAttachmentPreviews(item));
+      clearMobilePostDraft(draftUserId);
+      mediaCountRef.current = 0;
+      mediaVideoCountRef.current = 0;
       setContent('');
-      setAttachments([]);
+      setTextBackgroundId(POST_TEXT_BG_NONE_ID);
+      setMedia([]);
+      setMediaCaption('');
       setGraphicWarning(false);
       setIsAIEnhanced(false);
       setAiInsightPreference('auto');
       setTopic('');
       setPlace('');
+      setLocationDetails(null);
+      setLocationPickerOpen(false);
+      setPostAuthorScopeId('user');
+      setStatusMessage('');
       showNotification('success', 'Posted', 'Your update is live.');
-      if (onClose) closeComposer();
+      const createdId = String((created as any)?.id || '').trim();
+      if (createdId) {
+        navigate(`/post/${encodeURIComponent(createdId)}`, {
+          replace: true,
+          state: { post: created, fromComposer: true }
+        });
+      } else if (onClose) {
+        closeComposer();
+      }
     } catch (e: any) {
       showNotification(
         'error',
@@ -407,6 +755,15 @@ export default function MobilePostScreen({
       setBusy(false);
     }
   };
+
+  const handleLocationDetailsChange = useCallback((nextValue: Partial<StructuredLocationFields>) => {
+    setLocationDetails((previous) => {
+      const merged = { ...(previous || {}), ...(nextValue || {}) };
+      const nextLabel = getLocationLabel(merged);
+      if (nextLabel) setPlace(nextLabel);
+      return merged;
+    });
+  }, []);
 
   return (
     <div className={MOBILE_PAGE_SECTION_CLASS}>
@@ -465,6 +822,43 @@ export default function MobilePostScreen({
           </div>
         ) : null}
 
+        {!isEditing ? (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <label className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+              <span className="text-slate-500">Identity</span>
+              <select
+                value={activePostAuthor?.id || 'user'}
+                onChange={(event) => {
+                  setPostAuthorScopeId(event.target.value);
+                }}
+                className="mt-1 w-full bg-transparent text-xs font-semibold text-slate-900 outline-none"
+                disabled={busy || loadingPost || ownedBusinessPagesLoading}
+              >
+                {postAuthorOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label} ({option.subtitle})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+              <span className="text-slate-500">Audience</span>
+              <select
+                value={visibility}
+                onChange={(event) => setVisibility(event.target.value)}
+                className="mt-1 w-full bg-transparent text-xs font-semibold text-slate-900 outline-none"
+                disabled={!visibilityEnabled || busy || loadingPost}
+              >
+                {allowedVisibilities.map((value) => (
+                  <option key={value} value={value}>
+                    {value === 'public' ? 'Public' : value === 'network' ? 'Network' : value === 'friends' ? 'Friends' : value === 'private' ? 'Only me' : value.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
+
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <label className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
             <input
@@ -480,7 +874,9 @@ export default function MobilePostScreen({
             <select
               value={aiInsightPreference}
               onChange={(e) =>
-                setAiInsightPreference(resolvePostAiInsightPreference(e.target.value, isEditing ? 'off' : 'auto'))
+                setAiInsightPreference(
+                  resolvePostAiInsightPreference(e.target.value, isEditing ? 'off' : 'auto')
+                )
               }
               className="mt-1 w-full bg-transparent text-xs font-semibold text-slate-900 outline-none"
               disabled={busy || loadingPost}
@@ -496,6 +892,25 @@ export default function MobilePostScreen({
             ? 'This setting updates whether Scrolitha keeps AI insight on this post.'
             : 'Automatic preserves your current Scrolitha insight settings for new posts.'}
         </p>
+
+        {!isEditing ? (
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <PostTextBackgroundPicker
+              value={textBackgroundId}
+              disabled={busy || media.some((item) => Boolean(item.id || item.uploading))}
+              onChange={setTextBackgroundId}
+            />
+            {media.some((item) => Boolean(item.id || item.uploading)) ? (
+              <p className="mt-2 text-[11px] text-slate-500">
+                Text backgrounds are available for text-only posts. Remove media to enable.
+              </p>
+            ) : (
+              <p className="mt-2 text-[11px] text-slate-500">
+                No word limit. Text color adjusts automatically with each background.
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <div>
@@ -513,27 +928,135 @@ export default function MobilePostScreen({
             <div className="mb-1 text-xs font-semibold text-slate-500">Location</div>
             <input
               value={place}
-              onChange={(e) => setPlace(String(e.target.value || ''))}
+              onChange={(e) => {
+                setPlace(String(e.target.value || ''));
+                setLocationDetails(null);
+              }}
               list="mobile_post_locations"
               placeholder="Region / country / city"
               className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-800 outline-none focus:border-slate-400"
               disabled={busy || loadingPost}
             />
+            {!isEditing ? (
+              <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-[11px] text-slate-500">
+                    {getLocationLabel(locationDetails) || 'Use map search or current location to enrich this post.'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLocationPickerOpen((previous) => !previous)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-600"
+                    disabled={busy || loadingPost}
+                  >
+                    <MapPin className="h-3.5 w-3.5" aria-hidden />
+                    {locationPickerOpen ? 'Hide map' : locationDetails ? 'Edit with map' : 'Use map'}
+                  </button>
+                </div>
+                {locationPickerOpen ? (
+                  <div className="mt-3">
+                    <React.Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white px-3 py-4 text-xs text-slate-500">Loading map picker...</div>}>
+                      <LocationPicker
+                        value={locationDetails}
+                        onChange={handleLocationDetailsChange}
+                        label="Integrated map location"
+                        placeholder="Search city, area, or place"
+                      />
+                    </React.Suspense>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 
         <div className="mt-3">
-          <MentionHashtagTextarea
-            value={content}
-            onChange={(nextValue) => setContent(nextValue)}
-            placeholder="Share an update with your network..."
-            mentionsEnabled={mentionsEnabled}
-            hashtagsEnabled={hashtagsEnabled}
-            disabled={busy || loadingPost}
-            className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-slate-400"
-          />
+          {(() => {
+            const hasMedia = media.some((item) => Boolean(item.id || item.uploading));
+            const bgTheme = buildPostPresentation(textBackgroundId);
+            const textOnlyBackground = isComposerTextBackgroundActive(textBackgroundId, {
+              hasMedia
+            });
+            return (
+              <>
+              {hasMedia ? (
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600">Media caption</div>
+                    <div className="text-[11px] text-slate-500">Optional. Captions appear only when you add one.</div>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-500">
+                    {mediaCaption.trim().length}
+                  </span>
+                </div>
+              ) : null}
+              <div
+                className={
+                  textOnlyBackground
+                    ? 'overflow-hidden rounded-2xl ring-1 ring-black/5'
+                    : undefined
+                }
+                style={
+                  textOnlyBackground && bgTheme
+                    ? { background: bgTheme.background, color: bgTheme.textColor }
+                    : undefined
+                }
+                data-testid="composer-text-background-surface-mobile"
+                data-background-active={textOnlyBackground ? 'true' : 'false'}
+              >
+                <MentionHashtagTextarea
+                  value={content}
+                  onChange={(nextValue) => setContent(nextValue)}
+                  placeholder={
+                    textOnlyBackground ? 'Say something…' : 'Share an update with your network...'
+                  }
+                  mentionsEnabled={mentionsEnabled}
+                  hashtagsEnabled={hashtagsEnabled}
+                  disabled={busy || loadingPost}
+                  className={
+                    textOnlyBackground
+                      ? composerEditorTextBackground
+                      : 'w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-slate-400'
+                  }
+                  style={
+                    textOnlyBackground
+                      ? buildComposerTextBackgroundStyle(textBackgroundId)
+                      : undefined
+                  }
+                />
+              </div>
+              {hasMedia ? (
+                <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <MentionHashtagTextarea
+                    value={mediaCaption}
+                    onChange={setMediaCaption}
+                    placeholder="Optional media caption. Add @mentions, #tags, emojis, or a polished highlight..."
+                    mentionsEnabled={mentionsEnabled}
+                    hashtagsEnabled={hashtagsEnabled}
+                    disabled={busy || loadingPost}
+                    className="min-h-[92px] w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400"
+                  />
+                  <div className="mt-3">
+                    <CaptionEnhancementToolbar
+                      value={mediaCaption}
+                      onChange={setMediaCaption}
+                      disabled={busy || loadingPost}
+                    />
+                  </div>
+                  {mediaCaption.trim() ? (
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs leading-5 text-white">
+                      <span className="font-semibold text-cyan-100">Caption preview:</span>{' '}
+                      <RichCaptionText text={mediaCaption.trim()} preserveWhitespace={false} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              </>
+            );
+          })()}
           <div className="mt-2 text-[11px] text-slate-500">
-            {hashtagsEnabled ? '#tags' : '#tags (disabled)'} and {mentionsEnabled ? '@mentions' : '@mentions (disabled)'} supported
+            {hashtagsEnabled ? '#tags' : '#tags (disabled)'} and{' '}
+            {mentionsEnabled ? '@mentions' : '@mentions (disabled)'} supported
           </div>
           <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
             <div className="flex flex-wrap gap-2">
@@ -549,52 +1072,47 @@ export default function MobilePostScreen({
                 </button>
               ))}
             </div>
-            <p className="mt-2 text-[11px] text-slate-500">When AI is used, content remains user-authored.</p>
+            <div className="mt-3">
+              <AIComposerAssist
+                value={content}
+                surface="post-mobile"
+                compact
+                disabled={busy || loadingPost || aiLoading}
+                onApplyDraft={(draft, meta) => {
+                  if (meta?.replace === false) {
+                    const base = String(content || '').trim();
+                    setContent(base ? `${base}\n\n${draft}` : draft);
+                  } else {
+                    setContent(draft);
+                  }
+                  setIsAIEnhanced(true);
+                }}
+              />
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              AI drafts never auto-post. Review every suggestion before applying.
+            </p>
           </div>
         </div>
 
-        {attachments.length ? (
-          <div className="mt-3 grid gap-2">
-            {attachments.slice(0, 6).map((file) => (
-              <div key={file.id} className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-                <button
-                  type="button"
-                  onClick={() => removeAttachment(file.id)}
-                  className="absolute right-2 top-2 z-10 rounded-full bg-white/90 p-1 text-slate-500 hover:text-slate-700"
-                  aria-label="Remove attachment"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleAttachmentDownload(file)}
-                  className="absolute left-2 top-2 z-10 rounded-full bg-white/90 p-1 text-slate-500 hover:text-slate-700"
-                  aria-label="Download attachment"
-                >
-                  <Download className="h-4 w-4" />
-                </button>
-                {isVideo(file) ? (
-                  <video src={file.url} className="h-44 w-full object-cover" controls preload="metadata" />
-                ) : isImage(file) ? (
-                  <img src={file.url} alt={file.name} className="h-44 w-full object-cover" />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void handleAttachmentDownload(file)}
-                    className="block w-full p-4 text-left text-sm font-semibold text-slate-700 hover:underline"
-                  >
-                    {file.name}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : null}
+        <div className="mt-3">
+          <ComposerMediaPreviewGrid
+            media={media}
+            onRemove={removeAttachment}
+            onRetry={retryAttachment}
+            onOpenPreview={(item) => setPreviewMedia(toPreviewMedia(item))}
+            onEnhance={enhancePostMedia}
+            emptyLabel="Add photos, videos, or files — previews appear while uploading."
+          />
+        </div>
 
-        {uploadingAttachmentCount > 0 ? (
+        {uploadingCount > 0 || statusMessage ? (
           <div className="mt-3 flex items-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>{uploadingAttachmentLabel || 'Uploading attachments...'}</span>
+            {uploadingCount > 0 ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+            <span className="sr-only" role="status" aria-live="polite">
+              {statusMessage}
+            </span>
+            <span>{statusMessage || `Uploading ${uploadingCount} attachment(s)…`}</span>
           </div>
         ) : null}
 
@@ -603,7 +1121,7 @@ export default function MobilePostScreen({
             ref={fileInputRef}
             type="file"
             multiple
-            accept={POST_UPLOAD_ACCEPT}
+            accept={COMPOSER_UPLOAD_ACCEPT}
             className="hidden"
             onChange={handleInputFiles}
           />
@@ -628,7 +1146,7 @@ export default function MobilePostScreen({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              disabled={busy || loadingPost || uploadingAttachmentCount > 0}
+              disabled={busy || loadingPost}
             >
               <Paperclip className="h-4 w-4" />
               Files
@@ -637,7 +1155,7 @@ export default function MobilePostScreen({
               type="button"
               onClick={() => mediaInputRef.current?.click()}
               className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              disabled={busy || loadingPost || uploadingAttachmentCount > 0}
+              disabled={busy || loadingPost}
             >
               <ImageIcon className="h-4 w-4" />
               Photos & Videos
@@ -646,7 +1164,7 @@ export default function MobilePostScreen({
               type="button"
               onClick={() => cameraInputRef.current?.click()}
               className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              disabled={busy || loadingPost || uploadingAttachmentCount > 0}
+              disabled={busy || loadingPost}
             >
               <Camera className="h-4 w-4" />
               Camera
@@ -665,15 +1183,29 @@ export default function MobilePostScreen({
         </div>
       </div>
 
+      <datalist id="mobile_post_topics">
+        {suggestedTopics.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
+      <datalist id="mobile_post_locations">
+        {suggestedLocations.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
+
       {aiSuggestionOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-3">
           <div className={MOBILE_MODAL_CARD_CLASS}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold text-slate-900">AI Draft Suggestion</h3>
                 <p className="text-[11px] text-slate-500">
                   {aiSuggestionMode
-                    ? `Mode: ${postAiActions.find((entry) => entry.mode === aiSuggestionMode)?.label || aiSuggestionMode}`
+                    ? `Mode: ${
+                        postAiActions.find((entry) => entry.mode === aiSuggestionMode)?.label ||
+                        aiSuggestionMode
+                      }`
                     : 'Review before applying'}
                 </p>
               </div>
@@ -691,10 +1223,12 @@ export default function MobilePostScreen({
                 type="button"
                 onClick={() => setAiCompareView('compare')}
                 className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
-                  aiCompareView === 'compare' ? 'bg-slate-900 text-white' : 'border border-slate-200 text-slate-700'
+                  aiCompareView === 'compare'
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-200 text-slate-700'
                 }`}
               >
-                Compare version
+                Compare
               </button>
               <button
                 type="button"
@@ -708,27 +1242,27 @@ export default function MobilePostScreen({
             </div>
 
             {aiSuggestionWarning ? (
-              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                 {aiSuggestionWarning}
-              </div>
+              </p>
             ) : null}
 
-            {aiCompareView === 'compare' ? (
-              <div className="mt-3 grid gap-2">
+            <div className="mt-3 max-h-[50vh] space-y-3 overflow-y-auto">
+              {aiCompareView === 'compare' ? (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Original</div>
-                  <pre className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{aiOriginalText || '(empty)'}</pre>
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Original
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{aiOriginalText}</p>
                 </div>
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">AI Version</div>
-                  <pre className="mt-1 whitespace-pre-wrap text-sm text-emerald-900">{aiSuggestion || '(empty)'}</pre>
+              ) : null}
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">
+                  AI suggestion
                 </div>
+                <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{aiSuggestion}</p>
               </div>
-            ) : (
-              <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                <pre className="whitespace-pre-wrap text-sm text-emerald-900">{aiSuggestion || '(empty)'}</pre>
-              </div>
-            )}
+            </div>
 
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               <button
@@ -736,38 +1270,36 @@ export default function MobilePostScreen({
                 onClick={closeAiSuggestionModal}
                 className="rounded-full border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700"
               >
-                Cancel
+                Discard
               </button>
               <button
                 type="button"
                 onClick={applyAiSuggestionInsert}
                 className="rounded-full border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700"
               >
-                Insert Below
+                Insert below
               </button>
               <button
                 type="button"
                 onClick={applyAiSuggestionReplace}
-                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold uppercase text-white"
+                className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
               >
-                Replace
+                Replace text
               </button>
             </div>
           </div>
         </div>
       ) : null}
 
-      <datalist id="mobile_post_topics">
-        {suggestedTopics.slice(0, 500).map((t) => (
-          <option key={t} value={t} />
-        ))}
-      </datalist>
-      <datalist id="mobile_post_locations">
-        {suggestedLocations.slice(0, 500).map((t) => (
-          <option key={t} value={t} />
-        ))}
-      </datalist>
-
+      {previewMedia ? (
+        <React.Suspense fallback={null}>
+          <MediaPreviewModal
+            open={Boolean(previewMedia)}
+            media={previewMedia}
+            onClose={() => setPreviewMedia(null)}
+          />
+        </React.Suspense>
+      ) : null}
     </div>
   );
 }

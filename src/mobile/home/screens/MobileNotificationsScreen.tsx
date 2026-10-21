@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BellIcon as Bell, CheckIcon as Check } from '../../../components/icons/ShellIcons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useNotification } from '../../../context/NotificationContext';
@@ -13,12 +13,24 @@ import {
   groupNotificationsForDisplay,
   muteConversationNotifications
 } from '../../../utils/notificationExcellence';
+import { notificationsApi } from '../../../services/notifications';
+import {
+  buildNativeNotificationEnvelope,
+  getNativeCapabilities,
+  getScrolithNative,
+  isSafeInternalPath,
+  postNativeEvent
+} from '../../nativeBridge';
 import { MOBILE_MODAL_CARD_CLASS, MOBILE_PAGE_SECTION_CLASS } from '../mobileShellLayout';
 
 export default function MobileNotificationsScreen({
-  onNavigate
+  onNavigate,
+  messagesUnread = 0,
+  onOpenMessages
 }: {
   onNavigate?: (to: string) => void;
+  messagesUnread?: number;
+  onOpenMessages?: () => void;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -26,6 +38,9 @@ export default function MobileNotificationsScreen({
   const { notifications, refreshNotifications, markAsRead } = useNotification();
   const [tab, setTab] = useState<'home' | 'community'>('home');
   const [selectedCampaign, setSelectedCampaign] = useState<any | null>(null);
+  const nativeBridge = getScrolithNative();
+  const nativeNotificationsEnabled = !onNavigate
+    && getNativeCapabilities(nativeBridge).nativeNotifications === true;
   const normalizedRole = String(user?.role || '').toLowerCase();
   const isClientMode = normalizedRole.includes('client') || normalizedRole.includes('employer');
   const dashboardBasePath = normalizedRole.includes('admin')
@@ -62,6 +77,7 @@ export default function MobileNotificationsScreen({
 
   const visible = tab === 'community' ? buckets.community : buckets.home;
   const groupedVisible = useMemo(() => groupNotificationsForDisplay(visible), [visible]);
+  const totalUnread = unreadCounts.home + unreadCounts.community + Math.max(0, Number(messagesUnread) || 0);
   const growthShortcuts = useMemo(() => {
     if (!isAuthenticated || !normalizedRole || normalizedRole === 'guest') return [];
     if (dashboardBasePath === '/admin/dashboard') {
@@ -143,7 +159,7 @@ export default function MobileNotificationsScreen({
     }
   }, [location.search, list]);
 
-  const openTarget = (targetUrl: string) => {
+  const openTarget = useCallback((targetUrl: string) => {
     if (!targetUrl) return;
     if (isExternalNotificationUrl(targetUrl)) {
       const externalWindow = window.open(targetUrl, '_blank', 'noopener,noreferrer');
@@ -157,10 +173,121 @@ export default function MobileNotificationsScreen({
       return;
     }
     navigate(targetUrl);
-  };
+  }, [navigate, onNavigate]);
+
+  useEffect(() => {
+    if (!nativeNotificationsEnabled) return;
+
+    const respond = (requestId: unknown, success: boolean, error?: string) => {
+      postNativeEvent('notifications:action_result', {
+        requestId: String(requestId || ''),
+        success,
+        ...(error ? { error: error.slice(0, 160) } : {})
+      }, nativeBridge);
+    };
+
+    const onNativeCommand = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      const command = String(detail?.command || '').trim();
+      const requestId = detail?.requestId;
+
+      if (command === 'notifications.request_snapshot' || command === 'notifications.retry') {
+        void refreshNotifications({ force: true })
+          .then(() => {
+            postNativeEvent(
+              'notifications:state',
+              buildNativeNotificationEnvelope(notifications, String(requestId || '')),
+              nativeBridge
+            );
+            respond(requestId, true);
+          })
+          .catch(() => respond(requestId, false, 'notification_refresh_failed'));
+        return;
+      }
+
+      if (command === 'notifications.mark_read') {
+        const id = String(detail?.id || '').trim();
+        if (!id || id.length > 128) {
+          respond(requestId, false, 'invalid_notification_id');
+          return;
+        }
+        markAsRead(id);
+        respond(requestId, true);
+        return;
+      }
+
+      if (command === 'notifications.mark_all_read') {
+        void notificationsApi.markAllAsRead()
+          .then(() => refreshNotifications({ force: true }))
+          .then(() => respond(requestId, true))
+          .catch(() => respond(requestId, false, 'mark_all_read_failed'));
+        return;
+      }
+
+      if (command === 'notifications.open_action') {
+        const id = String(detail?.id || '').trim();
+        const actionPath = String(detail?.actionPath || '').trim();
+        if (id) markAsRead(id);
+        if (!isSafeInternalPath(actionPath)) {
+          respond(requestId, false, 'invalid_notification_path');
+          return;
+        }
+        openTarget(actionPath);
+        respond(requestId, true);
+      }
+    };
+
+    window.addEventListener('scrolith:native-command', onNativeCommand as EventListener);
+    postNativeEvent('notifications:ready', {}, nativeBridge);
+    return () => window.removeEventListener('scrolith:native-command', onNativeCommand as EventListener);
+  }, [markAsRead, nativeBridge, nativeNotificationsEnabled, openTarget, refreshNotifications]);
+
+  useEffect(() => {
+    if (!nativeNotificationsEnabled) return;
+    postNativeEvent(
+      'notifications:state',
+      buildNativeNotificationEnvelope(notifications),
+      nativeBridge
+    );
+  }, [nativeBridge, nativeNotificationsEnabled, notifications]);
+
+  useEffect(() => {
+    if (!nativeNotificationsEnabled) return;
+    nativeBridge?.openNativeNotifications?.();
+    return () => nativeBridge?.closeNativeNotifications?.();
+  }, [nativeBridge, nativeNotificationsEnabled]);
 
   return (
     <div className={MOBILE_PAGE_SECTION_CLASS}>
+      <section
+        className="mb-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
+        aria-labelledby="mobile-activity-center-title"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div id="mobile-activity-center-title" className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700">
+              Activity center
+            </div>
+            <p className="mt-1 text-sm font-semibold text-slate-900">
+              {totalUnread ? `${totalUnread} unread update${totalUnread === 1 ? '' : 's'}` : 'You are all caught up'}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              Notifications and conversations stay reachable from one mobile surface.
+            </p>
+          </div>
+          {onOpenMessages ? (
+            <button
+              type="button"
+              onClick={onOpenMessages}
+              className="min-h-10 shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-500"
+              aria-label={messagesUnread ? `Open messages, ${messagesUnread} unread` : 'Open messages'}
+            >
+              Messages{messagesUnread ? ` (${messagesUnread > 99 ? '99+' : messagesUnread})` : ''}
+            </button>
+          ) : null}
+        </div>
+      </section>
+
       {growthShortcuts.length ? (
         <div className="mb-3 rounded-3xl border border-emerald-100 bg-gradient-to-br from-white via-emerald-50/70 to-slate-50 p-4 shadow-sm">
           <div className="mb-3">

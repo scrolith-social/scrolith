@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import api from '../services/api';
 import {
   MessagingService,
@@ -14,7 +14,7 @@ import {
 } from '../services/messaging';
 import { tokenStore } from '../services/tokenStore';
 import { Conversation, Message, ProjectBrief, UploadedFile, UserRole } from '../types';
-import { Send, Image as ImageIcon, Smile, MoreVertical, ArrowLeft, Sparkles, Loader2, Check, Trash2, ShieldAlert, RefreshCw, X, CornerUpLeft, Copy, Pencil, Star, Phone, Users, Paperclip, Download, Camera, FileText, Search, Shield } from 'lucide-react';
+import { Send, Image as ImageIcon, Smile, MoreVertical, ArrowLeft, Sparkles, Loader2, Check, Trash2, ShieldAlert, RefreshCw, X, CornerUpLeft, Copy, Pencil, Star, Phone, Users, Paperclip, Download, Camera, FileText, Search, Shield, Pin, Palette, Video } from 'lucide-react';
 import { AIService } from '../services/ai/ai.service';
 import { UserService } from '../services/user';
 import { useUser } from '../context/UserContext';
@@ -26,8 +26,7 @@ import ProBadge from '../components/ProBadge';
 import { FileService } from '../services/files';
 import VoiceRecorder from './VoiceRecorder';
 import EnterpriseAvatar from '../components/common/EnterpriseAvatar';
-import VoiceCallModal from './VoiceCallModal';
-import { VoiceCallProvider, useVoiceCall } from './VoiceCallProvider';
+import { useVoiceCall } from './VoiceCallProvider';
 import { BriefsService } from '../services/briefs';
 import { proposalsApi } from '../services/proposals';
 import { normalizeDealFlowSettings } from '../utils/dealFlow';
@@ -40,7 +39,16 @@ import ScrolithaConversationMenu from '../components/messaging/ScrolithaConversa
 import SmartComposer from '../components/messaging/SmartComposer';
 import GroupManagePanel from '../components/messaging/GroupManagePanel';
 import GroupCreateWizard from '../components/messaging/GroupCreateWizard';
-import SafeMessageText from '../components/messaging/SafeMessageText';
+import ChatAppearancePanel from '../components/messaging/ChatAppearancePanel';
+import ExpandableMessageText from '../components/messaging/ExpandableMessageText';
+import {
+  appearanceToBackgroundStyle,
+  buildChatPalette,
+  paletteToCssVars,
+  type AppearanceInput
+} from '../services/messaging/chatTextColorEngine';
+import { resolveUserAvatarUrl } from '../utils/userAvatar';
+import { extractStoryMessageReference } from '../utils/storyMessageMedia';
 import {
   formatMultiRecorderLabel,
   formatMultiTyperLabel,
@@ -49,9 +57,15 @@ import {
 import MessageDeliveryTicks from '../components/messaging/MessageDeliveryTicks';
 import MessagingPrivacySettingsPanel from '../components/messaging/MessagingPrivacySettingsPanel';
 import ConversationActionsMenu from '../components/messaging/ConversationActionsMenu';
+import StoryMessageMediaThumb from '../components/messaging/StoryMessageMediaThumb';
 import ScrolithaService from '../services/scrolitha';
 import { isScrolithaAuthoredMessage, normalizeScrolithaDisplayText } from '../utils/scrolithaDisplayText';
-import { getScrolithaProfilePhotoUrl, resolveScrolithaAvatar } from '../utils/scrolithaIdentity';
+import {
+  getScrolithaProfilePhotoUrl,
+  isScrolithaUsername,
+  resolveScrolithaAvatar,
+  SCROLITHA_DISPLAY_NAME
+} from '../utils/scrolithaIdentity';
 import { extractMessageAttachments, revokeMessageAttachmentMediaUrls } from '../services/messagingMedia';
 import {
   buildThreadTimeline,
@@ -84,6 +98,7 @@ import { dedupeMessagesById, reconcileOptimisticMessage } from '../services/mess
 import { setMessagingMediaConversationAffinity } from '../services/messagingMedia';
 import { generateImageBlurPreview, generateVideoPoster } from '../services/messagingEngine/mediaProgressive';
 import { uploadMessagingFileWithEngine } from '../services/messagingEngine/mediaUploadEngine';
+import { countMessageWords, MAX_MESSAGE_WORDS } from '../utils/messageText';
 
 
 const QUICK_REACTIONS = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F62E}', '\u{1F622}', '\u{1F64F}'];
@@ -109,114 +124,79 @@ type AttachmentPreviewResource = {
 const VoiceCallControls: React.FC<{
   disabled?: boolean;
   canConference?: boolean;
-  meId?: string;
+  canVideo?: boolean;
+  conversationId?: string | null;
+  callTargets?: { id: string; name: string; avatar?: string }[];
+  participantUsers?: { id: string; name: string; avatar?: string }[];
   onError: (message: string) => void;
-}> = ({ disabled, canConference, meId, onError }) => {
-  const {
-    open,
-    incoming,
-    statusLabel,
-    muted,
-    speakerOn,
-    addBusy,
-    participantUsers,
-    participants,
-    remoteStreams,
-    startCall,
-    acceptCall,
-    rejectCall,
-    endCall,
-    toggleMute,
-    toggleSpeaker,
-    addParticipant
-  } = useVoiceCall();
+}> = ({
+  disabled,
+  canConference,
+  canVideo,
+  conversationId,
+  callTargets,
+  participantUsers: roster,
+  onError
+}) => {
+  const { startCall } = useVoiceCall();
 
-  const handleStart = async (conference?: boolean) => {
+  const handleStart = async (options?: { conference?: boolean; video?: boolean }) => {
     try {
-      await startCall({ conference });
+      await startCall({
+        conference: Boolean(options?.conference),
+        video: Boolean(options?.video),
+        conversationId: conversationId || undefined,
+        callTargets: callTargets,
+        participantUsers: roster
+      });
     } catch (error: any) {
-      onError(error?.message || 'Unable to start voice call.');
-    }
-  };
-
-  const handleAccept = async () => {
-    try {
-      await acceptCall();
-    } catch (error: any) {
-      onError(error?.message || 'Unable to accept voice call.');
-    }
-  };
-
-  const handleReject = async () => {
-    try {
-      await rejectCall();
-    } catch (error: any) {
-      onError(error?.message || 'Unable to reject voice call.');
-    }
-  };
-
-  const handleEnd = async () => {
-    try {
-      await endCall();
-    } catch (error: any) {
-      onError(error?.message || 'Unable to end voice call.');
-    }
-  };
-
-  const handleAddParticipant = async (userId: string) => {
-    try {
-      await addParticipant(userId);
-    } catch (error: any) {
-      onError(error?.message || 'Unable to add participant.');
+      onError(error?.message || 'Unable to start call.');
     }
   };
 
   return (
-    <>
-      <div className="flex items-center gap-1.5">
+    <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => void handleStart({ conference: false, video: false })}
+        className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white px-0 text-gray-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-50 md:h-10 md:w-10"
+        title="Start voice call"
+        aria-label="Start voice call"
+        data-testid="messages-voice-call-btn"
+      >
+        <Phone className="h-4 w-4" />
+        <span className="hidden text-xs font-semibold md:sr-only">Voice</span>
+      </button>
+      {canVideo ? (
         <button
           type="button"
           disabled={disabled}
-          onClick={() => void handleStart(false)}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 disabled:opacity-50"
-          title="Start voice call"
+          onClick={() => void handleStart({ conference: false, video: true })}
+          className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white px-0 text-gray-600 shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-50 md:h-10 md:w-10"
+          title="Start video call"
+          aria-label="Start video call"
+          data-testid="messages-video-call-btn"
         >
-          <Phone className="h-4 w-4" />
+          <Video className="h-4 w-4" />
+          <span className="hidden text-xs font-semibold md:sr-only">Video call</span>
         </button>
-        {canConference ? (
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => void handleStart(true)}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50"
-            title="Start conference call"
-          >
-            <Users className="h-4 w-4" />
-          </button>
-        ) : null}
-      </div>
-
-      <VoiceCallModal
-        open={open}
-        incoming={incoming}
-        statusLabel={statusLabel}
-        muted={muted}
-        speakerOn={speakerOn}
-        addBusy={addBusy}
-        canAddParticipant={Boolean(canConference)}
-        participantUsers={participantUsers}
-        participants={participants}
-        meId={meId}
-        remoteStreams={remoteStreams}
-        onClose={() => void handleEnd()}
-        onAccept={() => void handleAccept()}
-        onReject={() => void handleReject()}
-        onEnd={() => void handleEnd()}
-        onToggleMute={toggleMute}
-        onToggleSpeaker={toggleSpeaker}
-        onAddParticipant={(userId) => void handleAddParticipant(userId)}
-      />
-    </>
+      ) : null}
+      {canConference ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => void handleStart({ conference: true, video: false })}
+          className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-xl border border-gray-200 bg-white px-0 text-gray-600 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50 md:h-10 md:w-10"
+          title="Start conference call"
+          aria-label="Start conference call"
+          data-testid="messages-conference-call-btn"
+        >
+          <Users className="h-4 w-4" />
+        <span className="hidden text-xs font-semibold md:sr-only">Conference</span>
+        </button>
+      ) : null}
+    </div>
   );
 };
 
@@ -226,6 +206,7 @@ const Messages = () => {
     inviteCode?: string;
   }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, isAuthenticated, isLoading: authLoading } = useUser();
   const { showNotification } = useNotification();
@@ -248,6 +229,9 @@ const Messages = () => {
   /** Phase 29.3 — enterprise group profile for active conversation */
   const [activeGroupProfile, setActiveGroupProfile] = useState<any>(null);
   const [groupPins, setGroupPins] = useState<any[]>([]);
+  const [chatAppearance, setChatAppearance] = useState<AppearanceInput>({ kind: 'none' });
+  const [chatAppearanceLoading, setChatAppearanceLoading] = useState(false);
+  const [chatAppearanceOpen, setChatAppearanceOpen] = useState(false);
   const [groupSendAckStatus, setGroupSendAckStatus] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [showMessageSettings, setShowMessageSettings] = useState(false);
@@ -261,6 +245,7 @@ const Messages = () => {
   const [voiceRuntimeConfig, setVoiceRuntimeConfig] = useState({
       enabledVoiceCalls: true,
       enabledConferenceCalls: true,
+      enabledVideoCalls: true,
       enabledVoiceNotes: true,
       maxParticipants: 20,
       maxVoiceNoteDurationSeconds: 180,
@@ -330,6 +315,8 @@ const Messages = () => {
   const shouldAutoScrollRef = useRef(true);
   const messagesScrollMetricsRef = useRef({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 });
   const activeConvoIdRef = useRef<string | null>(null);
+  const deepLinkHydrationRef = useRef<string | null>(null);
+  const chatAppearanceRequestRef = useRef({ generation: 0, conversationId: '' });
   const lastPreloadConvoRef = useRef<string | null>(null);
   const [showJumpToUnread, setShowJumpToUnread] = useState(false);
   const userIdRef = useRef<string | null>(null);
@@ -372,12 +359,16 @@ const Messages = () => {
                           unread_count: result.unreadCount ?? conversation.unread_count ?? conversation.unreadCount
                       } as Conversation;
                   })
-                  .filter(Boolean) as Conversation[]
+                  .filter(Boolean) as Conversation[],
+              user?.id
           ),
       [messageSearchResults]
   );
 
-  const dedupedConversations = useMemo(() => mergeDirectConversations(conversations), [conversations]);
+  const dedupedConversations = useMemo(
+    () => mergeDirectConversations(conversations, user?.id),
+    [conversations, user?.id]
+  );
 
   const traceClient = (event: string, details?: Record<string, any>) => {
       if (!messagesTraceEnabled) return;
@@ -610,7 +601,11 @@ const Messages = () => {
               priority: 'high'
           });
           const avatarUrls = (convo?.participants || [])
-              .map((p: any) => String(p?.avatar || p?.avatarUrl || '').trim())
+              .map((p: any) =>
+                  resolveUserAvatarUrl(p) ||
+                  String(p?.avatar || p?.avatarUrl || p?.profilePhotoFileId || '').trim()
+              )
+              .map((url: string) => resolveUserAvatarUrl(url) || url)
               .filter(Boolean);
           preloadConversationAvatars(avatarUrls);
       }
@@ -621,16 +616,23 @@ const Messages = () => {
   useEffect(() => {
       if (!user) return;
       let cancelled = false;
+      const softOpen = Boolean((location.state as { softOpen?: boolean } | null)?.softOpen);
       (async () => {
           try {
               // Best-effort ensure before list so the pinned assistant appears.
-              await MessagingService.ensureScrolithaConversation().catch(() => null);
+              // Soft header opens skip ensure to open faster (assistant already usually present).
+              if (!softOpen) {
+                  await MessagingService.ensureScrolithaConversation().catch(() => null);
+              }
           } catch {
               // ignore — assistant may be rollout-gated
           }
           if (cancelled) return;
-          const list = await MessagingService.getAllConversations(user.id, user.role, { force: true });
-          if (!cancelled) setConversations(mergeDirectConversations(list));
+          // Soft open reuses cache when warm; force only on cold / hard entry.
+          const list = await MessagingService.getAllConversations(user.id, user.role, {
+              force: !softOpen
+          });
+          if (!cancelled) setConversations(mergeDirectConversations(list, user?.id));
       })().catch(() => undefined);
       return () => {
           cancelled = true;
@@ -723,6 +725,7 @@ const Messages = () => {
               setVoiceRuntimeConfig({
                   enabledVoiceCalls: Boolean(config?.enabledVoiceCalls ?? true),
                   enabledConferenceCalls: Boolean(config?.enabledConferenceCalls ?? true),
+                  enabledVideoCalls: Boolean((config as any)?.enabledVideoCalls ?? true),
                   enabledVoiceNotes: Boolean(config?.enabledVoiceNotes ?? true),
                   maxParticipants: Number(config?.maxParticipants ?? 20),
                   maxVoiceNoteDurationSeconds: Number(config?.maxVoiceNoteDurationSeconds ?? 180),
@@ -739,30 +742,120 @@ const Messages = () => {
       // Phase 22.2 — /messages/join/:code is not a conversation id
       if (!conversationId || conversationId === 'join') return;
       if (dedupedConversations.length > 0) {
-          const exists = dedupedConversations.find(c => c.id === conversationId);
-          if (exists) {
-              setActiveConvoId(conversationId);
-              // Mark as read when opening
-              if (user) {
-                  MessagingService.markAsRead(conversationId, user.id).then(() => {
+          const exact = dedupedConversations.find((c) => c.id === conversationId);
+          // If this id was absorbed into a merged row, open the canonical primary id.
+          const absorbed = !exact
+              ? dedupedConversations.find((c) => {
+                    const fromIds = ((c as any)?.mergedFromIds || (c as any)?.merged_from_ids || []) as string[];
+                    return Array.isArray(fromIds) && fromIds.includes(conversationId);
+                })
+              : null;
+          const resolved = exact || absorbed;
+          if (resolved?.id) {
+              if (absorbed && absorbed.id !== conversationId) {
+                  navigate(`/messages/${absorbed.id}`, { replace: true });
+              }
+              setActiveConvoId(resolved.id);
+              // Mark as read only when the viewer is an active participant.
+              // Admin list returns all platform threads; foreign rows 404 on /read and /appearance.
+              const isPlatformAdmin = String(user?.role || '')
+                  .toLowerCase()
+                  .includes('admin');
+              const hasSelfMembership = Boolean(
+                  user?.id &&
+                      (resolved.participants || []).some(
+                          (p: any) =>
+                              String(p?.id || p?.userId || '').trim() === String(user.id) &&
+                              !p?.deletedAt &&
+                              !p?.deleted_at
+                      )
+              );
+              // Non-admin inbox is membership-scoped; always attempt. Admin: only own threads.
+              const viewerIsMember = hasSelfMembership || !isPlatformAdmin;
+              if (user && viewerIsMember) {
+                  MessagingService.markAsRead(resolved.id, user.id).then(() => {
                       refreshMessages();
-                      // Update local state to reflect read status
-                      setConversations(prev => prev.map(c => 
-                          c.id === conversationId ? { ...c, unreadCount: 0 } : c
-                      ));
+                      setConversations((prev) =>
+                          prev.map((c) =>
+                              c.id === resolved.id
+                                  ? { ...c, unreadCount: 0, unread_count: 0 }
+                                  : c
+                          )
+                      );
                   }).catch(() => {
                       // Read receipts are best-effort; conversation loading and messaging must remain stable.
                   });
               }
           } else {
               setActiveConvoId(conversationId);
+              if (deepLinkHydrationRef.current !== conversationId) {
+                  deepLinkHydrationRef.current = conversationId;
+                  void MessagingService.getConversationById(conversationId)
+                      .then((deepLinked) => {
+                          if (!deepLinked?.id) return;
+                          setConversations((previous) => {
+                              const existingIndex = previous.findIndex((entry) => entry.id === deepLinked.id);
+                              if (existingIndex < 0) return [deepLinked, ...previous];
+                              return previous.map((entry) => entry.id === deepLinked.id ? { ...entry, ...deepLinked } : entry);
+                          });
+                          setActiveConvoId(deepLinked.id);
+                      })
+                      .catch(() => undefined);
+              }
           }
       } else {
           setActiveConvoId(conversationId);
+          if (deepLinkHydrationRef.current !== conversationId) {
+              deepLinkHydrationRef.current = conversationId;
+              void MessagingService.getConversationById(conversationId)
+                  .then((deepLinked) => {
+                      if (!deepLinked?.id) return;
+                      setConversations((previous) => [deepLinked, ...previous.filter((entry) => entry.id !== deepLinked.id)]);
+                      setActiveConvoId(deepLinked.id);
+                  })
+                  .catch(() => undefined);
+          }
       }
-  }, [conversationId, dedupedConversations.length, user]);
+  }, [conversationId, dedupedConversations.length, user, navigate]);
 
   // Phase 22.2 — accept group invite via /messages/join/:code or ?invite=
+  // Deep-link hydration must run after the inbox list effect as well. The list can be
+  // stale or can collapse a legacy direct-message row, while the URL still points at
+  // the conversation the profile contact action created/opened.
+  useEffect(() => {
+      const requestedId = String(conversationId || '').trim();
+      if (!requestedId || requestedId === 'join') return;
+
+      let cancelled = false;
+      setActiveConvoId(requestedId);
+      void MessagingService.getConversationById(requestedId)
+          .then((deepLinked) => {
+              if (cancelled || !deepLinked?.id) return;
+              setConversations((previous) => {
+                  const merged = mergeDirectConversations(
+                      [deepLinked, ...previous.filter((entry) => entry.id !== deepLinked.id)],
+                      user?.id
+                  );
+                  const resolved = merged.find((entry) => entry.id === deepLinked.id) ||
+                      merged.find((entry) => {
+                          const ids = ((entry as any)?.mergedFromIds || (entry as any)?.merged_from_ids || []) as string[];
+                          return Array.isArray(ids) && ids.includes(deepLinked.id);
+                      });
+                  const canonicalId = resolved?.id || deepLinked.id;
+                  setActiveConvoId(canonicalId);
+                  if (canonicalId !== requestedId) {
+                      navigate(`/messages/${canonicalId}`, { replace: true });
+                  }
+                  return merged;
+              });
+          })
+          .catch(() => undefined);
+
+      return () => {
+          cancelled = true;
+      };
+  }, [conversationId, user?.id, navigate]);
+
   useEffect(() => {
       const code = String(inviteCodeParam || searchParams.get('invite') || '').trim();
       if (!code || !user?.id) return;
@@ -962,10 +1055,43 @@ const Messages = () => {
       return dedupedConversations.find((conversation) => getConversationMergeKey(conversation) === mergeKey);
   }, [activeConvoId, conversations, dedupedConversations]);
 
+  /**
+   * Strict Scrolitha peer detection for inbox titles/avatars.
+   * Do not use bare participant.label === 'system' or username === 'ai' — those false-positive
+   * and rename normal DMs to "Scrolitha" (esp. in ADMIN VIEW).
+   */
+  const isScrolithaParticipantEntity = (participant: any) => {
+      if (!participant) return false;
+      if (participant.isScrolitha || participant.is_scrolitha) return true;
+      const username = String(participant.username || '')
+          .trim()
+          .toLowerCase()
+          .replace(/^@/, '');
+      // Official handles only (exclude generic 'ai').
+      if (
+          username === 'scrolitha' ||
+          username === 'scrolitha_ai' ||
+          username === 'scrolitha-bot'
+      ) {
+          return true;
+      }
+      const systemLabel = String(
+          participant.systemLabel || participant.system_label || ''
+      ).toLowerCase();
+      if (systemLabel.includes('ai assistant') || systemLabel.includes('official ai')) {
+          return true;
+      }
+      const name = String(participant.name || '').trim().toLowerCase();
+      if (name === 'scrolitha') return true;
+      // label=scrolitha is explicit; label=system alone is NOT enough (over-matches).
+      if (String(participant.label || '').toLowerCase() === 'scrolitha') return true;
+      return false;
+  };
+
   const isActiveScrolithaConversation = Boolean(
-      activeConvo?.isScrolitha ??
-          activeConvo?.is_scrolitha ??
-          activeConvo?.participants?.some((p: any) => p?.isScrolitha || p?.is_scrolitha)
+      activeConvo?.isScrolitha ||
+          activeConvo?.is_scrolitha ||
+          activeConvo?.participants?.some((p: any) => isScrolithaParticipantEntity(p))
   );
 
   const scrolithaPromptChips = useMemo(
@@ -1043,11 +1169,69 @@ const Messages = () => {
         }
       : undefined;
   const conversationListSource = isMessageSearchActive ? searchConversations : dedupedConversations;
+  /** Backend Scrolitha consolidation leaves soft-deleted losers with this preview marker. */
+  const isScrolithaMergeStubConversation = (convo: Conversation) => {
+      const preview = String(
+          getConversationPreviewText(convo, { currentUserId: user?.id }) ||
+              (convo as any)?.lastMessage ||
+              (convo as any)?.last_message ||
+              ''
+      );
+      if (/\[\s*merged\s+into\s+[a-z0-9_-]+\s*\]/i.test(preview)) return true;
+      const selfId = String(user?.id || '').trim();
+      const selfRow = (convo.participants || []).find(
+          (p: any) => String(p?.id || p?.userId || '').trim() === selfId
+      );
+      const label = String(selfRow?.label || '').toLowerCase();
+      if (label === 'scrolitha_duplicate_merged') return true;
+      // Soft-left self on a scrolitha duplicate should not appear in the inbox.
+       if (selfRow && ((selfRow as any).deletedAt || (selfRow as any).deleted_at) && isScrolithaParticipantEntity(
+          (convo.participants || []).find((p: any) => isScrolithaParticipantEntity(p))
+      )) {
+          return true;
+      }
+      return false;
+  };
+  /**
+   * Admin global list includes foreign threads. Keep a conversation when:
+   * - self is an active participant, OR
+   * - participant payload is incomplete (0–1 peers) — common for own DIRECT previews that omit self.
+   * Hide only clearly foreign multi-party rows (2+ participants and self absent).
+   */
+  const isViewerInboxConversation = (convo: Conversation) => {
+      const selfId = String(user?.id || '').trim();
+      if (!selfId) return true;
+      const parts = Array.isArray(convo.participants) ? convo.participants : [];
+      const active = parts.filter((p: any) => !p?.deletedAt && !p?.deleted_at);
+      const hasSelf = active.some(
+          (p: any) => String(p?.id || p?.userId || '').trim() === selfId
+      );
+      if (hasSelf) return true;
+      // Incomplete own-inbox preview (peer-only or empty participants).
+      if (active.length <= 1) return true;
+      // Multi-party without self → foreign admin-list noise.
+      return false;
+  };
   const visibleConversations = [...conversationListSource]
+      .filter((convo) => !isScrolithaMergeStubConversation(convo))
+      .filter((convo) => isViewerInboxConversation(convo))
       .sort((a, b) => {
           // Official Scrolitha assistant always pins above user conversations.
-          const aAi = Number(Boolean(a.isScrolitha ?? a.is_scrolitha ?? a.isPinned ?? a.is_pinned));
-          const bAi = Number(Boolean(b.isScrolitha ?? b.is_scrolitha ?? b.isPinned ?? b.is_pinned));
+          // Do NOT treat isPinned as Scrolitha — that renames/sorts normal starred DMs as AI.
+          const aAi = Number(
+              Boolean(
+                  a.isScrolitha ||
+                      a.is_scrolitha ||
+                      (a.participants || []).some((p: any) => isScrolithaParticipantEntity(p))
+              )
+          );
+          const bAi = Number(
+              Boolean(
+                  b.isScrolitha ||
+                      b.is_scrolitha ||
+                      (b.participants || []).some((p: any) => isScrolithaParticipantEntity(p))
+              )
+          );
           if (aAi !== bAi) return bAi - aAi;
           const aStar = Number(Boolean(a.isStarred ?? a.is_starred));
           const bStar = Number(Boolean(b.isStarred ?? b.is_starred));
@@ -1085,30 +1269,76 @@ const Messages = () => {
       [visibleConversations, conversationWindow.start, conversationWindow.end]
   );
   const otherParticipant = (() => {
-      const others = (activeConvo?.participants || []).filter((participant: any) => String(participant?.id || '') !== String(user?.id || ''));
+      const selfId = String(user?.id || '').trim();
+      const participants = Array.isArray(activeConvo?.participants) ? activeConvo!.participants : [];
+      const others = participants.filter(
+          (participant: any) => String(participant?.id || '').trim() !== selfId
+      );
+
+      // Official assistant: never fall back to the viewer (e.g. Admin) as the peer.
+      const scrolithaPeer =
+          others.find((participant: any) => isScrolithaParticipantEntity(participant)) ||
+          participants.find(
+              (participant: any) =>
+                  isScrolithaParticipantEntity(participant) &&
+                  String(participant?.id || '').trim() !== selfId
+          );
+      if (scrolithaPeer) {
+          return {
+              ...scrolithaPeer,
+              name: SCROLITHA_DISPLAY_NAME,
+              username: scrolithaPeer.username || 'scrolitha',
+              isScrolitha: true,
+              is_scrolitha: true,
+              isOnline: true,
+              is_online: true,
+              systemLabel: 'AI assistant',
+              system_label: 'AI assistant'
+          };
+      }
+      if (isActiveScrolithaConversation) {
+          return {
+              id: 'scrolitha',
+              name: SCROLITHA_DISPLAY_NAME,
+              username: 'scrolitha',
+              isScrolitha: true,
+              is_scrolitha: true,
+              isOnline: true,
+              is_online: true,
+              systemLabel: 'AI assistant',
+              system_label: 'AI assistant',
+              profileUrl: '/u/scrolitha',
+              profile_url: '/u/scrolitha'
+          };
+      }
+
       const withDisplayName = others.find((participant: any) => {
           const id = String(participant?.id || '').trim();
           const name = String(participant?.name || participant?.username || '').trim();
           return Boolean(name) && name !== id;
       });
-      return withDisplayName || others[0] || activeConvo?.participants[0];
+      // Never use the current user as the "other" party for DM headers.
+      return withDisplayName || others[0] || undefined;
   })();
   const isActiveGroupConversation = Boolean(
-      activeConvo?.type === 'group' ||
-          String((activeConvo as any)?.type || '').toUpperCase() === 'GROUP' ||
-          Boolean((activeConvo as any)?.title && (activeConvo?.participants?.length || 0) > 2)
+      !isActiveScrolithaConversation &&
+          (activeConvo?.type === 'group' ||
+              String((activeConvo as any)?.type || '').toUpperCase() === 'GROUP' ||
+              Boolean((activeConvo as any)?.title && (activeConvo?.participants?.length || 0) > 2))
   );
   const activeGroupTitle = String((activeConvo as any)?.title || '').trim();
-  const activeConversationTitle = isActiveGroupConversation
-      ? activeGroupTitle ||
-        (activeConvo?.participants || [])
-            .filter((p: any) => String(p?.id || '') !== String(user?.id || ''))
-            .map((p: any) => p?.name || p?.username)
-            .filter(Boolean)
-            .slice(0, 3)
-            .join(', ') ||
-        'Group'
-      : otherParticipant?.name || 'Conversation';
+  const activeConversationTitle = isActiveScrolithaConversation
+      ? SCROLITHA_DISPLAY_NAME
+      : isActiveGroupConversation
+        ? activeGroupTitle ||
+          (activeConvo?.participants || [])
+              .filter((p: any) => String(p?.id || '') !== String(user?.id || ''))
+              .map((p: any) => p?.name || p?.username)
+              .filter(Boolean)
+              .slice(0, 3)
+              .join(', ') ||
+          'Group'
+        : otherParticipant?.name || 'Conversation';
   const myGroupRole = String(
       (activeConvo as any)?.memberRole ||
           (activeConvo?.participants || []).find((p: any) => String(p?.id || '') === String(user?.id || ''))
@@ -1136,31 +1366,41 @@ const Messages = () => {
       [isActiveGroupConversation, activeGroupProfile, groupSendAckStatus, activeConvo]
   );
 
-  // Phase 29.3 — load enterprise group profile + pins; join authorized socket room
+  // Pins + appearance for any active conversation; enterprise group profile for groups
   useEffect(() => {
-      if (!activeConvoId || !isActiveGroupConversation) {
+      if (!activeConvoId) {
           setActiveGroupProfile(null);
           setGroupPins([]);
+          setChatAppearance({ kind: 'none' });
           setGroupSendAckStatus(null);
           return;
       }
       let cancelled = false;
       void (async () => {
-          try {
-              const profile = await MessagingService.getEnterpriseGroup(activeConvoId);
-              if (!cancelled) setActiveGroupProfile(profile || null);
-          } catch {
-              if (!cancelled) setActiveGroupProfile(null);
+          if (isActiveGroupConversation) {
+              try {
+                  const profile = await MessagingService.getEnterpriseGroup(activeConvoId);
+                  if (!cancelled) setActiveGroupProfile(profile || null);
+              } catch {
+                  if (!cancelled) setActiveGroupProfile(null);
+              }
+          } else if (!cancelled) {
+              setActiveGroupProfile(null);
           }
-          try {
-              const pins = await MessagingService.listGroupPins(activeConvoId);
-              if (!cancelled) setGroupPins(Array.isArray(pins) ? pins : []);
-          } catch {
-              if (!cancelled) setGroupPins([]);
+          // Pins are group membership APIs — do not call on DIRECT/Scrolitha DMs (403 noise).
+          if (isActiveGroupConversation) {
+              try {
+                  const pins = await MessagingService.listGroupPins(activeConvoId);
+                  if (!cancelled) setGroupPins(Array.isArray(pins) ? pins : []);
+              } catch {
+                  if (!cancelled) setGroupPins([]);
+              }
+          } else if (!cancelled) {
+              setGroupPins([]);
           }
-      })();
+       })();
       try {
-          if (socket && isConnected) {
+          if (socket && isConnected && isActiveGroupConversation) {
               socket.emit('messages:group:join', { conversationId: activeConvoId });
           }
       } catch {
@@ -1169,19 +1409,179 @@ const Messages = () => {
       return () => {
           cancelled = true;
           try {
-              if (socket) socket.emit('messages:group:leave', { conversationId: activeConvoId });
+              if (socket && isActiveGroupConversation) {
+                  socket.emit('messages:group:leave', { conversationId: activeConvoId });
+              }
           } catch {
               /* optional */
           }
       };
-  }, [activeConvoId, isActiveGroupConversation, socket, isConnected]);
+  }, [
+      activeConvoId,
+      isActiveGroupConversation,
+      socket,
+      isConnected,
+      user?.id,
+      activeConvo?.participants
+  ]);
 
-  const otherOnline = Boolean(otherParticipant?.isOnline ?? otherParticipant?.is_online);
-  const otherPresenceState = String(
-      (otherParticipant as any)?.presenceState ||
-          (otherOnline ? 'online' : 'offline')
-  ).toLowerCase();
-  const otherLastSeen = otherParticipant?.lastSeenAt ?? otherParticipant?.last_seen_at;
+  // Messages owns appearance hydration. The editor receives this state and never
+  // starts a second request, so a late response cannot repaint another chat.
+  useEffect(() => {
+      const conversationId = String(activeConvoId || '').trim();
+      const generation = chatAppearanceRequestRef.current.generation + 1;
+      chatAppearanceRequestRef.current = { generation, conversationId };
+      if (!conversationId) {
+          setChatAppearanceLoading(false);
+          setChatAppearance({ kind: 'none' });
+          return;
+      }
+
+      let cancelled = false;
+      const isCurrent = () =>
+          !cancelled &&
+          chatAppearanceRequestRef.current.generation === generation &&
+          chatAppearanceRequestRef.current.conversationId === conversationId &&
+          activeConvoIdRef.current === conversationId;
+
+      setChatAppearanceLoading(true);
+      setChatAppearance({ kind: 'none' });
+      void (async () => {
+          const selfId = String(user?.id || '').trim();
+          const parts = Array.isArray(activeConvo?.participants) ? activeConvo.participants : [];
+          const hasSelfMembership =
+              !selfId ||
+              parts.some(
+                  (p: any) =>
+                      String(p?.id || p?.userId || '').trim() === selfId &&
+                      !p?.deletedAt &&
+                      !p?.deleted_at
+              );
+          if (parts.length > 0 && selfId && !hasSelfMembership) {
+              if (isCurrent()) setChatAppearance({ kind: 'none' });
+              if (isCurrent()) setChatAppearanceLoading(false);
+              return;
+          }
+          try {
+              const appearance = await MessagingService.getChatAppearance(conversationId);
+              if (isCurrent()) setChatAppearance(appearance || { kind: 'none' });
+          } catch {
+              if (isCurrent()) setChatAppearance({ kind: 'none' });
+          } finally {
+              if (isCurrent()) setChatAppearanceLoading(false);
+          }
+      })();
+      return () => {
+          cancelled = true;
+      };
+  }, [activeConvoId, user?.id]);
+
+  const chatSurfaceStyle = useMemo(() => {
+      const vars = paletteToCssVars(buildChatPalette(chatAppearance));
+      const kind = String(chatAppearance?.kind || 'none').toLowerCase();
+      if (kind === 'none') {
+          return { ...vars } as React.CSSProperties;
+      }
+      const bg = appearanceToBackgroundStyle(chatAppearance);
+      return { ...bg, ...vars } as React.CSSProperties;
+  }, [chatAppearance]);
+
+  const activeGroupAvatarSrc = useMemo(() => {
+      if (!isActiveGroupConversation) return null;
+      const fileId = String(
+          (activeConvo as any)?.avatarFileId ||
+              (activeConvo as any)?.avatar_file_id ||
+              activeGroupProfile?.avatarFileId ||
+              activeGroupProfile?.avatar_file_id ||
+              ''
+      ).trim();
+      return fileId ? resolveUserAvatarUrl(fileId) : null;
+  }, [isActiveGroupConversation, activeConvo, activeGroupProfile]);
+
+  const jumpToPinnedMessage = useCallback(
+      (messageId: string) => {
+          const id = String(messageId || '').trim();
+          if (!id) return;
+          const node = document.getElementById(`message-${id}`);
+          if (node) {
+              node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              setHighlightedMessageId(id);
+              window.setTimeout(() => {
+                  setHighlightedMessageId((current) => (current === id ? null : current));
+              }, 1800);
+              return;
+          }
+          // Fall through to existing search/jump path via query-style focus
+          pendingSearchMessageFocusRef.current = id;
+          setHighlightedMessageId(id);
+          void MessagingService.getMessagesAround(activeConvoId || '', id, 40)
+              .then((result) => {
+                  const around = Array.isArray(result?.messages) ? result.messages : [];
+                  if (!around.length || !activeConvoId) return;
+                  setConversations((prev) =>
+                      prev.map((conversation) => {
+                          if (conversation.id !== activeConvoId) return conversation;
+                          return {
+                              ...conversation,
+                              messages: dedupeMessagesById([...(conversation.messages || []), ...around])
+                          };
+                      })
+                  );
+                  window.setTimeout(() => {
+                      document.getElementById(`message-${id}`)?.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'center'
+                      });
+                  }, 160);
+              })
+              .catch(() => null);
+      },
+      [activeConvoId]
+  );
+
+  const handlePinToggle = useCallback(
+      async (messageId: string, isPinned: boolean) => {
+          if (!activeConvoId) return;
+          setMessageActionBusyId(messageId);
+          try {
+              if (isPinned) {
+                  const data = await MessagingService.unpinGroupMessage(activeConvoId, messageId);
+                  setGroupPins(
+                      Array.isArray(data?.pins) ? data.pins : await MessagingService.listGroupPins(activeConvoId)
+                  );
+                  showNotification('success', 'Unpinned', 'Message unpinned.');
+              } else {
+                  const data = await MessagingService.pinGroupMessage(activeConvoId, messageId);
+                  setGroupPins(
+                      Array.isArray(data?.pins) ? data.pins : await MessagingService.listGroupPins(activeConvoId)
+                  );
+                  showNotification('success', 'Pinned', 'Message pinned.');
+              }
+          } catch (error: any) {
+              showNotification(
+                  'error',
+                  'Pin',
+                  error?.response?.data?.error || error?.message || 'Could not update pin'
+              );
+          } finally {
+              setMessageActionBusyId(null);
+          }
+      },
+      [activeConvoId, showNotification]
+  );
+
+  const otherOnline = isActiveScrolithaConversation
+      ? true
+      : Boolean(otherParticipant?.isOnline ?? otherParticipant?.is_online);
+  const otherPresenceState = isActiveScrolithaConversation
+      ? 'online'
+      : String(
+            (otherParticipant as any)?.presenceState ||
+                (otherOnline ? 'online' : 'offline')
+        ).toLowerCase();
+  const otherLastSeen = isActiveScrolithaConversation
+      ? undefined
+      : otherParticipant?.lastSeenAt ?? otherParticipant?.last_seen_at;
   const resolveParticipantRole = (participant: any): 'freelancer' | 'employer' | null => {
       if (!participant) return null;
       const role = String(participant.role || '').toLowerCase();
@@ -1216,13 +1616,27 @@ const Messages = () => {
   );
   const resolveParticipantProfileUrl = (participant: any) => {
       if (!participant) return '/profile/edit';
-      const username = String(participant.username || '').trim();
-      if (username) return `/u/${username.replace(/^@+/, '')}`;
-      if (participant.profileUrl || participant.profile_url) {
-          return String(participant.profileUrl || participant.profile_url);
+      // Official assistant always uses the public Scrolitha handle.
+      if (
+          participant?.isScrolitha ||
+          participant?.is_scrolitha ||
+          isScrolithaUsername(participant?.username)
+      ) {
+          return '/u/scrolitha';
+      }
+      const rawUsername = String(participant.username || '').trim().replace(/^@+/, '');
+      // Never route emails (e.g. admin@scrolith.com) through /u/:username — API returns 400.
+      const usernameLooksValid =
+          Boolean(rawUsername) &&
+          !rawUsername.includes('@') &&
+          /^[a-zA-Z0-9._-]{2,64}$/.test(rawUsername);
+      if (usernameLooksValid) return `/u/${encodeURIComponent(rawUsername)}`;
+      const profileUrl = String(participant.profileUrl || participant.profile_url || '').trim();
+      if (profileUrl.startsWith('/') && !profileUrl.toLowerCase().includes('@')) {
+          return profileUrl;
       }
       const participantId = String(participant.id || '').trim();
-      return participantId ? `/profile/${participantId}` : '/profile/edit';
+      return participantId ? `/profile/${encodeURIComponent(participantId)}` : '/profile/edit';
   };
   const activeConversationState = {
       label: String(activeConvo?.label || 'other').toLowerCase() === 'jobs' ? 'jobs' : 'other',
@@ -1366,22 +1780,7 @@ const Messages = () => {
       };
   };
 
-  const extractStoryReference = (message: Message) => {
-      const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-      const storyReference = metadata?.storyReference && typeof metadata.storyReference === 'object'
-          ? metadata.storyReference
-          : null;
-      const storyId = String(storyReference?.storyId || metadata?.storyId || '').trim();
-      if (!storyId) return null;
-      return {
-          storyId,
-          mediaPreview: String(storyReference?.mediaPreview || '').trim(),
-          caption: String(storyReference?.caption || '').trim(),
-          reactionType: String(storyReference?.reactionType || metadata?.reactionType || '').trim(),
-          category: String(metadata?.category || '').trim(),
-          actionUrl: String(metadata?.actionUrl || metadata?.action_url || `/community?story=${encodeURIComponent(storyId)}`).trim()
-      };
-  };
+  const extractStoryReference = (message: Message) => extractStoryMessageReference(message);
 
   const normalizeBriefFromEvent = (event: any): ProjectBrief | null => {
       const brief = event?.brief && typeof event.brief === 'object' ? event.brief : event;
@@ -1824,8 +2223,8 @@ const Messages = () => {
           const list = await MessagingService.getAllConversations(user.id, user.role, { force: true });
           setConversations(prev => {
               const activeId = activeConvoIdRef.current;
-              const existingMap = new Map(prev.map(conversation => [conversation.id, conversation]));
-              return list.map((conversation) => {
+               const existingMap = new Map<string, Conversation>(prev.map(conversation => [conversation.id, conversation]));
+              const next = list.map((conversation) => {
                   const existing = existingMap.get(conversation.id);
                   if (!existing) return conversation;
                   if (options?.silent && activeId && conversation.id === activeId) {
@@ -1836,12 +2235,22 @@ const Messages = () => {
                   }
                   return conversation;
               });
+              return mergeDirectConversations(next, userIdRef.current);
           });
           const convoId = activeConvoIdRef.current;
           if (convoId && !options?.silent) {
               const full = await MessagingService.getConversationById(convoId);
               if (full) {
-                  setConversations(prev => prev.map(c => c.id === convoId ? { ...c, ...full } : c));
+                  setConversations((prev) => {
+                      const selfId = userIdRef.current;
+                      const mergeKey = getConversationMergeKey(full, selfId);
+                      const without = prev.filter((entry) => {
+                          if (entry.id === full.id) return false;
+                          if (mergeKey && getConversationMergeKey(entry, selfId) === mergeKey) return false;
+                          return true;
+                      });
+                      return mergeDirectConversations([{ ...full }, ...without], selfId);
+                  });
               }
           }
           refreshMessages();
@@ -2289,6 +2698,9 @@ const Messages = () => {
           const convoId = payload?.conversationId || payload?.conversation_id;
           if (!convoId) return;
           traceClient('socket.conversation_updated', { conversationId: convoId, payload });
+          if (Array.isArray(payload?.pins) && convoId === activeConvoIdRef.current) {
+              setGroupPins(payload.pins);
+          }
           setConversations(prev => {
               const targetConversation = prev.find((conversation) => conversation.id === convoId);
               const targetMergeKey = targetConversation ? getConversationMergeKey(targetConversation) : '';
@@ -2304,6 +2716,13 @@ const Messages = () => {
                       ...(payload?.isMuted !== undefined ? { isMuted: Boolean(payload.isMuted), is_muted: Boolean(payload.isMuted) } : {}),
                       ...(payload?.isArchived !== undefined ? { isArchived: Boolean(payload.isArchived), is_archived: Boolean(payload.isArchived) } : {}),
                       ...(payload?.unread_count !== undefined ? { unreadCount: Number(payload.unread_count), unread_count: Number(payload.unread_count) } : {}),
+                      ...(payload?.avatarFileId !== undefined
+                          ? {
+                                avatarFileId: payload.avatarFileId || null,
+                                avatar_file_id: payload.avatarFileId || null
+                            }
+                          : {}),
+                      ...(payload?.title !== undefined ? { title: payload.title } : {}),
                       ...(payload?.lastMessage !== undefined || payload?.last_message !== undefined
                           ? {
                                 lastMessage: payload?.lastMessage ?? payload?.last_message ?? conversation.lastMessage,
@@ -2363,6 +2782,61 @@ const Messages = () => {
       socket.on('messages:conversation_updated', handleConversationUpdated);
       socket.on('messages:conversation_deleted', handleConversationDeleted);
       socket.on('messages:privacy:updated', handlePrivacyUpdated);
+
+      const handlePinUpdated = (payload: any) => {
+          const convoId = String(payload?.conversationId || payload?.conversation_id || '').trim();
+          if (!convoId || convoId !== activeConvoIdRef.current) return;
+          // Pin events only apply to groups; avoid listGroupPins on DIRECT (403).
+          if (Array.isArray(payload?.pins)) {
+              setGroupPins(payload.pins);
+          }
+          const actorId = String(payload?.actorId || '').trim();
+          if (actorId && actorId !== userIdRef.current && payload?.action === 'created') {
+              showNotification('info', 'Pinned message', 'A message was pinned in this chat.');
+          }
+      };
+
+      const handleAppearanceUpdated = (payload: any) => {
+          const convoId = String(payload?.conversationId || payload?.conversation_id || '').trim();
+          if (!convoId || convoId !== activeConvoIdRef.current) return;
+          const payloadUserId = String(payload?.userId || payload?.participantId || '').trim();
+          if (payloadUserId && user?.id && payloadUserId !== String(user.id)) return;
+          if (payload?.appearance) {
+              setChatAppearance(payload.appearance);
+          }
+      };
+
+      const handleGroupUpdated = (payload: any) => {
+          const convoId = String(payload?.conversationId || payload?.conversation_id || '').trim();
+          if (!convoId) return;
+          const avatarFileId =
+              payload?.avatarFileId != null
+                  ? String(payload.avatarFileId || '').trim() || null
+                  : undefined;
+          const title =
+              payload?.title != null ? String(payload.title || '').trim() || null : undefined;
+          setConversations((prev) =>
+              prev.map((c) => {
+                  if (c.id !== convoId) return c;
+                  return {
+                      ...c,
+                      ...(avatarFileId !== undefined
+                          ? { avatarFileId, avatar_file_id: avatarFileId }
+                          : {}),
+                      ...(title !== undefined ? { title } : {})
+                  } as any;
+              })
+          );
+          if (convoId === activeConvoIdRef.current && avatarFileId !== undefined) {
+              setActiveGroupProfile((prev: any) =>
+                  prev ? { ...prev, avatarFileId, avatar_file_id: avatarFileId } : prev
+              );
+          }
+      };
+
+      socket.on('messages:pin_updated', handlePinUpdated);
+      socket.on('messages:appearance_updated', handleAppearanceUpdated);
+      socket.on('messages:group_updated', handleGroupUpdated);
       return () => {
           socket.off('messages:new', handleIncoming);
           socket.off('messages:sent', handleIncoming);
@@ -2377,8 +2851,11 @@ const Messages = () => {
           socket.off('messages:conversation_updated', handleConversationUpdated);
           socket.off('messages:conversation_deleted', handleConversationDeleted);
           socket.off('messages:privacy:updated', handlePrivacyUpdated);
+          socket.off('messages:pin_updated', handlePinUpdated);
+          socket.off('messages:appearance_updated', handleAppearanceUpdated);
+          socket.off('messages:group_updated', handleGroupUpdated);
       };
-  }, [socket, user, refreshMessages, navigate]);
+  }, [socket, user, refreshMessages, navigate, showNotification]);
   const renderReplyPreview = (message: Message) => {
       const reply = (message.replyTo || message.reply_to || null) as any;
       if (!reply && !message.replyToMessageId && !message.reply_to_message_id) return null;
@@ -2790,6 +3267,10 @@ const Messages = () => {
       e.preventDefault();
       const trimmed = messageInput.trim();
       if ((!trimmed && pendingAttachments.length === 0) || !activeConvoId || !user) return;
+      if (countMessageWords(trimmed) > MAX_MESSAGE_WORDS) {
+          showNotification('error', 'Message too long', `Messages can contain up to ${MAX_MESSAGE_WORDS} words.`);
+          return;
+      }
       if (isActiveGroupConversation && groupComposerRestriction.blocked) {
           showNotification('error', 'Group', groupComposerRestriction.message || 'Sending is disabled.');
           return;
@@ -3059,7 +3540,8 @@ const Messages = () => {
           });
           const message = await MessagingService.sendVoiceNote(activeConvoId, {
               fileId,
-              durationMs: Math.max(1, Math.trunc(durationMs))
+              durationMs: Math.max(1, Math.trunc(durationMs)),
+              clientMessageId: clientSendId
           });
           const reconciled = {
               ...message,
@@ -3527,13 +4009,7 @@ const Messages = () => {
       }
   };
                             return (
-    <VoiceCallProvider
-        socket={socket}
-        userId={user?.id}
-        conversationId={activeConvoId || undefined}
-        participantUsers={voiceCallCandidateUsers}
-        callTargets={activeConversationVoiceTargets}
-    >
+    <>
     <div
         ref={layoutShellRef}
         className="mx-auto flex max-w-6xl min-h-0 flex-col px-2 py-3 sm:px-4 sm:py-4 md:h-[calc(100dvh-4rem)] md:max-h-[calc(100dvh-4rem)] md:py-4"
@@ -3653,15 +4129,55 @@ const Messages = () => {
                             <li aria-hidden className="pointer-events-none border-b-0 p-0" style={{ height: conversationWindow.top }} />
                         ) : null}
                         {virtualConversations.map((convo) => {
-                            const participant = convo.participants.find(p => p.id !== user?.id) || convo.participants[0];
+                            const selfId = String(user?.id || '').trim();
+                            const peerCandidates = (convo.participants || []).filter(
+                                (p: any) => String(p?.id || '').trim() !== selfId
+                            );
+                            const scrolithaListPeer = peerCandidates.find((p: any) =>
+                                isScrolithaParticipantEntity(p)
+                            );
+                            // Require a real Scrolitha peer or explicit conversation flag — never title-force
+                            // from weak heuristics alone.
+                            const isScrolithaConvo = Boolean(
+                                scrolithaListPeer ||
+                                    ((convo.isScrolitha || convo.is_scrolitha) &&
+                                        (convo.participants || []).some((p: any) =>
+                                            isScrolithaParticipantEntity(p)
+                                        ))
+                            );
+                            const humanPeer = peerCandidates.find(
+                                (p: any) => !isScrolithaParticipantEntity(p)
+                            );
+                            const participant = isScrolithaConvo
+                                ? {
+                                      ...(scrolithaListPeer || {}),
+                                      id: scrolithaListPeer?.id || 'scrolitha',
+                                      name: SCROLITHA_DISPLAY_NAME,
+                                      username: scrolithaListPeer?.username || 'scrolitha',
+                                      // Official art only — do not reuse a human peer avatar as Scrolitha.
+                                      avatar: undefined,
+                                      avatarUrl: undefined,
+                                      isScrolitha: true,
+                                      is_scrolitha: true,
+                                      systemLabel: 'AI assistant',
+                                      system_label: 'AI assistant'
+                                  }
+                                : peerCandidates.find((p: any) => {
+                                      const id = String(p?.id || '').trim();
+                                      const name = String(p?.name || p?.username || '').trim();
+                                      return Boolean(name) && name !== id;
+                                  }) ||
+                                  peerCandidates[0] ||
+                                  undefined;
                             const searchMeta = isMessageSearchActive ? searchResultByConversationId.get(convo.id) : null;
                             const participantRole = resolveParticipantRole(participant);
                             const participantIsPro = isParticipantPro(participant);
                             const convoStarred = Boolean(convo.isStarred ?? convo.is_starred);
                             const isGroupConvo = Boolean(
-                                convo.type === 'group' ||
-                                    String((convo as any)?.type || '').toUpperCase() === 'GROUP' ||
-                                    Boolean((convo as any)?.title && (convo.participants?.length || 0) > 2)
+                                !isScrolithaConvo &&
+                                    (convo.type === 'group' ||
+                                        String((convo as any)?.type || '').toUpperCase() === 'GROUP' ||
+                                        Boolean((convo as any)?.title && (convo.participants?.length || 0) > 2))
                             );
                             const groupDisplayName =
                                 String((convo as any)?.title || '').trim() ||
@@ -3672,15 +4188,17 @@ const Messages = () => {
                                     .slice(0, 3)
                                     .join(', ') ||
                                 'Group';
-                            const isScrolithaConvo = Boolean(
-                                convo.isScrolitha ??
-                                    convo.is_scrolitha ??
-                                    participant?.isScrolitha ??
-                                    participant?.is_scrolitha
-                            );
-                            const inboxTitle = isGroupConvo
-                                ? groupDisplayName
-                                : participant?.name || (isScrolithaConvo ? 'Scrolitha' : 'Conversation');
+                            const isPlatformAdmin = String(user?.role || '')
+                                .toLowerCase()
+                                .includes('admin');
+                            // Admin global list may show many users' Scrolitha DMs — disambiguate with peer.
+                            const inboxTitle = isScrolithaConvo
+                                ? isPlatformAdmin && humanPeer?.name
+                                    ? `${SCROLITHA_DISPLAY_NAME} · ${humanPeer.name}`
+                                    : SCROLITHA_DISPLAY_NAME
+                                : isGroupConvo
+                                  ? groupDisplayName
+                                  : participant?.name || 'Conversation';
                             const previewText = String(
                                 searchMeta?.matchedMessageSnippet ||
                                 searchMeta?.lastMessage ||
@@ -3714,45 +4232,57 @@ const Messages = () => {
                                             >
                                                 <EnterpriseAvatar
                                                     src={
-                                                      resolveScrolithaAvatar(
-                                                        isScrolithaConvo
-                                                          ? { ...participant, isScrolitha: true }
-                                                          : participant
-                                                      ) ||
-                                                      participant?.avatar ||
-                                                      (isScrolithaConvo ? getScrolithaProfilePhotoUrl() : null)
+                                                      isGroupConvo
+                                                        ? (() => {
+                                                            const fid = String(
+                                                              (convo as any)?.avatarFileId ||
+                                                                (convo as any)?.avatar_file_id ||
+                                                                ''
+                                                            ).trim();
+                                                            return fid
+                                                              ? resolveUserAvatarUrl(fid)
+                                                              : undefined;
+                                                          })()
+                                                        : isScrolithaConvo
+                                                          ? getScrolithaProfilePhotoUrl()
+                                                          : resolveScrolithaAvatar(participant) ||
+                                                            resolveUserAvatarUrl(participant) ||
+                                                            null
                                                     }
-                                                    name={participant?.name || (isScrolithaConvo ? 'Scrolitha' : 'User')}
-                                                    user={participant}
+                                                    name={
+                                                      isGroupConvo
+                                                        ? groupDisplayName
+                                                        : isScrolithaConvo
+                                                          ? SCROLITHA_DISPLAY_NAME
+                                                          : participant?.name || 'User'
+                                                    }
+                                                    user={
+                                                      isGroupConvo || isScrolithaConvo
+                                                        ? undefined
+                                                        : participant
+                                                    }
                                                     size="md"
                                                     className={
                                                       isScrolithaConvo
                                                         ? 'border border-indigo-200 ring-2 ring-indigo-100'
-                                                        : 'border border-gray-200'
+                                                        : isGroupConvo
+                                                          ? 'border border-indigo-100 bg-indigo-50 text-indigo-700'
+                                                          : 'border border-gray-200'
                                                     }
                                                     alt={participant?.name || 'Profile'}
                                                 />
                                             </button>
-                                            {(participant?.isOnline || isScrolithaConvo) && (
+                                            {(!isGroupConvo && (participant?.isOnline || isScrolithaConvo)) && (
                                         <span className="absolute bottom-0 right-3 h-2.5 w-2.5 rounded-full border-2 border-white bg-green-500"></span>
                                             )}
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex justify-between items-baseline mb-1">
                                                 <div className="flex items-center gap-2 min-w-0">
-                                                    <button
-                                                        type="button"
-                                                        onClick={(event) => {
-                                                            event.preventDefault();
-                                                            event.stopPropagation();
-                                                            if (!isScrolithaConvo) {
-                                                                navigate(resolveParticipantProfileUrl(participant));
-                                                            }
-                                                        }}
-                                                        className="min-w-0 flex-1 truncate text-left text-sm font-bold text-gray-900 hover:text-blue-600"
-                                                    >
+                                                    {/* Name opens the conversation (row click). Only avatar navigates to profile. */}
+                                                    <span className="min-w-0 flex-1 truncate text-left text-sm font-bold text-gray-900">
                                                         {renderHighlightedText(inboxTitle, activeMessageSearchQuery)}
-                                                    </button>
+                                                    </span>
                                                     {isGroupConvo ? (
                                                         <span className="shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
                                                             Group
@@ -3864,9 +4394,9 @@ const Messages = () => {
                             }`}
                             data-testid="messages-conversation-header"
                         >
-                            <div className="flex items-center justify-between gap-2">
-                            <div className="flex min-w-0 items-center">
-                                <button onClick={handleBackToInbox} className="mr-2 inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-100 md:hidden">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex min-w-0 flex-1 basis-full items-center md:basis-auto">
+                                <button onClick={handleBackToInbox} className="mr-2 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-100 md:hidden">
                                     <ArrowLeft className="w-5 h-5" />
                                 </button>
                                 <button
@@ -3883,13 +4413,13 @@ const Messages = () => {
                                     <EnterpriseAvatar
                                         src={
                                           isActiveGroupConversation
-                                            ? undefined
+                                            ? activeGroupAvatarSrc || undefined
                                             : resolveScrolithaAvatar(
                                                 isActiveScrolithaConversation
                                                   ? { ...otherParticipant, isScrolitha: true }
                                                   : otherParticipant
                                               ) ||
-                                              otherParticipant?.avatar ||
+                                              resolveUserAvatarUrl(otherParticipant) ||
                                               (isActiveScrolithaConversation ? getScrolithaProfilePhotoUrl() : null)
                                         }
                                         name={
@@ -3907,20 +4437,24 @@ const Messages = () => {
                                 </button>
                                 <div className="min-w-0">
                                     <div className="flex items-center gap-2">
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                if (isActiveGroupConversation) {
-                                                    setShowGroupManage(true);
-                                                    return;
-                                                }
-                                                navigate(resolveParticipantProfileUrl(otherParticipant));
-                                            }}
-                                            className="max-w-[9.5rem] truncate text-left text-sm font-bold text-gray-900 hover:text-blue-600 sm:max-w-xs"
-                                            data-testid="messages-conversation-title"
-                                        >
-                                            {activeConversationTitle}
-                                        </button>
+                                        {/* Title: groups open manage panel; DM names stay in-thread (profile via avatar only). */}
+                                        {isActiveGroupConversation ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowGroupManage(true)}
+                                                className="max-w-[9.5rem] truncate text-left text-sm font-bold text-gray-900 hover:text-blue-600 sm:max-w-xs"
+                                                data-testid="messages-conversation-title"
+                                            >
+                                                {activeConversationTitle}
+                                            </button>
+                                        ) : (
+                                            <h3
+                                                className="max-w-[9.5rem] truncate text-left text-sm font-bold text-gray-900 sm:max-w-xs"
+                                                data-testid="messages-conversation-title"
+                                            >
+                                                {activeConversationTitle}
+                                            </h3>
+                                        )}
                                         {isActiveGroupConversation ? (
                                             <span className="hidden rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 sm:inline">
                                                 Group · {(activeConvo?.participants || []).length} members
@@ -3949,11 +4483,11 @@ const Messages = () => {
                                         >
                                             <Star className={`h-4 w-4 ${activeConversationState.isStarred ? 'fill-current' : ''}`} />
                                         </button>
-                                        {otherParticipantRole && (
+                                        {otherParticipantRole && !isActiveScrolithaConversation && (
                                             <ProBadge role={otherParticipantRole} isPro={otherParticipantIsPro} />
                                         )}
                                         {/* Phase 20.8.1 — gender lives on profile, not compact mobile header */}
-                                        {!isMobileViewport && otherParticipant?.gender ? (
+                                        {!isMobileViewport && !isActiveScrolithaConversation && otherParticipant?.gender ? (
                                             <span className="hidden rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 sm:inline">
                                                 {otherParticipant.gender}
                                             </span>
@@ -3988,6 +4522,10 @@ const Messages = () => {
                                                     : `${total} members`;
                                             })()}
                                         </span>
+                                    ) : isActiveScrolithaConversation ? (
+                                        <span className="text-xs text-indigo-600 flex items-center font-medium" data-testid="messages-presence-scrolitha">
+                                            AI assistant
+                                        </span>
                                     ) : otherPresenceState === 'away' ? (
                                         <span className="text-xs text-amber-600 flex items-center">Away</span>
                                     ) : otherOnline ? (
@@ -4009,12 +4547,22 @@ const Messages = () => {
                                     )}
                                 </div>
                             </div>
-                            <div className="flex items-center gap-1.5 sm:gap-2">
+                            <div className="flex w-full flex-wrap items-center justify-end gap-1.5 md:w-auto md:gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setChatAppearanceOpen(true)}
+                                    className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 md:h-10 md:w-10"
+                                    title="Chat appearance"
+                                    aria-label="Chat appearance"
+                                    data-testid="messages-appearance-btn"
+                                >
+                                    <Palette className="h-4 w-4" />
+                                </button>
                                 {isActiveGroupConversation ? (
                                     <button
                                         type="button"
                                         onClick={() => setShowGroupManage(true)}
-                                        className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-indigo-700 shadow-sm transition hover:bg-indigo-100"
+                                        className="inline-flex h-11 min-h-[44px] items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-indigo-700 shadow-sm transition hover:bg-indigo-100 md:h-10"
                                         title="Group settings"
                                         data-testid="messages-group-settings-btn"
                                     >
@@ -4027,7 +4575,7 @@ const Messages = () => {
                                         type="button"
                                         onClick={() => void openConversationBriefComposer()}
                                         disabled={briefComposerBusy}
-                                        className="inline-flex h-10 items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-indigo-700 shadow-sm transition hover:bg-indigo-100 disabled:opacity-60"
+                                        className="inline-flex h-11 min-h-[44px] items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 text-indigo-700 shadow-sm transition hover:bg-indigo-100 disabled:opacity-60 md:h-10"
                                         title="Create brief from chat"
                                     >
                                         {briefComposerBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
@@ -4035,19 +4583,28 @@ const Messages = () => {
                                     </button>
                                 )}
                                 <VoiceCallControls
-                                    disabled={!activeConvoId || voiceCallsBlocked}
-                                    canConference={voiceRuntimeConfig.enabledConferenceCalls && voiceCallCandidateUsers.length > 1}
-                                    meId={user?.id}
-                                    onError={(message) => showNotification('error', 'Voice Call', message)}
+                                    disabled={!activeConvoId || voiceCallsBlocked || isActiveScrolithaConversation}
+                                    canConference={
+                                        voiceRuntimeConfig.enabledConferenceCalls &&
+                                        voiceCallCandidateUsers.length > 1
+                                    }
+                                    canVideo={
+                                        Boolean(voiceRuntimeConfig.enabledVideoCalls) &&
+                                        !isActiveScrolithaConversation
+                                    }
+                                    conversationId={activeConvoId}
+                                    callTargets={activeConversationVoiceTargets}
+                                    participantUsers={voiceCallCandidateUsers}
+                                    onError={(message) => showNotification('error', 'Call', message)}
                                 />
                                 {user?.role === UserRole.ADMIN && (
-                                    <button className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-red-500 transition hover:bg-red-50" title="Admin Actions">
+                                    <button className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-red-500 transition hover:bg-red-50 md:h-10 md:w-10" title="Admin Actions">
                                         <ShieldAlert className="w-5 h-5" />
                                     </button>
                                 )}
                                 <button
                                     onClick={() => refreshConversationData()}
-                                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                                    className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 md:h-10 md:w-10"
                                     title="Refresh"
                                     type="button"
                                 >
@@ -4061,7 +4618,7 @@ const Messages = () => {
                                     <button
                                         type="button"
                                         onClick={() => setShowConversationMenu((prev) => !prev)}
-                                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                                        className="inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 md:h-10 md:w-10"
                                         aria-haspopup="menu"
                                         aria-expanded={showConversationMenu}
                                         data-testid="messages-conversation-menu-btn"
@@ -4096,14 +4653,47 @@ const Messages = () => {
                         {/* Messages List — owns remaining height; independent scroll */}
                         <div
                             className={`min-h-0 min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto overscroll-y-contain p-3 pb-4 md:space-y-4 md:p-6 ${
-                                isMobileConversationMode ? 'bg-gradient-to-b from-gray-50 to-gray-100' : ''
+                                chatAppearance?.kind && chatAppearance.kind !== 'none'
+                                    ? ''
+                                    : isMobileConversationMode
+                                      ? 'bg-gradient-to-b from-gray-50 to-gray-100'
+                                      : ''
                             }`}
                             ref={messagesContainerRef}
                             onScroll={handleMessagesScroll}
                             data-testid="messages-history-viewport"
+                            style={chatSurfaceStyle}
                         >
+                            {groupPins.length > 0 ? (
+                                <button
+                                    type="button"
+                                    className="relative mb-1 w-full rounded-xl border px-3 py-2 text-left text-xs shadow-sm backdrop-blur md:sticky md:top-0 md:z-20"
+                                    style={{
+                                        background: 'var(--chat-pin-bg, #fffbeb)',
+                                        color: 'var(--chat-pin-text, #78350f)',
+                                        borderColor: 'rgba(0,0,0,0.08)'
+                                    }}
+                                    data-testid="group-pins-banner"
+                                    onClick={() => {
+                                        const mid = String(
+                                            groupPins[0]?.messageId || groupPins[0]?.message?.id || ''
+                                        );
+                                        if (mid) jumpToPinnedMessage(mid);
+                                    }}
+                                >
+                                    <div className="font-semibold">
+                                        📌 {groupPins.length} pinned message
+                                        {groupPins.length === 1 ? '' : 's'}
+                                    </div>
+                                    <div className="mt-0.5 truncate opacity-90">
+                                        {String(
+                                            groupPins[0]?.message?.text || groupPins[0]?.messageId || ''
+                                        ).slice(0, 120)}
+                                    </div>
+                                </button>
+                            ) : null}
                             {showJumpToUnread ? (
-                                <div className="sticky top-2 z-10 flex justify-center">
+                                <div className="relative z-10 flex justify-center py-1 md:sticky md:top-2">
                                     <button
                                         type="button"
                                         className="rounded-full border border-blue-200 bg-white/95 px-3 py-1.5 text-xs font-semibold text-blue-700 shadow-sm backdrop-blur hover:bg-blue-50"
@@ -4123,7 +4713,7 @@ const Messages = () => {
                             {buildThreadTimeline(activeConvo.messages || [], { viewerId: user?.id }).map((item) => {
                                 if (item.kind === 'date') {
                                     return (
-                                        <div key={item.key} className="sticky top-10 z-[5] flex justify-center py-1">
+                                        <div key={item.key} className="relative flex justify-center py-1 md:sticky md:top-10 md:z-[5]">
                                             <span className="rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm backdrop-blur">
                                                 {item.label}
                                             </span>
@@ -4212,20 +4802,17 @@ const Messages = () => {
                                                 }`}
                                                 aria-label="Open referenced story"
                                             >
-                                                {storyReference.mediaPreview ? (
-                                                    <img
-                                                        src={storyReference.mediaPreview}
-                                                        alt=""
-                                                        className="h-12 w-9 shrink-0 rounded-lg object-cover"
-                                                        loading="lazy"
-                                                    />
-                                                ) : (
-                                                    <span className={`flex h-12 w-9 shrink-0 items-center justify-center rounded-lg text-base ${
-                                                        msg.senderId === user?.id ? 'bg-white/15' : 'bg-gray-200'
-                                                    }`}>
-                                                        {storyReference.reactionType || 'S'}
-                                                    </span>
-                                                )}
+                                                <StoryMessageMediaThumb
+                                                    candidates={
+                                                        storyReference.mediaCandidates?.length
+                                                            ? storyReference.mediaCandidates
+                                                            : storyReference.mediaPreview
+                                                              ? [storyReference.mediaPreview]
+                                                              : []
+                                                    }
+                                                    reactionType={storyReference.reactionType}
+                                                    outgoing={msg.senderId === user?.id}
+                                                />
                                                 <span className="min-w-0">
                                                     <span className="block text-xs font-semibold">
                                                         {storyReference.reactionType ? 'Story reaction' : 'Story message'}
@@ -4299,7 +4886,7 @@ const Messages = () => {
                                                     'max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] [word-break:break-word]'
                                                 ].join(' ')}
                                             >
-                                                <SafeMessageText
+                                                <ExpandableMessageText
                                                     text={
                                                         isScrolithaAuthoredMessage(msg)
                                                             ? normalizeScrolithaDisplayText(String(msg.text || ''))
@@ -4343,6 +4930,7 @@ const Messages = () => {
                                             <MessageAttachmentsList
                                                 attachments={attachmentList}
                                                 outgoing={msg.senderId === user?.id}
+                                                enableImageLightbox={isMobileViewport}
                                             />
                                         ) : null}
                                         <div className={`text-[10px] mt-1 text-right flex justify-end items-center gap-1 ${msg.senderId === user?.id ? 'text-blue-100' : 'text-gray-400'}`}>
@@ -4450,6 +5038,43 @@ const Messages = () => {
                                                     <CornerUpLeft className="w-4 h-4" />
                                                     <span>Reply</span>
                                                 </button>
+                                                {!isDeleted ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const isPinnedMsg = groupPins.some(
+                                                                (p: any) =>
+                                                                    String(p.messageId || p.message?.id || '') ===
+                                                                    String(msg.id)
+                                                            );
+                                                            void handlePinToggle(msg.id, isPinnedMsg);
+                                                        }}
+                                                        className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+                                                        title="Pin message"
+                                                        data-testid="message-pin-action"
+                                                        disabled={messageActionBusyId === msg.id}
+                                                        aria-label={
+                                                            groupPins.some(
+                                                                (p: any) =>
+                                                                    String(p.messageId || p.message?.id || '') ===
+                                                                    String(msg.id)
+                                                            )
+                                                                ? 'Unpin message'
+                                                                : 'Pin message'
+                                                        }
+                                                    >
+                                                        <Pin className="w-4 h-4" />
+                                                        <span>
+                                                            {groupPins.some(
+                                                                (p: any) =>
+                                                                    String(p.messageId || p.message?.id || '') ===
+                                                                    String(msg.id)
+                                                            )
+                                                                ? 'Unpin'
+                                                                : 'Pin'}
+                                                        </span>
+                                                    </button>
+                                                ) : null}
                                                 <button
                                                     type="button"
                                                     onClick={() => handleCopyMessage(msg)}
@@ -4741,23 +5366,7 @@ const Messages = () => {
                                 </div>
                             )}
 
-                            {/* Phase 29.3 — group pins + composer policy banners */}
-                            {isActiveGroupConversation && groupPins.length > 0 ? (
-                                <div
-                                    className="mx-2 mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950"
-                                    data-testid="group-pins-banner"
-                                >
-                                    <div className="font-semibold">
-                                        {groupPins.length} pinned message
-                                        {groupPins.length === 1 ? '' : 's'}
-                                    </div>
-                                    <div className="mt-0.5 truncate opacity-90">
-                                        {String(
-                                            groupPins[0]?.message?.text || groupPins[0]?.messageId || ''
-                                        ).slice(0, 120)}
-                                    </div>
-                                </div>
-                            ) : null}
+                            {/* Composer policy banners */}
                             {isActiveGroupConversation && groupComposerRestriction.message ? (
                                 <div
                                     className={`mx-2 mb-2 rounded-xl border px-3 py-2 text-xs ${
@@ -4875,7 +5484,7 @@ const Messages = () => {
                 )}
             </div>
         </div>
-    </div>
+        </div>
     </div>
     {activeConvoId ? (
         <GroupManagePanel
@@ -4889,6 +5498,19 @@ const Messages = () => {
             onUpdated={() => {
                 void refreshConversationData();
                 void refreshMessages();
+            }}
+        />
+    ) : null}
+    {activeConvoId ? (
+        <ChatAppearancePanel
+            conversationId={activeConvoId}
+            open={chatAppearanceOpen}
+            appearance={chatAppearance}
+            loading={chatAppearanceLoading}
+            onClose={() => setChatAppearanceOpen(false)}
+            onSaved={(next) => {
+                setChatAppearance(next || { kind: 'none' });
+                setChatAppearanceOpen(false);
             }}
         />
     ) : null}
@@ -5266,7 +5888,7 @@ const Messages = () => {
             );
         }}
     />
-    </VoiceCallProvider>
+    </>
   );
 };
 

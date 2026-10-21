@@ -31,6 +31,7 @@ import InlineAutoplayVideo from '../components/media/InlineAutoplayVideo';
 import AdVideoPlayer from '../components/ads/AdVideoPlayer';
 import MediaPreviewModal, { type PreviewMedia } from '../components/media/MediaPreviewModal';
 import PostVideoActionBar from '../components/media/PostVideoActionBar';
+import VideoCaptionOverlay from '../components/media/VideoCaptionOverlay';
 import PostExpandModal from '../components/post/PostExpandModal';
 import ScrollCreateModal from '../features/scroll/ScrollCreateModal';
 import EnterpriseStoryViewer from '../features/stories/components/StoryViewer';
@@ -74,15 +75,28 @@ import {
 import { Phase2Service } from '../services/phase2';
 import { MemberFeedService } from '../services/memberFeed';
 import { INLINE_VIDEO_PREVIEW_AUTOPLAY, resolveInlineMedia } from '../utils/inlineMedia';
-import { resolvePostAttachmentMediaUrl, resolvePostAttachmentPosterUrl } from '../utils/postAttachmentMedia';
+import { buildScrollVideoUrl } from '../utils/scrollVideoRoutes';
+import {
+  resolvePostAttachmentMediaPair,
+  resolvePostAttachmentMediaUrl,
+  resolvePostAttachmentPosterUrl
+} from '../utils/postAttachmentMedia';
 import { resolveUserAvatarUrl } from '../utils/userAvatar';
+import { filterUnfollowedRecommendations } from '../utils/recommendationVisibility';
+import { resolvePublicAvailabilityFlags } from '../utils/publicAvailability';
 import { hydrateStoryAuthorAvatars } from '../utils/storyAuthorAvatarHydration';
+import {
+  filterExistingActiveStories,
+  findExistingActiveStoryById,
+  resolveStoryIdentity
+} from '../utils/storyAvailability';
 import {
   buildPostVideoScrollViewerPath,
   stashPendingPostVideoScrollViewerSource,
   type PendingPostVideoScrollViewerSource
 } from '../utils/postVideoScrollBridge';
 import { buildPublicAppUrl } from '../utils/siteUrl';
+import { resolveVideoCaption } from '../utils/videoCaption';
 import { downloadToDevice } from '../utils/deviceDownload';
 import { Capacitor } from '@capacitor/core';
 import { usePerformanceProfile } from '../hooks/usePerformanceProfile';
@@ -405,12 +419,6 @@ const resolveStoryAuthorInitial = (story: any) => {
   return first || 'S';
 };
 
-const isStoryActive = (story: any) => {
-  if (!story?.expiresAt) return true;
-  const expiresAt = new Date(story.expiresAt).getTime();
-  return Number.isNaN(expiresAt) ? true : expiresAt > Date.now();
-};
-
 const resolveReelMedia = (scroll: ScrollVideo) => resolveInlineMedia(scroll?.media || scroll, { typeHint: 'video' });
 
 const resolveReelAuthorName = (scroll: ScrollVideo, fallback = 'Scrolith') => {
@@ -512,6 +520,8 @@ const CommunityHome = () => {
   const [storyMediaUploadLabel, setStoryMediaUploadLabel] = useState('');
   const [storyMediaUploadProgress, setStoryMediaUploadProgress] = useState(0);
   const [activeStory, setActiveStory] = useState<any | null>(null);
+  const [storyMediaPreviewOpen, setStoryMediaPreviewOpen] = useState(false);
+  const [storyMediaDraftFile, setStoryMediaDraftFile] = useState<any | null>(null);
   const [storyEditOpen, setStoryEditOpen] = useState(false);
   const [editingStory, setEditingStory] = useState<any | null>(null);
   const [storyEditSaving, setStoryEditSaving] = useState(false);
@@ -522,6 +532,8 @@ const CommunityHome = () => {
   const storyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const storyDeviceInputRef = useRef<HTMLInputElement | null>(null);
   const storyCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const storyRailSectionRef = useRef<HTMLDivElement | null>(null);
+  const storyDeepLinkOpenRef = useRef<string>('');
   const storyRecorderRef = useRef<MediaRecorder | null>(null);
   const storyChunksRef = useRef<Blob[]>([]);
   const [storyRecording, setStoryRecording] = useState(false);
@@ -569,6 +581,31 @@ const CommunityHome = () => {
     postsRef.current = posts;
   }, [posts]);
 
+  useEffect(() => {
+    const query = new URLSearchParams(location.search);
+    const tab = String(query.get('tab') || query.get('focus') || '').toLowerCase();
+    const storyId = String(query.get('story') || query.get('storyId') || '').trim();
+    const hash = String(location.hash || '').toLowerCase();
+    const wantsStories = tab === 'stories' || tab === 'story' || hash === '#stories' || hash === '#story';
+    if (!wantsStories && !storyId) return;
+    setStoryRailTab('stories');
+    const target =
+      (storyId ? findExistingActiveStoryById(stories, storyId) : null) ||
+      (wantsStories ? filterExistingActiveStories(stories)[0] || null : null);
+    const targetStoryId = resolveStoryIdentity(target);
+    if (target && targetStoryId && storyDeepLinkOpenRef.current !== targetStoryId) {
+      storyDeepLinkOpenRef.current = targetStoryId;
+      setActiveStory(target);
+      CommunityService.viewStory(targetStoryId).catch((error) => {
+        console.error('Failed to record story view', error);
+      });
+    }
+    const timer = window.setTimeout(() => {
+      storyRailSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, loading ? 250 : 80);
+    return () => window.clearTimeout(timer);
+  }, [loading, location.hash, location.search, stories]);
+
   const findPrimaryVideoAttachment = useCallback((post: any) => {
     const attachments = Array.isArray(post?.attachments) ? post.attachments : [];
     return (
@@ -586,11 +623,20 @@ const CommunityHome = () => {
       if (!postId || !mediaUrl) return;
       const sourcePayload: PendingPostVideoScrollViewerSource = {
         sourcePostId: postId,
-        fileId: String(media?.fileId || media?.file_id || media?.file?.id || media?.asset?.id || media?.id || '').trim() || null,
+        fileId:
+          String(
+            resolvePostAttachmentMediaPair(media).fileId ||
+              media?.fileId ||
+              media?.file_id ||
+              media?.file?.id ||
+              media?.asset?.id ||
+              media?.id ||
+              ''
+          ).trim() || null,
         mediaUrl,
         thumbnailUrl: String(resolvePostAttachmentPosterUrl(media) || media?.thumbnailUrl || '').trim() || null,
         title: String(post?.title || '').trim() || null,
-        description: String(post?.content || '').trim() || null,
+        description: resolveVideoCaption(post, media) || null,
         location: String(post?.location || '').trim() || null,
         authorName: String(post?.author?.displayName || post?.authorName || '').trim() || null,
         authorAvatar: String(resolveUserAvatarUrl(post?.author || post) || post?.authorAvatar || '').trim() || null,
@@ -736,6 +782,33 @@ const CommunityHome = () => {
     [triggerPostDoubleTapLike]
   );
 
+  const onPostVideoTouchEnd = useCallback(
+    (event: React.TouchEvent<HTMLElement>, post: any, media: any, mediaKey: string) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-inline-video-control="true"], button, a, input, textarea, select, label')) return;
+      const postId = String(post?.id || '').trim();
+      if (!postId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const tapKey = `${postId}:${mediaKey}`;
+      const now = Date.now();
+      const previousTap = postMediaLastTapAtRef.current[tapKey] || 0;
+      postMediaLastTapAtRef.current[tapKey] = now;
+      if (previousTap && now - previousTap <= 320) {
+        const existing = postMediaTapTimersRef.current[tapKey];
+        if (existing) {
+          window.clearTimeout(existing);
+          delete postMediaTapTimersRef.current[tapKey];
+        }
+        postMediaLastTapAtRef.current[tapKey] = 0;
+        void triggerPostDoubleTapLike(post);
+        return;
+      }
+      queueOpenPostFromMediaTap(post, media, mediaKey);
+    },
+    [queueOpenPostFromMediaTap, triggerPostDoubleTapLike]
+  );
+
   const buildContributorUrl = useCallback((entry?: any) => {
     const handle = String(entry?.username || entry?.userName || '').trim().replace(/^@+/, '');
     if (handle) return `/u/${encodeURIComponent(handle)}`;
@@ -758,30 +831,114 @@ const CommunityHome = () => {
       return;
     }
     if (pageFollowBusy[pageId]) return;
-    const wasFollowing = Boolean(page?.isFollowing);
+    const wasFollowing = Boolean(page?.isFollowing || followStateMap[pageId]);
+    const nextFollowing = !wasFollowing;
     setPageFollowBusy((prev) => ({ ...prev, [pageId]: true }));
+    // Instant optimistic UI — remain on the card without reloading /community.
     setRecommendedCommunityPages((prev) =>
-      prev.map((item) => (String(item?.id || '') === pageId ? { ...item, isFollowing: !wasFollowing } : item))
+      prev.map((item) =>
+        String(item?.id || '') === pageId
+          ? {
+              ...item,
+              isFollowing: nextFollowing,
+              followersCount: Math.max(
+                0,
+                Number(item?.followersCount || 0) + (wasFollowing ? -1 : 1)
+              )
+            }
+          : item
+      )
     );
     try {
-      if (wasFollowing && page?.followId) {
-        await CommunityService.unfollowTarget(String(page.followId));
-      } else if (!wasFollowing) {
+      window.dispatchEvent(
+        new CustomEvent('community:follow_updated', {
+          detail: {
+            actorUserId: user.id,
+            targetUserId: pageId,
+            targetType: 'page',
+            targetId: pageId,
+            isFollowing: nextFollowing,
+            action: nextFollowing ? 'follow' : 'unfollow',
+            optimistic: true
+          }
+        })
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      if (wasFollowing) {
+        // Accept follow-record id OR page id (same as FollowButton / platform API).
+        await CommunityService.unfollowTarget(String(page?.followId || pageId));
+        setRecommendedCommunityPages((prev) =>
+          prev.map((item) =>
+            String(item?.id || '') === pageId ? { ...item, isFollowing: false, followId: null } : item
+          )
+        );
+      } else {
         const response = await CommunityService.followTarget({ targetType: 'page', targetId: pageId });
         const followId = response?.id || response?.followId || response?.data?.id || null;
         setRecommendedCommunityPages((prev) =>
-          prev.map((item) => (String(item?.id || '') === pageId ? { ...item, isFollowing: true, followId } : item))
+          prev.map((item) =>
+            String(item?.id || '') === pageId ? { ...item, isFollowing: true, followId } : item
+          )
         );
+      }
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: pageId,
+              targetType: 'page',
+              targetId: pageId,
+              isFollowing: nextFollowing,
+              action: nextFollowing ? 'follow' : 'unfollow',
+              optimistic: false
+            }
+          })
+        );
+      } catch {
+        // ignore
       }
     } catch (error) {
       setRecommendedCommunityPages((prev) =>
-        prev.map((item) => (String(item?.id || '') === pageId ? { ...item, isFollowing: wasFollowing } : item))
+        prev.map((item) =>
+          String(item?.id || '') === pageId
+            ? {
+                ...item,
+                isFollowing: wasFollowing,
+                followersCount: Math.max(
+                  0,
+                  Number(item?.followersCount || 0) + (wasFollowing ? 1 : -1)
+                )
+              }
+            : item
+        )
       );
+      try {
+        window.dispatchEvent(
+          new CustomEvent('community:follow_updated', {
+            detail: {
+              actorUserId: user.id,
+              targetUserId: pageId,
+              targetType: 'page',
+              targetId: pageId,
+              isFollowing: wasFollowing,
+              action: wasFollowing ? 'follow' : 'unfollow',
+              optimistic: false,
+              rolledBack: true
+            }
+          })
+        );
+      } catch {
+        // ignore
+      }
       console.error('Failed to update page follow status', error);
     } finally {
       setPageFollowBusy((prev) => ({ ...prev, [pageId]: false }));
     }
-  }, [pageFollowBusy, user?.id]);
+  }, [pageFollowBusy, user?.id, followStateMap]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -835,6 +992,12 @@ const CommunityHome = () => {
       post.author?.userId ||
       post.author?.user_id ||
       (authorType === 'user' ? authorId : null);
+    const publicAvailabilityFlags = resolvePublicAvailabilityFlags({
+      availability: post.author?.availability ?? post.author?.professionalAvailability ?? post.availability ?? post.professionalAvailability,
+      hiring: post.author?.hiring ?? post.author?.clientHiringStatus ?? post.hiring ?? post.clientHiringStatus,
+      availableForHire: post.author?.availableForHire ?? post.author?.available_for_hire ?? post.availableForHire ?? post.available_for_hire,
+      weAreHiring: post.author?.weAreHiring ?? post.author?.we_are_hiring ?? post.weAreHiring ?? post.we_are_hiring
+    });
 
     return {
       id: post.id || `${authorId}-${Date.now()}`,
@@ -860,7 +1023,13 @@ const CommunityHome = () => {
         type: authorType,
         businessSlug: post.author?.businessSlug || post.businessPage?.slug || null,
         isVerified: Boolean(post.author?.isVerified),
-        isPro: Boolean(post.author?.isPro)
+        isPro: Boolean(post.author?.isPro),
+        availability: post.author?.availability ?? post.author?.professionalAvailability ?? post.availability ?? post.professionalAvailability,
+        professionalAvailability: post.author?.professionalAvailability ?? post.author?.availability ?? post.professionalAvailability ?? post.availability,
+        hiring: post.author?.hiring ?? post.author?.clientHiringStatus ?? post.hiring ?? post.clientHiringStatus,
+        clientHiringStatus: post.author?.clientHiringStatus ?? post.author?.hiring ?? post.clientHiringStatus ?? post.hiring,
+        availableForHire: publicAvailabilityFlags.availableForHire,
+        weAreHiring: publicAvailabilityFlags.weAreHiring
       },
       viewer: {
         isFollowingAuthor: post.viewer?.isFollowingAuthor
@@ -951,7 +1120,7 @@ const CommunityHome = () => {
     });
   }, []);
 
-  const filterActiveStories = useCallback((items: any[]) => items.filter(isStoryActive), []);
+  const filterActiveStories = useCallback((items: any[]) => filterExistingActiveStories(items), []);
 
   const canManageStory = useCallback((story: any) => {
     if (!user) return false;
@@ -1045,7 +1214,7 @@ const CommunityHome = () => {
     ) {
       return;
     }
-    const postsLimit = Math.max(6, Math.min(40, Number(profile.feedPageSize || 20)));
+    const postsLimit = Math.max(10, Math.min(48, Number(profile.feedPageSize || 24)));
     const existingCount = postsRef.current.length;
     const canUseOffsetFallback = !cursor && postsOffsetFallbackRef.current && existingCount > 0;
     const canUseDiscoverySupplement = !cursor && !canUseOffsetFallback && !discoverySupplementUsedRef.current;
@@ -1363,8 +1532,8 @@ const CommunityHome = () => {
       }
       setStoriesLoading(true);
       setReelsLoading(true);
-      const postsLimit = Math.max(6, Math.min(40, Number(profile.feedPageSize || 20)));
-      const reelsLimit = Math.max(6, Math.min(24, Number(profile.feedPageSize || 18)));
+      const postsLimit = Math.max(10, Math.min(48, Number(profile.feedPageSize || 24)));
+      const reelsLimit = Math.max(8, Math.min(32, Number(profile.feedPageSize || 20)));
       try {
         const [
           feedPostsResult,
@@ -1474,10 +1643,12 @@ const CommunityHome = () => {
               }, {});
             });
             if (orchestrated.people.length) {
-              setRecommendedCommunityPeople((prev) => (prev.length ? prev : orchestrated.people.slice(0, 6)));
+              const people = filterUnfollowedRecommendations(orchestrated.people).slice(0, 6);
+              setRecommendedCommunityPeople((prev) => (prev.length ? prev : people));
             }
             if (orchestrated.pages.length) {
-              setRecommendedCommunityPages((prev) => (prev.length ? prev : orchestrated.pages.slice(0, 4)));
+              const pages = filterUnfollowedRecommendations(orchestrated.pages).slice(0, 4);
+              setRecommendedCommunityPages((prev) => (prev.length ? prev : pages));
             }
             const followSeed: Record<string, boolean> = {};
             const authorIds = new Set<string>();
@@ -1612,7 +1783,7 @@ const CommunityHome = () => {
 
         if (pagesResult.status === 'fulfilled') {
           const pages = Array.isArray(pagesResult.value) ? pagesResult.value : [];
-          const mappedPages = pages
+          const mappedPages = filterUnfollowedRecommendations(pages)
             .map((page: any) => {
               const source = page?.account || page || {};
               const id = String(source?.id || page?.entityId || page?.pageId || page?.id || '').trim();
@@ -1638,7 +1809,7 @@ const CommunityHome = () => {
 
         if (peopleResult.status === 'fulfilled') {
           const people = Array.isArray(peopleResult.value) ? peopleResult.value : [];
-          const mappedPeople = people
+          const mappedPeople = filterUnfollowedRecommendations(people)
             .map((account: any) => {
               const source = account?.user || account?.account || account || {};
               const id = String(
@@ -1956,9 +2127,27 @@ const CommunityHome = () => {
 
   useEffect(() => {
     if (!user?.id) return;
+    // Local follow state only — never reload the whole community feed/rails.
     const onFollowUpdated = (event: Event) => {
       const payload = (event as CustomEvent).detail;
       applyFollowUpdatePayload(payload, user.id);
+      const targetId = String(payload?.targetUserId || payload?.targetId || '').trim();
+      if (!targetId) return;
+      const explicit = payload?.isFollowing;
+      const isFollowing =
+        typeof explicit === 'boolean'
+          ? explicit
+          : String(payload?.action || '').toLowerCase() === 'follow';
+      const targetType = String(payload?.targetType || 'user').toLowerCase();
+      if (targetType === 'page') {
+        setRecommendedCommunityPages((prev) =>
+          prev.filter((item) => String(item?.id || '') !== targetId || !isFollowing)
+        );
+      } else {
+        setRecommendedCommunityPeople((prev) =>
+          prev.filter((item) => String(item?.id || '') !== targetId || !isFollowing)
+        );
+      }
     };
     window.addEventListener('community:follow_updated', onFollowUpdated as EventListener);
     return () => window.removeEventListener('community:follow_updated', onFollowUpdated as EventListener);
@@ -2073,6 +2262,8 @@ const CommunityHome = () => {
         textAlign: storyDraft.textAlign
       });
       setStories((prev) => filterActiveStories([created, ...prev.filter((item) => String(item?.id) !== String(created?.id))]));
+      setStoryRailTab('stories');
+      setActiveStory(created);
       setStoryDraft({
         content: '',
         visibility: 'public',
@@ -2111,20 +2302,56 @@ const CommunityHome = () => {
         }
       });
       setStoryMediaUploadProgress(100);
-      setStoryMediaUploadLabel('Preparing your story for publish...');
+      setStoryMediaUploadLabel(`${file.name} is ready to publish.`);
+      setStoryMediaDraftFile(uploaded);
+      setStoryMediaPreviewOpen(true);
+    } catch (error: any) {
+      console.error(error);
+      showNotification('error', 'Stories', error?.message || 'Unable to upload story media.');
+      clearStoryMediaUploadState();
+    } finally {
+      setStoryPosting(false);
+      setStoryMediaUploadBusy(false);
+    }
+  };
+
+  const publishStorySelectedMedia = async () => {
+    if (!user || !storyMediaDraftFile?.id) return;
+    setStoryPosting(true);
+    setStoryMediaUploadBusy(true);
+    setStoryMediaUploadProgress(100);
+    setStoryMediaUploadLabel('Preparing your story for publish...');
+    let published = false;
+    try {
+      const mime = String(storyMediaDraftFile?.mimeType || storyMediaDraftFile?.mime_type || '').toLowerCase();
+      const explicitType = String(storyMediaDraftFile?.type || '').toLowerCase();
+      const type = explicitType === 'video' || mime.startsWith('video/') ? 'video' : 'image';
       const created = await CommunityService.createStory({
         type,
-        mediaFileId: uploaded.id,
+        mediaFileId: storyMediaDraftFile.id,
+        caption: storyDraft.content?.trim() || undefined,
         visibility: storyDraft.visibility
       });
       setStories((prev) => filterActiveStories([created, ...prev.filter((item) => String(item?.id) !== String(created?.id))]));
+      setStoryRailTab('stories');
+      setActiveStory(created);
+      setStoryMediaPreviewOpen(false);
+      setStoryMediaDraftFile(null);
+      setStoryDraft((prev) => ({ ...prev, content: '' }));
+      published = true;
       showNotification('success', 'Stories', 'Your story is live.');
     } catch (error: any) {
       console.error(error);
       showNotification('error', 'Stories', error?.message || 'Unable to post story.');
+      setStoryMediaUploadLabel('Media is ready. Review your caption and try publishing again.');
     } finally {
       setStoryPosting(false);
-      clearStoryMediaUploadState();
+      if (published) {
+        clearStoryMediaUploadState();
+      } else {
+        setStoryMediaUploadBusy(false);
+        setStoryMediaUploadProgress(storyMediaDraftFile?.id ? 100 : 0);
+      }
     }
   };
 
@@ -2764,7 +2991,11 @@ const CommunityHome = () => {
   );
 
   return (
-    <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50" data-testid="community-home">
+    <div
+      className="community-feed-surface min-h-[100%] min-w-0 overflow-x-hidden overflow-y-visible bg-slate-50"
+      data-testid="community-home"
+      style={{ touchAction: 'pan-y pinch-zoom', WebkitOverflowScrolling: 'touch' } as React.CSSProperties}
+    >
       {/* Hero Section */}
       {showHero ? (
         <div
@@ -2939,7 +3170,11 @@ const CommunityHome = () => {
 
             {/* Stories Strip */}
             {showStories && (
-              <div className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+              <div
+                id="stories"
+                ref={storyRailSectionRef}
+                className="scroll-mt-24 rounded-xl bg-white p-3 shadow-sm sm:p-4"
+              >
                 <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                   <div className="inline-flex items-center rounded-full border border-gray-200 bg-gray-100 p-1">
                     <button
@@ -3097,6 +3332,7 @@ const CommunityHome = () => {
                                 <InlineAutoplayVideo
                                   key={String(story?.id || media.src)}
                                   src={media.src}
+                                  fallbackSrc={media.fallbackSrc}
                                   poster={media.poster}
                                   className="h-full w-full object-cover"
                                   containerClassName="h-full w-full"
@@ -3151,6 +3387,9 @@ const CommunityHome = () => {
                             return (
                               <StoryAuthorAvatar
                                 src={authorAvatar}
+                                user={story?.author || story}
+                                availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                                weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                                 name={authorName}
                                 initial={authorInitial}
                                 className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border-2 border-white/90 bg-slate-700 text-[11px] font-semibold text-white shadow"
@@ -3202,6 +3441,7 @@ const CommunityHome = () => {
                               <InlineAutoplayVideo
                                 key={String(scroll?.id || media.src)}
                                 src={media.src}
+                                fallbackSrc={media.fallbackSrc}
                                 poster={media.poster}
                                 className="h-full w-full object-cover"
                                 containerClassName="h-full w-full"
@@ -3218,21 +3458,17 @@ const CommunityHome = () => {
                             const authorAvatar = resolveReelAuthorAvatar(scroll);
                             const authorInitial = resolveReelAuthorInitial(scroll);
                             return (
-                              <div className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border-2 border-blue-300/90 bg-slate-700 text-[11px] font-semibold text-white shadow">
-                                {authorAvatar ? (
-                                  <OptimizedImage
-                                    src={authorAvatar}
-                                    alt={authorName}
-                                    width={96}
-                                    height={96}
-                                    sizes="48px"
-                                    className="h-full w-full object-cover"
-                                    loading="lazy"
-                                    decoding="async"
-                                  />
-                                ) : (
-                                  <span>{authorInitial}</span>
-                                )}
+                              <div className="absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-visible rounded-full border-2 border-blue-300/90 bg-slate-700 text-[11px] font-semibold text-white shadow">
+                                <EnterpriseAvatar
+                                  user={scroll?.author || scroll}
+                                  src={authorAvatar}
+                                  name={authorName}
+                                  size="sm"
+                                  availableForHire={Boolean((scroll as any)?.author?.availableForHire ?? (scroll as any)?.availableForHire)}
+                                  weAreHiring={Boolean((scroll as any)?.author?.weAreHiring ?? (scroll as any)?.weAreHiring)}
+                                  className="!h-full !w-full !text-[inherit]"
+                                  alt={authorName || authorInitial}
+                                />
                               </div>
                             );
                           })()}
@@ -3361,7 +3597,9 @@ const CommunityHome = () => {
                     type: post.author?.type || (post.businessPage ? 'business' : 'user'),
                     businessSlug: post.author?.businessSlug || post.businessPage?.slug || null,
                     isVerified: post.author?.isVerified,
-                    isPro: post.author?.isPro
+                    isPro: post.author?.isPro,
+                    kycStatus: post.author?.kycStatus ?? post.author?.kyc_status,
+                    verificationStatus: post.author?.verificationStatus ?? post.author?.verification_status
                   };
                   const followTargetId =
                     String(resolvedAuthor.type || '').toLowerCase() === 'user'
@@ -3729,13 +3967,16 @@ const CommunityHome = () => {
                                 {post.attachments.map((media: any) => {
                                   const type = inferMediaType(media || {});
                                   const mediaKey = String(media.id || media.url || '');
-                                  const mediaUrl = String(resolvePostAttachmentMediaUrl(media) || resolveAssetUrl(media?.url) || '').trim();
+                                  const mediaPair = resolvePostAttachmentMediaPair(media);
+                                  const mediaUrl = String(mediaPair.url || resolvePostAttachmentMediaUrl(media) || resolveAssetUrl(media?.url) || '').trim();
+                                  const fallbackUrl = String(mediaPair.fallbackUrl || '').trim();
                                   const posterUrl = String(resolvePostAttachmentPosterUrl(media) || media?.thumbnailUrl || mediaUrl).trim();
                                   const mediaHeightClass =
                                     post.attachments.length === 1
                                       ? FEED_SINGLE_MEDIA_HEIGHT_CLASS
                                       : FEED_MULTI_MEDIA_HEIGHT_CLASS;
                                   if (type === 'video') {
+                                    const caption = resolveVideoCaption(post, media);
                                     return (
                                       <div
                                         key={media.id || media.url}
@@ -3749,37 +3990,56 @@ const CommunityHome = () => {
                                           if ((event.target as HTMLElement | null)?.closest('[data-inline-video-control=\"true\"]')) return;
                                           onPostMediaDoubleClick(event, post, mediaKey);
                                         }}
-                                        onTouchEnd={(event) => onPostMediaTouchEnd(event, post, mediaKey)}
+                                        onTouchEnd={(event) => onPostVideoTouchEnd(event, post, media, mediaKey)}
                                         onKeyDown={(event) => {
                                           if (event.key === 'Enter' || event.key === ' ') {
                                             event.preventDefault();
                                             handlePostMediaPrimaryAction(post, media);
                                           }
                                         }}
-                                        className="mx-auto w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm"
+                                        className="group relative mx-auto w-full cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm"
+                                        aria-label="Open video in Scroll"
                                       >
                                         <InlineAutoplayVideo
                                           src={mediaUrl}
+                                          fallbackSrc={fallbackUrl}
                                           poster={posterUrl || undefined}
                                           className={`${mediaHeightClass} w-full object-cover`}
                                           controls={false}
                                           autoplayEnabled={INLINE_VIDEO_PREVIEW_AUTOPLAY}
                                           preload="metadata"
                                           overlay={(videoElement) => (
-                                            <PostVideoActionBar
-                                              postId={post.id}
-                                              postTitle={post.title}
-                                              postContent={post.content}
-                                              postLocation={post.location}
-                                              media={media}
-                                              videoElement={videoElement}
-                                            />
+                                            <div className="w-full space-y-2 px-2 sm:px-3">
+                                              <VideoCaptionOverlay text={caption} compact />
+                                              <PostVideoActionBar
+                                                postId={post.id}
+                                                postTitle={post.title}
+                                                postContent={caption || post.content}
+                                                postLocation={post.location}
+                                                media={media}
+                                                videoElement={videoElement}
+                                              />
+                                            </div>
                                           )}
                                         />
+                                        <button
+                                          type="button"
+                                          data-inline-video-control="true"
+                                          onClick={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            handlePostMediaPrimaryAction(post, media);
+                                          }}
+                                          className="absolute bottom-2 left-2 rounded-full bg-black/70 px-3 py-1.5 text-[11px] font-semibold text-white opacity-0 shadow-lg backdrop-blur transition hover:bg-black/80 group-hover:opacity-100 group-focus-within:opacity-100 sm:opacity-100"
+                                          aria-label="Open this video in Scroll"
+                                        >
+                                          Open in Scroll
+                                        </button>
                                       </div>
                                     );
                                   }
                                   if (type === 'image') {
+                                    const caption = resolveVideoCaption(post, media);
                                     return (
                                       <button
                                         key={media.id || media.url}
@@ -3787,7 +4047,7 @@ const CommunityHome = () => {
                                         onClick={() => handlePostMediaPrimaryAction(post, media)}
                                         onDoubleClick={(event) => onPostMediaDoubleClick(event, post, mediaKey)}
                                         onTouchEnd={(event) => onPostMediaTouchEnd(event, post, mediaKey)}
-                                        className="mx-auto w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left shadow-sm"
+                                        className="relative mx-auto w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-left shadow-sm"
                                       >
                                         <OptimizedImage
                                           src={posterUrl}
@@ -3800,6 +4060,11 @@ const CommunityHome = () => {
                                           loading="lazy"
                                           decoding="async"
                                         />
+                                        {caption ? (
+                                          <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2 sm:px-3 sm:pb-3">
+                                            <VideoCaptionOverlay text={caption} compact />
+                                          </div>
+                                        ) : null}
                                       </button>
                                     );
                                   }
@@ -4010,16 +4275,17 @@ const CommunityHome = () => {
                             <div className="truncate text-xs text-gray-500">{page.tagline || `${page.followersCount || 0} followers`}</div>
                           </div>
                         </Link>
-                        <button
-                          type="button"
+                        <FollowButton
+                          targetUserId={page.id}
+                          targetType="page"
+                          currentUserId={user?.id}
+                          initialIsFollowing={Boolean(page.isFollowing || followStateMap[page.id])}
                           disabled={Boolean(pageFollowBusy[page.id])}
-                          onClick={() => handleCommunityPageFollow(page)}
-                          className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase ${
-                            page.isFollowing ? 'border-gray-300 text-gray-700' : 'border-blue-200 text-blue-600'
-                          } disabled:cursor-not-allowed disabled:opacity-60`}
-                        >
-                          {pageFollowBusy[page.id] ? '...' : page.isFollowing ? 'Following' : 'Follow'}
-                        </button>
+                          onRequireLogin={() => {
+                            if (confirm('Log in to follow pages?')) window.location.href = '/auth/login';
+                          }}
+                          className="h-7 px-2 text-[11px] uppercase"
+                        />
                       </div>
                     );
                   })}
@@ -4103,8 +4369,148 @@ const CommunityHome = () => {
         onCreated={(created) => {
           setReels((prev) => [created, ...prev.filter((item) => item.id !== created.id)].slice(0, 18));
           setStoryRailTab('reels');
+          if (created?.id) {
+            navigate(buildScrollVideoUrl(String(created.id)));
+          }
         }}
       />
+
+      {storyMediaPreviewOpen && storyMediaDraftFile?.id && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3 sm:p-6">
+          <div className="w-full max-w-lg max-h-[92dvh] overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl sm:p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Story preview</h3>
+                <p className="text-xs text-gray-500">Review your media, add a caption, and publish when ready.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (storyPosting) return;
+                  setStoryMediaPreviewOpen(false);
+                  setStoryMediaDraftFile(null);
+                  clearStoryMediaUploadState();
+                }}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              {storyMediaUploadLabel ? (
+                <StoryUploadStatusCard
+                  busy={storyMediaUploadBusy}
+                  label={storyMediaUploadLabel}
+                  progress={storyMediaUploadProgress}
+                  hint={
+                    storyMediaUploadBusy
+                      ? 'Scrolith is finalizing your upload before publish.'
+                      : 'Your media is uploaded. Add a caption if you want, then publish.'
+                  }
+                />
+              ) : null}
+              <div className="overflow-hidden rounded-2xl border border-gray-200 bg-gray-50">
+                {(() => {
+                  const url =
+                    storyMediaDraftFile?.url ||
+                    storyMediaDraftFile?.downloadUrl ||
+                    storyMediaDraftFile?.download_url ||
+                    '';
+                  const mime = String(storyMediaDraftFile?.mimeType || storyMediaDraftFile?.mime_type || '').toLowerCase();
+                  const explicitType = String(storyMediaDraftFile?.type || '').toLowerCase();
+                  const isVideo = explicitType === 'video' || mime.startsWith('video/');
+                  if (!url) {
+                    return <div className="flex h-48 w-full items-center justify-center text-sm text-gray-600">Media preview not available.</div>;
+                  }
+                  return isVideo ? (
+                    <video
+                      src={url}
+                      className="h-56 w-full object-cover"
+                      controls
+                      autoPlay
+                      muted
+                      playsInline
+                      loop
+                      preload="metadata"
+                    />
+                  ) : (
+                    <OptimizedImage
+                      src={resolveAssetUrl(url)}
+                      alt="Story preview"
+                      width={720}
+                      height={1280}
+                      sizes="(max-width: 768px) 100vw, 420px"
+                      className="h-56 w-full object-cover"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  );
+                })()}
+              </div>
+
+              <label className="block">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Caption</span>
+                  <span className="text-[11px] font-semibold text-gray-400">{storyDraft.content.trim().length} characters</span>
+                </div>
+                <textarea
+                  value={storyDraft.content}
+                  onChange={(event) => setStoryDraft((prev) => ({ ...prev, content: event.target.value }))}
+                  placeholder="Add a caption to your story..."
+                  className="min-h-[120px] w-full rounded-2xl border border-gray-200 p-3 text-sm text-gray-700 outline-none focus:border-gray-400"
+                  disabled={storyPosting}
+                />
+              </label>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700">
+                  <span className="text-gray-500">Visibility</span>
+                  <select
+                    value={storyDraft.visibility}
+                    onChange={(event) =>
+                      setStoryDraft((prev) => ({ ...prev, visibility: normalizeStoryVisibility(event.target.value) }))
+                    }
+                    className="bg-transparent text-xs font-semibold text-gray-900 outline-none"
+                    disabled={storyPosting}
+                  >
+                    {storyVisibilityOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (storyPosting) return;
+                      setStoryMediaPreviewOpen(false);
+                      setStoryMediaDraftFile(null);
+                      clearStoryMediaUploadState();
+                      storyDeviceInputRef.current?.click();
+                    }}
+                    className="rounded-full border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600"
+                    disabled={storyPosting}
+                  >
+                    Change media
+                  </button>
+                  <button
+                    type="button"
+                    onClick={publishStorySelectedMedia}
+                    className="rounded-full bg-gray-900 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-60"
+                    disabled={storyPosting}
+                  >
+                    {storyPosting ? 'Publishing...' : 'Publish story'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {storyTextOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
@@ -4255,6 +4661,7 @@ const CommunityHome = () => {
                         <InlineAutoplayVideo
                           key={String(editingStory?.id || media.src)}
                           src={media.src}
+                          fallbackSrc={media.fallbackSrc}
                           poster={media.poster}
                           className="h-48 w-full object-cover"
                           containerClassName="h-48 w-full"

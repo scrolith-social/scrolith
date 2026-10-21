@@ -59,7 +59,8 @@ import {
   Grid3X3,
   BarChart2,
   Layout,
-  RefreshCw
+  RefreshCw,
+  Video
 } from 'lucide-react';
 
 import type { User as UserType, UserRole, GcoinWallet } from '../../types';
@@ -380,40 +381,143 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
     }
   };
 
+  const handleVideoCallCapabilityUpdate = async (
+    user: Partial<UserType> & { id: string },
+    videoCallsEnabled: boolean
+  ) => {
+    const userLabel = user.name || user.username || user.email || 'this user';
+    const actionLabel = videoCallsEnabled ? 'enable' : 'disable';
+    if (!window.confirm(`Confirm ${actionLabel} video calling for ${userLabel}?`)) return;
+    const reason = window.prompt(
+      videoCallsEnabled
+        ? 'Optional admin reason for enabling video calling:'
+        : 'Admin reason for disabling video calling:',
+      videoCallsEnabled ? 'Restored by admin' : ''
+    );
+    if (reason === null) return;
+
+    try {
+      const updated = await AdminService.updateUserCallCapabilities(
+        user.id,
+        { videoCallsEnabled, reason: reason.trim() || undefined },
+        adminId
+      );
+      setUsers((prev) => prev.map((entry) => (entry.id === user.id ? updated : entry)));
+      setEditingUser((prev) => (prev?.id === user.id ? { ...prev, ...updated } : prev));
+      showNotification(
+        'success',
+        'Video Calls Updated',
+        `Video calling ${videoCallsEnabled ? 'enabled' : 'disabled'} for ${userLabel}.`
+      );
+    } catch (error: any) {
+      console.error('Failed to update video call capability:', error);
+      showNotification(
+        'error',
+        'Video Calls Error',
+        extractAdminError(error, 'Failed to update video calling control.')
+      );
+      loadData();
+    }
+  };
+
+  const extractAdminError = (error: any, fallback: string) =>
+    String(
+      error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        fallback
+    );
+
+  const isScrolithaAccount = (userLike?: Partial<UserType> | EditableUser | null) => {
+    if (!userLike) return false;
+    const username = String(userLike.username || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^@/, '');
+    const email = String(userLike.email || '').trim().toLowerCase();
+    return (
+      username === 'scrolitha' ||
+      email === 'scrolitha@system.scrolith.internal' ||
+      email.endsWith('@system.scrolith.internal') ||
+      Boolean((userLike as any).isScrolitha || (userLike as any).is_scrolitha)
+    );
+  };
+
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser || !editingUser.id) return;
 
     setIsSaving(true);
     try {
-      const { password, ...userPayload } = editingUser;
-      const payload: Record<string, any> = { ...userPayload };
-      if (typeof payload.name === 'string') payload.name = payload.name.trim();
-      if (typeof payload.email === 'string') payload.email = payload.email.trim();
-      if (typeof payload.username === 'string') {
-        const nextUsername = payload.username.trim();
+      const scrolitha = isScrolithaAccount(editingUser);
+      // Backend PUT whitelist only. Human KYC isVerified is blocked (403).
+      // Scrolitha platform identity allows isVerified (public badge control).
+      const payload: Record<string, any> = {};
+      if (typeof editingUser.name === 'string') payload.name = editingUser.name.trim();
+      if (typeof editingUser.email === 'string') payload.email = editingUser.email.trim();
+      if (scrolitha) {
+        payload.username = 'scrolitha';
+      } else if (typeof editingUser.username === 'string') {
+        const nextUsername = editingUser.username.trim();
         if (nextUsername) payload.username = nextUsername;
-        else delete payload.username;
       }
-      if (typeof payload.avatar === 'string') {
-        const nextAvatar = payload.avatar.trim();
-        if (nextAvatar) payload.avatar = nextAvatar;
-        else delete payload.avatar;
+      if (typeof editingUser.avatar === 'string' && editingUser.avatar.trim()) {
+        payload.avatar = editingUser.avatar.trim();
       }
-      if (payload.profilePhotoFileId === undefined || payload.profilePhotoFileId === null || payload.profilePhotoFileId === '') {
-        delete payload.profilePhotoFileId;
+      if (editingUser.profilePhotoFileId) {
+        payload.profilePhotoFileId = editingUser.profilePhotoFileId;
       }
+      if (editingUser.role && !scrolitha) payload.role = editingUser.role;
+
+      if (scrolitha) {
+        const verification = String(
+          editingUser.kycStatus ||
+            editingUser.kyc_status ||
+            (editingUser.isVerified ? 'verified' : 'pending')
+        )
+          .trim()
+          .toLowerCase();
+        payload.isVerified = verification === 'verified';
+      }
+
+      const nextStatus = String(editingUser.status || '').trim().toLowerCase();
+      if (nextStatus) {
+        payload.status = nextStatus;
+        payload.isActive = nextStatus === 'active' || nextStatus === 'restricted';
+      }
+
       await AdminService.updateUserDetail(editingUser.id, payload as Partial<UserType>, adminId);
-      if (password && password.trim()) {
-        await AdminService.updateUserPassword(editingUser.id, password.trim(), adminId);
+
+      const password = String(editingUser.password || '').trim();
+      if (password && !scrolitha) {
+        await AdminService.updateUserPassword(editingUser.id, password, adminId);
       }
-      showNotification('success', 'User Updated', 'User details saved successfully.');
+
+      if (nextStatus && !scrolitha) {
+        try {
+          await AdminService.updateUserStatus(editingUser.id, nextStatus, adminId);
+        } catch {
+          // Non-fatal if PUT already applied isActive.
+        }
+      }
+
+      showNotification(
+        'success',
+        scrolitha ? 'Scrolitha Updated' : 'User Updated',
+        scrolitha
+          ? 'Scrolitha email, profile photo, and verification badge were saved.'
+          : 'Profile, role, and status changes were saved.'
+      );
       setIsEditModalOpen(false);
-      loadData();
+      await loadData();
       if (onUserUpdated) onUserUpdated();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to update user:', error);
-      showNotification('error', 'Update Error', 'Failed to update user details.');
+      showNotification(
+        'error',
+        'Update Error',
+        extractAdminError(error, 'Failed to update user details.')
+      );
     } finally {
       setIsSaving(false);
     }
@@ -560,12 +664,30 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
 
   const handleUpdateDemoConfig = async (patch: Partial<NonNullable<DemoAutomationOverview['config']>>) => {
     setDemoBusy(true);
+    // Optimistic UI so admin sees Apply immediately without waiting for refresh.
+    setDemoOverview((prev) =>
+      prev
+        ? {
+            ...prev,
+            config: {
+              ...(prev.config || {}),
+              ...patch
+            }
+          }
+        : prev
+    );
     try {
       await AdminService.updateSystemDemoAccountsConfig(patch);
+      showNotification('success', 'Demo Automation', 'Automation settings saved.');
       await loadData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to update demo config:', error);
-      showNotification('error', 'Update Failed', 'Unable to update demo automation settings.');
+      showNotification(
+        'error',
+        'Update Failed',
+        extractAdminError(error, 'Unable to update demo automation settings.')
+      );
+      await loadData();
     } finally {
       setDemoBusy(false);
     }
@@ -573,12 +695,36 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
 
   const handleToggleDemoAccount = async (accountId: string, enabled: boolean) => {
     setDemoBusy(true);
+    setDemoOverview((prev) => {
+      if (!prev?.accounts) return prev;
+      const accounts = prev.accounts.map((entry) =>
+        entry.id === accountId ? { ...entry, automationEnabled: enabled } : entry
+      );
+      const automationEnabledAccounts = accounts.filter((entry) => entry.automationEnabled).length;
+      return {
+        ...prev,
+        accounts,
+        stats: {
+          ...(prev.stats || {}),
+          automationEnabledAccounts
+        }
+      };
+    });
     try {
       await AdminService.toggleSystemDemoAccountAutomation(accountId, enabled);
-      await loadData();
-    } catch (error) {
+      showNotification(
+        'success',
+        'Demo Account',
+        `Automation ${enabled ? 'enabled' : 'disabled'} for this account.`
+      );
+    } catch (error: any) {
       console.error('Failed to toggle demo account automation:', error);
-      showNotification('error', 'Update Failed', 'Unable to toggle demo account automation state.');
+      showNotification(
+        'error',
+        'Update Failed',
+        extractAdminError(error, 'Unable to toggle demo account automation state.')
+      );
+      await loadData();
     } finally {
       setDemoBusy(false);
     }
@@ -598,7 +744,20 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
   };
 
   const handleFileSelect = (file: any) => {
-    setEditingUser(prev => prev ? { ...prev, avatar: file.url, profilePhotoFileId: file.id } : null);
+    const fileId = String(file?.id || file?.fileId || '').trim();
+    const rawUrl = String(file?.url || file?.contentUrl || file?.downloadUrl || '').trim();
+    const contentUrl = fileId
+      ? `/api/files/content/${encodeURIComponent(fileId)}`
+      : rawUrl;
+    setEditingUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            avatar: contentUrl || rawUrl || prev.avatar,
+            profilePhotoFileId: fileId || prev.profilePhotoFileId
+          }
+        : null
+    );
     setIsFilePickerOpen(false);
   };
 
@@ -711,6 +870,12 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
       u.email?.toLowerCase().includes(q);
     return matchesStatus && matchesSearch;
   });
+
+  const getUserForSubscriber = (subscriber: Subscriber) => {
+    const email = subscriber.email?.trim().toLowerCase();
+    if (!email) return undefined;
+    return users.find((u) => u.email?.trim().toLowerCase() === email);
+  };
 
   const editingWallet = editingUser?.id ? getUserWallet(editingUser.id) : undefined;
   const editingGcoinWallet = editingUser?.id ? getGcoinWallet(editingUser.id) : undefined;
@@ -869,13 +1034,19 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-4 text-sm">
+            <div className="flex flex-wrap items-end gap-4 text-sm">
               <label className="inline-flex items-center gap-2">
                 <input
                   type="checkbox"
                   checked={Boolean(demoOverview?.config?.enabled)}
-                  onChange={(event) => handleUpdateDemoConfig({ enabled: event.target.checked })}
-                  disabled={demoBusy}
+                  onChange={(event) =>
+                    setDemoOverview((prev) =>
+                      prev
+                        ? { ...prev, config: { ...(prev.config || {}), enabled: event.target.checked } }
+                        : prev
+                    )
+                  }
+                  disabled={demoBusy || !demoOverview}
                 />
                 Enable Automation
               </label>
@@ -883,8 +1054,14 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                 <input
                   type="checkbox"
                   checked={Boolean(demoOverview?.config?.aiEnabled)}
-                  onChange={(event) => handleUpdateDemoConfig({ aiEnabled: event.target.checked })}
-                  disabled={demoBusy}
+                  onChange={(event) =>
+                    setDemoOverview((prev) =>
+                      prev
+                        ? { ...prev, config: { ...(prev.config || {}), aiEnabled: event.target.checked } }
+                        : prev
+                    )
+                  }
+                  disabled={demoBusy || !demoOverview}
                 />
                 Use Scrolitha for Post Drafting
               </label>
@@ -894,76 +1071,117 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   type="number"
                   min={1}
                   max={120}
-                  defaultValue={Number(demoOverview?.config?.cadenceMinutes || 15)}
-                  onBlur={(event) =>
-                    handleUpdateDemoConfig({ cadenceMinutes: Number(event.target.value || 15) })
-                  }
+                  value={Number(demoOverview?.config?.cadenceMinutes || 15)}
+                  onChange={(event) => {
+                    const cadenceMinutes = Math.max(1, Math.min(120, Number(event.target.value || 15)));
+                    setDemoOverview((prev) =>
+                      prev
+                        ? { ...prev, config: { ...(prev.config || {}), cadenceMinutes } }
+                        : prev
+                    );
+                  }}
                   className="w-20 px-2 py-1 border border-gray-300 rounded"
-                  disabled={demoBusy}
+                  disabled={demoBusy || !demoOverview}
                 />
               </label>
+              <button
+                type="button"
+                disabled={demoBusy || !demoOverview}
+                onClick={() =>
+                  handleUpdateDemoConfig({
+                    enabled: Boolean(demoOverview?.config?.enabled),
+                    aiEnabled: Boolean(demoOverview?.config?.aiEnabled),
+                    cadenceMinutes: Number(demoOverview?.config?.cadenceMinutes || 15)
+                  })
+                }
+                className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {demoBusy ? 'Saving…' : 'Apply Automation Settings'}
+              </button>
             </div>
 
             {Array.isArray(demoOverview?.accounts) && demoOverview!.accounts!.length > 0 && (
               <div className="rounded-lg border border-gray-200 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-600">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Demo Account</th>
-                      <th className="px-3 py-2 text-left">Username</th>
-                      <th className="px-3 py-2 text-left">Profession</th>
-                      <th className="px-3 py-2 text-left">Country</th>
-                      <th className="px-3 py-2 text-left">Automation</th>
-                      <th className="px-3 py-2 text-left">Profile</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {demoOverview!.accounts!.slice(0, 20).map((entry) => (
-                      <tr key={entry.id} className="border-t border-gray-100">
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-3">
-                            <img
-                              src={entry.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(entry.name || 'Demo')}&background=0D8ABC&color=fff`}
-                              alt={entry.name || 'Demo account'}
-                              className="h-10 w-10 rounded-full border border-gray-200 object-cover"
-                            />
-                            <div>
-                              <div className="font-medium text-gray-900">{entry.name || 'Unnamed'}</div>
-                              <div className="text-xs text-gray-500">{entry.email}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-gray-700">{entry.username || '-'}</td>
-                        <td className="px-3 py-2 text-gray-700">{entry.profession || '-'}</td>
-                        <td className="px-3 py-2 text-gray-700">{entry.country || '-'}</td>
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            disabled={demoBusy || !entry.isActive}
-                            onClick={() => handleToggleDemoAccount(entry.id, !Boolean(entry.automationEnabled))}
-                            className={`px-2.5 py-1 rounded text-xs font-medium ${
-                              entry.automationEnabled
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-gray-100 text-gray-700'
-                            }`}
-                          >
-                            {entry.automationEnabled ? 'Enabled' : 'Disabled'}
-                          </button>
-                        </td>
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => handleEditDemoAccount(entry)}
-                            className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                            Edit
-                          </button>
-                        </td>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50 px-3 py-2">
+                  <div className="text-xs font-semibold text-gray-600">
+                    Showing all {demoOverview!.accounts!.length} managed demo account(s)
+                  </div>
+                  <input
+                    type="search"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Filter demo accounts…"
+                    className="w-full max-w-xs rounded border border-gray-300 px-2 py-1 text-xs"
+                  />
+                </div>
+                <div className="max-h-[28rem] overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-gray-50 text-gray-600">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Demo Account</th>
+                        <th className="px-3 py-2 text-left">Username</th>
+                        <th className="px-3 py-2 text-left">Profession</th>
+                        <th className="px-3 py-2 text-left">Country</th>
+                        <th className="px-3 py-2 text-left">Automation</th>
+                        <th className="px-3 py-2 text-left">Profile</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {demoOverview!.accounts!
+                        .filter((entry) => {
+                          const q = searchTerm.trim().toLowerCase();
+                          if (!q) return true;
+                          return [entry.name, entry.email, entry.username, entry.profession, entry.country]
+                            .map((v) => String(v || '').toLowerCase())
+                            .some((v) => v.includes(q));
+                        })
+                        .map((entry) => (
+                        <tr key={entry.id} className="border-t border-gray-100">
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={entry.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(entry.name || 'Demo')}&background=0D8ABC&color=fff`}
+                                alt={entry.name || 'Demo account'}
+                                className="h-10 w-10 rounded-full border border-gray-200 object-cover"
+                              />
+                              <div>
+                                <div className="font-medium text-gray-900">{entry.name || 'Unnamed'}</div>
+                                <div className="text-xs text-gray-500">{entry.email}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-gray-700">{entry.username || '-'}</td>
+                          <td className="px-3 py-2 text-gray-700">{entry.profession || '-'}</td>
+                          <td className="px-3 py-2 text-gray-700">{entry.country || '-'}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              disabled={demoBusy || !entry.isActive}
+                              onClick={() => handleToggleDemoAccount(entry.id, !Boolean(entry.automationEnabled))}
+                              className={`px-2.5 py-1 rounded text-xs font-medium ${
+                                entry.automationEnabled
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {entry.automationEnabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                          </td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => handleEditDemoAccount(entry)}
+                              className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                              Edit
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -1004,8 +1222,8 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
             </div>
           )}
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden animate-fade-in">
-            <table className="w-full text-sm text-left">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto animate-fade-in">
+            <table className="min-w-[1120px] w-full text-sm text-left">
               <thead className="bg-gray-50 text-gray-500">
                 <tr>
                   <th className="px-6 py-3 w-12">
@@ -1019,10 +1237,11 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <th className="px-6 py-3">User</th>
                   <th className="px-6 py-3">Role</th>
                   <th className="px-6 py-3">Status</th>
+                  <th className="px-6 py-3">Video Calls</th>
                   <th className="px-6 py-3">Wallet Balance</th>
                   <th className="px-6 py-3">Gcoin Balance</th>
                   <th className="px-6 py-3">Joined</th>
-                  <th className="px-6 py-3 text-right">Actions</th>
+                  <th className="sticky right-0 z-20 bg-gray-50 px-6 py-3 text-right shadow-[-8px_0_16px_-16px_rgba(15,23,42,0.65)]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -1057,25 +1276,28 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
                       </td>
-                      <td className="px-6 py-4 flex items-center">
-                        <img
-                          src={u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name || 'User')}&background=0D8ABC&color=fff`}
-                          className="w-8 h-8 rounded-full mr-3 border border-gray-200 object-cover"
-                          alt={`${u.name}'s avatar`}
-                        />
-                        <div>
-                          <div className="font-medium text-gray-900">{u.name || u.username}</div>
-                          <div className="text-xs text-gray-500">{u.email}</div>
-                        </div>
-                      </td>
                       <td className="px-6 py-4">
-                        <div className="flex flex-col">
-                          <span className="font-bold text-gray-900">
-                            {formatGcoin(gcoinWallet?.balance)}
-                          </span>
-                          <span className="text-xs text-gray-500">
-                            {gcoinWallet?.recipientId || gcoinWallet?.recipient_id || 'No wallet'}
-                          </span>
+                        <div className="flex items-start gap-3">
+                          <img
+                            src={u.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name || 'User')}&background=0D8ABC&color=fff`}
+                            className="w-8 h-8 rounded-full border border-gray-200 object-cover"
+                            alt={`${u.name}'s avatar`}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-medium text-gray-900">{u.name || u.username}</div>
+                            <div className="break-all text-xs text-gray-500">{u.email}</div>
+                            <button
+                              type="button"
+                              onClick={() => handleEditUser(u)}
+                              className="mt-2 inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                              title="Manage this user account"
+                              data-testid={`admin-user-inline-manage-${u.id}`}
+                              aria-label={`Manage ${userLabel}`}
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                              Manage
+                            </button>
+                          </div>
                         </div>
                       </td>
                       <td className="px-6 py-4 capitalize">
@@ -1105,6 +1327,27 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                         </span>
                       </td>
                       <td className="px-6 py-4">
+                        {(() => {
+                          const videoEnabled = u.callCapabilities?.videoCallsEnabled !== false;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleVideoCallCapabilityUpdate(u, !videoEnabled)}
+                              className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition ${
+                                videoEnabled
+                                  ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                  : 'bg-red-50 text-red-700 hover:bg-red-100'
+                              }`}
+                              title={videoEnabled ? 'Deactivate video calls for this user' : 'Activate video calls for this user'}
+                              data-testid={`admin-user-video-calls-${u.id}`}
+                            >
+                              <Video className="h-3.5 w-3.5" />
+                              {videoEnabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-6 py-4">
                         <div className="flex flex-col">
                           <span className="font-bold text-gray-900">
                             {wallet ? formatPrice(wallet.availableBalance, wallet.currency) : '-'}
@@ -1116,10 +1359,20 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                           )}
                         </div>
                       </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-gray-900">
+                            {formatGcoin(gcoinWallet?.balance)}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            {gcoinWallet?.recipientId || gcoinWallet?.recipient_id || 'No wallet'}
+                          </span>
+                        </div>
+                      </td>
                       <td className="px-6 py-4 text-gray-500 text-sm">
                         {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A'}
                       </td>
-                      <td className="px-6 py-4 text-right space-x-1">
+                      <td className="sticky right-0 z-10 space-x-1 whitespace-nowrap bg-white/95 px-6 py-4 text-right shadow-[-8px_0_16px_-16px_rgba(15,23,42,0.65)] backdrop-blur">
                         <button
                           className={
                             isInactive || isSuspended
@@ -1181,11 +1434,15 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                           {isBanned ? <ShieldCheck className="w-4 h-4" /> : <ShieldX className="w-4 h-4" />}
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleEditUser(u)}
-                          className="text-blue-600 hover:bg-blue-50 p-1.5 rounded"
-                          title="Edit User"
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          title="Edit user profile, role, status, photo, and more"
+                          data-testid={`admin-user-edit-${u.id}`}
+                          aria-label={`Edit ${userLabel}`}
                         >
-                          <Edit3 className="w-4 h-4" />
+                          <Edit3 className="w-3.5 h-3.5" />
+                          Edit
                         </button>
                         <button
                           onClick={() => {
@@ -1260,8 +1517,8 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm text-left">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+            <table className="min-w-[980px] w-full text-sm text-left">
               <thead className="bg-gray-50 text-gray-500">
                 <tr>
                   <th className="px-6 py-4">Email</th>
@@ -1269,11 +1526,13 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <th className="px-6 py-4">Source</th>
                   <th className="px-6 py-4">Status</th>
                   <th className="px-6 py-4">Subscribed Date</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
+                  <th className="sticky right-0 z-20 bg-gray-50 px-6 py-4 text-right shadow-[-8px_0_16px_-16px_rgba(15,23,42,0.65)]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredSubscribers.map(s => (
+                {filteredSubscribers.map(s => {
+                  const linkedUser = getUserForSubscriber(s);
+                  return (
                   <tr key={s.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 font-medium">{s.email}</td>
                     <td className="px-6 py-4">{s.name || 'Unknown'}</td>
@@ -1299,7 +1558,25 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                       </span>
                     </td>
                     <td className="px-6 py-4 text-gray-500">{new Date(s.subscribedAt).toLocaleDateString()}</td>
-                    <td className="px-6 py-4 text-right space-x-2">
+                    <td className="sticky right-0 z-10 space-x-2 whitespace-nowrap bg-white/95 px-6 py-4 text-right shadow-[-8px_0_16px_-16px_rgba(15,23,42,0.65)] backdrop-blur">
+                      {linkedUser ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          title="Manage linked user account"
+                          onClick={() => handleEditUser(linkedUser)}
+                          data-testid={`admin-subscriber-manage-user-${s.id}`}
+                          aria-label={`Manage linked user for ${s.email}`}
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                          Manage user
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-medium text-gray-500">
+                          <User className="h-3.5 w-3.5" />
+                          No account
+                        </span>
+                      )}
                       <button
                         className="text-blue-600 hover:text-blue-800 p-1"
                         title="Send Email"
@@ -1316,7 +1593,8 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                       </button>
                     </td>
                   </tr>
-                ))}
+                );
+                })}
                 {filteredSubscribers.length === 0 && (
                   <tr>
                     <td colSpan={6} className="text-center py-12 text-gray-500">
@@ -1457,6 +1735,13 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
             </div>
             <form onSubmit={handleSaveUser}>
               <div className="space-y-4">
+                {isScrolithaAccount(editingUser) ? (
+                  <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs text-indigo-900">
+                    <strong className="font-semibold">Official Scrolitha AI identity.</strong>{' '}
+                    You can update display name, email, profile photo, and the public verified badge.
+                    Username stays reserved as <code className="font-mono">scrolitha</code> for mentions and messaging.
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
                   <button
                     type="button"
@@ -1476,7 +1761,9 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-gray-900">Profile photo</div>
                     <div className="text-xs text-gray-500">
-                      Update the account avatar and profile photo file reference.
+                      {isScrolithaAccount(editingUser)
+                        ? 'Upload Scrolitha’s official photo used across messages, feed, and AI surfaces.'
+                        : 'Update the account avatar and profile photo file reference.'}
                     </div>
                     <button
                       type="button"
@@ -1502,11 +1789,22 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <label className="block text-sm font-medium mb-1">Username</label>
                   <input
                     type="text"
-                    className="w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className={`w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                      isScrolithaAccount(editingUser) ? 'bg-gray-50 text-gray-600' : ''
+                    }`}
                     value={editingUser.username || ''}
                     onChange={e => setEditingUser({ ...editingUser, username: e.target.value })}
                     placeholder="demo.username"
+                    readOnly={isScrolithaAccount(editingUser)}
+                    title={
+                      isScrolithaAccount(editingUser)
+                        ? 'Reserved system username — cannot be changed'
+                        : undefined
+                    }
                   />
+                  {isScrolithaAccount(editingUser) ? (
+                    <p className="text-xs text-gray-500 mt-1">Reserved for @scrolitha / AI assistant routing.</p>
+                  ) : null}
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Email</label>
@@ -1518,6 +1816,8 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                     placeholder="user@example.com"
                   />
                 </div>
+                {!isScrolithaAccount(editingUser) ? (
+                  <>
                 <div>
                   <label className="block text-sm font-medium mb-1">Role</label>
                   <select
@@ -1529,6 +1829,7 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                     <option value="employer">Employer</option>
                     <option value="admin">Admin</option>
                     <option value="guest">Guest</option>
+                    <option value="user">User</option>
                   </select>
                 </div>
                 <div>
@@ -1545,13 +1846,66 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                     <option value="banned">Banned</option>
                   </select>
                 </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 md:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                        <Video className="h-4 w-4 text-slate-600" />
+                        Video calling
+                      </div>
+                      <div className="mt-1 text-xs text-gray-600">
+                        Controls whether this account can start, accept, or publish camera/screen video.
+                      </div>
+                    </div>
+                    {(() => {
+                      const videoEnabled = editingUser.callCapabilities?.videoCallsEnabled !== false;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleVideoCallCapabilityUpdate(editingUser as EditableUser & { id: string }, !videoEnabled)}
+                          className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                            videoEnabled
+                              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                              : 'bg-red-600 text-white hover:bg-red-700'
+                          }`}
+                        >
+                          {videoEnabled ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                          {videoEnabled ? 'Video Enabled' : 'Video Disabled'}
+                        </button>
+                      );
+                    })()}
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs text-gray-600 md:grid-cols-2">
+                    <div>
+                      Last changed:{' '}
+                      {editingUser.callCapabilities?.videoCallsUpdatedAt
+                        ? new Date(editingUser.callCapabilities.videoCallsUpdatedAt).toLocaleString()
+                        : 'Never'}
+                    </div>
+                    <div>
+                      Reason: {editingUser.callCapabilities?.videoCallsAdminReason || 'No reason recorded'}
+                    </div>
+                  </div>
+                </div>
+                  </>
+                ) : null}
                 <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-4 space-y-3">
                   <div>
-                    <label className="block text-sm font-medium text-gray-900 mb-1">Verification Status</label>
+                    <label className="block text-sm font-medium text-gray-900 mb-1">
+                      {isScrolithaAccount(editingUser) ? 'Platform verified badge' : 'Verification Status'}
+                    </label>
                     <select
-                      className="w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      value={String(editingUser.kycStatus || editingUser.kyc_status || (editingUser.isVerified ? 'verified' : 'pending')).toLowerCase()}
-                      onChange={e => {
+                      className={`w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                        isScrolithaAccount(editingUser) ? '' : 'bg-gray-50'
+                      }`}
+                      value={String(
+                        editingUser.kycStatus ||
+                          editingUser.kyc_status ||
+                          (editingUser.isVerified ? 'verified' : 'pending')
+                      ).toLowerCase()}
+                      disabled={!isScrolithaAccount(editingUser)}
+                      onChange={(e) => {
+                        if (!isScrolithaAccount(editingUser)) return;
                         const nextStatus = e.target.value;
                         const nextVerified = nextStatus === 'verified';
                         setEditingUser({
@@ -1562,6 +1916,11 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                           is_verified: nextVerified
                         } as EditableUser);
                       }}
+                      title={
+                        isScrolithaAccount(editingUser)
+                          ? 'Controls the public verified badge for Scrolitha'
+                          : 'KYC decisions use the dedicated KYC workflow'
+                      }
                     >
                       <option value="pending">Pending</option>
                       <option value="under_review">Under review</option>
@@ -1569,7 +1928,35 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                       <option value="rejected">Rejected</option>
                     </select>
                     <p className="text-xs text-gray-500 mt-1">
-                      Standard verification is controlled here. Business and Pro badge variants are still derived from account role and active plans.
+                      {isScrolithaAccount(editingUser)
+                        ? 'Sets Scrolitha’s public verified badge across the platform. Apply Changes to save.'
+                        : (
+                          <>
+                            Profile, role, status, password, photo, video calling, moderation, and wallet are fully editable here.
+                            Final identity KYC approve/reject decisions run through the secure KYC workflow in{' '}
+                            <button
+                              type="button"
+                              className="font-semibold text-blue-700 underline-offset-2 hover:underline"
+                              onClick={() => {
+                                try {
+                                  window.dispatchEvent(
+                                    new CustomEvent('scrolith:admin-navigate', { detail: { tab: 'kyc', userId: editingUser.id } })
+                                  );
+                                } catch {
+                                  // ignore
+                                }
+                                showNotification(
+                                  'info',
+                                  'Open KYC Management',
+                                  'Use Admin → KYC Management to approve or reject this user in real time.'
+                                );
+                              }}
+                            >
+                              Admin → KYC Management
+                            </button>
+                            .
+                          </>
+                        )}
                     </p>
                   </div>
                   <div className="flex items-center justify-between rounded-lg border border-white/80 bg-white px-3 py-2">
@@ -1809,20 +2196,21 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   </div>
                 </div>
               </div>
-              <div className="flex justify-end gap-3 mt-6">
+              <div className="flex justify-end gap-3 mt-6 border-t border-gray-100 pt-4">
                 <button
                   type="button"
                   onClick={() => setIsEditModalOpen(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 font-medium"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold shadow-sm"
+                  data-testid="admin-user-save-changes"
                 >
-                  {isSaving ? 'Saving...' : 'Save Changes'}
+                  {isSaving ? 'Applying…' : 'Apply Changes'}
                 </button>
               </div>
             </form>

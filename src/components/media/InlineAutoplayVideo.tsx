@@ -1,7 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type InlineAutoplayVideoProps = {
   src: string;
+  fallbackSrc?: string | null;
+  fallbackSources?: Array<string | null | undefined>;
   poster?: string | null;
   className?: string;
   containerClassName?: string;
@@ -29,8 +31,39 @@ type InlineAutoplayVideoProps = {
   loadingLabel?: string | false;
 };
 
+const activeAutoplayVideos = new Set<HTMLVideoElement>();
+
+const canUseNavigatorConnection = () =>
+  typeof navigator !== 'undefined' && 'connection' in navigator;
+
+const prefersReducedMediaData = () => {
+  if (!canUseNavigatorConnection()) return false;
+  const connection = (navigator as any).connection;
+  return Boolean(
+    connection?.saveData ||
+      ['slow-2g', '2g'].includes(String(connection?.effectiveType || '').toLowerCase())
+  );
+};
+
+const markAutoplayVideoActive = (current: HTMLVideoElement) => {
+  activeAutoplayVideos.delete(current);
+  activeAutoplayVideos.add(current);
+};
+
+const releaseVideoBuffer = (node: HTMLVideoElement) => {
+  try {
+    node.pause();
+    node.removeAttribute('src');
+    node.load();
+  } catch {
+    // Best-effort cleanup so offscreen feed/story videos do not keep buffers alive.
+  }
+};
+
 const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
   src,
+  fallbackSrc,
+  fallbackSources,
   poster,
   className = '',
   containerClassName = '',
@@ -45,7 +78,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
   showMuteToggle = true,
   threshold = 0.35,
   rootMargin = '0px 0px -10% 0px',
-  preloadRootMargin = '160px 0px 160px 0px',
+  preloadRootMargin = '320px 0px 480px 0px',
   eagerLoad = false,
   onDoubleTapLike,
   onEnded,
@@ -64,18 +97,39 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
   const [shouldLoadSource, setShouldLoadSource] = useState(() => eagerLoad || !autoplayEnabled || controls);
   const [isLoadingVideo, setIsLoadingVideo] = useState(() => Boolean(src));
   const [hasPlaybackError, setHasPlaybackError] = useState(false);
+  const [activeSourceIndex, setActiveSourceIndex] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
   const userPausedRef = useRef(false);
   const lastTapAtRef = useRef(0);
+  const stalledRecoveryRef = useRef(0);
+  const stallRecoveryTimerRef = useRef<number | null>(null);
+  const offscreenReleaseTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
   const autoplayEnabledRef = useRef(autoplayEnabled);
   const isInViewRef = useRef(isInView);
   const internalPauseUntilRef = useRef(0);
   const isMuted = muted ?? internalMuted;
+  const fallbackSourcesKey = useMemo(
+    () => (fallbackSources || []).map((value) => String(value || '').trim()).filter(Boolean).join('\n'),
+    [fallbackSources]
+  );
+  const sourceCandidates = useMemo(() => {
+    const seen = new Set<string>();
+    return [src, fallbackSrc, ...fallbackSourcesKey.split('\n')]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .filter((value) => {
+        if (seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
+  }, [fallbackSrc, fallbackSourcesKey, src]);
+  const sourceCandidatesKey = useMemo(() => sourceCandidates.join('\n'), [sourceCandidates]);
+  const activeSrc = sourceCandidates[activeSourceIndex] || sourceCandidates[0] || '';
   // Cache-bust only http(s) URLs after an explicit retry. Never rewrite blob:/data: previews
   // (composer local ObjectURLs break if we append ?_r=…).
   const effectiveSrc = (() => {
-    const raw = String(src || '').trim();
+    const raw = String(activeSrc || '').trim();
     if (!raw) return '';
     if (reloadToken <= 0) return raw;
     if (/^(blob:|data:)/i.test(raw)) return raw;
@@ -89,7 +143,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
 
   const resumePlaybackFromInteraction = useCallback(() => {
     const node = videoRef.current;
-    if (!node || !src || !active) return;
+    if (!node || !activeSrc || !active) return;
 
     userPausedRef.current = false;
     internalPauseUntilRef.current = 0;
@@ -97,6 +151,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     node.playsInline = true;
 
     const playNow = () => {
+      markAutoplayVideoActive(node);
       const playAttempt = node.play();
       if (playAttempt && typeof playAttempt.catch === 'function') {
         playAttempt.catch(() => undefined);
@@ -132,7 +187,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     try {
       node.load();
     } catch {}
-  }, [active, isMuted, shouldLoadSource, src]);
+  }, [active, activeSrc, isMuted, shouldLoadSource]);
 
   useEffect(() => {
     activeRef.current = active;
@@ -144,13 +199,24 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     userPausedRef.current = false;
     internalPauseUntilRef.current = 0;
     setHasPlaybackError(false);
-    setIsLoadingVideo(Boolean(src));
+    setActiveSourceIndex(0);
+    setIsLoadingVideo(Boolean(sourceCandidates[0] || src));
     if (eagerLoad) setShouldLoadSource(Boolean(src));
-  }, [eagerLoad, src, reloadToken]);
+  }, [eagerLoad, sourceCandidatesKey, src]);
 
   useEffect(() => {
     if (eagerLoad && src) setShouldLoadSource(true);
   }, [eagerLoad, src]);
+
+  useEffect(() => {
+    const node = videoRef.current;
+    if (!node || !shouldLoadSource || !activeSrc || hasPlaybackError) return;
+    try {
+      node.load();
+    } catch {
+      // Browser-managed media loading can throw if the element detaches mid-route.
+    }
+  }, [activeSrc, hasPlaybackError, shouldLoadSource]);
 
   useEffect(() => {
     const node = videoRef.current;
@@ -171,7 +237,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
       },
       {
         threshold: 0.01,
-        rootMargin: preloadRootMargin
+        rootMargin: prefersReducedMediaData() ? '60px 0px 60px 0px' : preloadRootMargin
       }
     );
 
@@ -201,6 +267,11 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     const node = videoRef.current;
     if (!node) return;
 
+    if (offscreenReleaseTimerRef.current) {
+      window.clearTimeout(offscreenReleaseTimerRef.current);
+      offscreenReleaseTimerRef.current = null;
+    }
+
     node.muted = isMuted;
     node.playsInline = true;
     node.loop = loop;
@@ -208,11 +279,13 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     const pauseProgrammatically = () => {
       internalPauseUntilRef.current = Date.now() + 300;
       if (!node.paused) node.pause();
+      activeAutoplayVideos.delete(node);
     };
 
     const playIfAllowed = () => {
       if (!autoplayEnabled || !active || !isInView || document.hidden || userPausedRef.current) return;
       node.muted = isMuted;
+      markAutoplayVideoActive(node);
       const playAttempt = node.play();
       if (playAttempt && typeof playAttempt.catch === 'function') {
         playAttempt.catch(() => undefined);
@@ -221,6 +294,13 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
 
     if (!autoplayEnabled || !active || !isInView || document.hidden) {
       pauseProgrammatically();
+      if (!active || document.hidden) return;
+      offscreenReleaseTimerRef.current = window.setTimeout(() => {
+        const current = videoRef.current;
+        if (!current || isInViewRef.current || userPausedRef.current) return;
+        releaseVideoBuffer(current);
+        setShouldLoadSource(false);
+      }, 45000);
       return;
     }
 
@@ -234,7 +314,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
       node.removeEventListener('loadedmetadata', playIfAllowed);
       node.removeEventListener('canplay', playIfAllowed);
     };
-  }, [active, autoplayEnabled, isInView, isMuted, loop, src, reloadToken, hasPlaybackError]);
+  }, [active, activeSrc, autoplayEnabled, isInView, isMuted, loop, reloadToken, hasPlaybackError]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -244,11 +324,13 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
       if (document.hidden) {
         internalPauseUntilRef.current = Date.now() + 300;
         if (!node.paused) node.pause();
+        activeAutoplayVideos.delete(node);
         return;
       }
 
       if (!autoplayEnabled || !active || !isInView || userPausedRef.current) return;
       node.muted = isMuted;
+      markAutoplayVideoActive(node);
       const playAttempt = node.play();
       if (playAttempt && typeof playAttempt.catch === 'function') {
         playAttempt.catch(() => undefined);
@@ -264,35 +346,80 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     if (!node) return;
 
     const syncLoadingState = () => {
-      const hasSource = Boolean(node.currentSrc || node.getAttribute('src') || src);
+      const hasSource = Boolean(node.currentSrc || node.getAttribute('src') || activeSrc);
       const ready = hasSource && node.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
       setIsLoadingVideo(Boolean(hasSource && !ready && !node.ended));
     };
 
     const handleLoadStart = () => {
-      setIsLoadingVideo(Boolean(src));
+      setIsLoadingVideo(Boolean(activeSrc));
       onLoadStart?.();
     };
     const handleWaiting = () => {
       if (!node.ended) setIsLoadingVideo(true);
     };
+    const recoverFromStallOnce = () => {
+      if (!activeRef.current || document.hidden || !isInViewRef.current || userPausedRef.current) return;
+      if (node.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      if (stalledRecoveryRef.current >= 3) return;
+      stalledRecoveryRef.current += 1;
+      setIsLoadingVideo(true);
+      if (stallRecoveryTimerRef.current) window.clearTimeout(stallRecoveryTimerRef.current);
+      stallRecoveryTimerRef.current = window.setTimeout(() => {
+        stallRecoveryTimerRef.current = null;
+        const current = videoRef.current;
+        if (!current || current.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        try {
+          current.load();
+        } catch {}
+        if (autoplayEnabledRef.current && activeRef.current && !document.hidden) {
+          markAutoplayVideoActive(current);
+          const playAttempt = current.play();
+          if (playAttempt && typeof playAttempt.catch === 'function') {
+            playAttempt.catch(() => undefined);
+          }
+        }
+      }, Math.min(1000, 250 * 2 ** (stalledRecoveryRef.current - 1)));
+    };
     const handleLoadedData = () => {
+      stalledRecoveryRef.current = 0;
       setIsLoadingVideo(false);
       onLoadedData?.();
     };
     const handleCanPlay = () => {
+      stalledRecoveryRef.current = 0;
       setIsLoadingVideo(false);
       onCanPlay?.();
     };
     const handlePlaying = () => {
+      stalledRecoveryRef.current = 0;
       setIsLoadingVideo(false);
       onPlaying?.();
     };
     const handleSeeked = () => setIsLoadingVideo(false);
     const handleEnded = () => setIsLoadingVideo(false);
-    const handleEmptied = () => setIsLoadingVideo(Boolean(src));
+    const handleEmptied = () => setIsLoadingVideo(Boolean(activeSrc));
     const handleError = () => {
       setIsLoadingVideo(false);
+      if (activeSourceIndex + 1 < sourceCandidates.length) {
+        setActiveSourceIndex((index) => index + 1);
+        setHasPlaybackError(false);
+        setIsLoadingVideo(true);
+        window.setTimeout(() => {
+          const current = videoRef.current;
+          if (!current) return;
+          try {
+            current.load();
+          } catch {}
+          if (autoplayEnabledRef.current && activeRef.current && !document.hidden) {
+            const playAttempt = current.play();
+            if (playAttempt && typeof playAttempt.catch === 'function') {
+              playAttempt.catch(() => undefined);
+            }
+          }
+        }, 40);
+        return;
+      }
       setHasPlaybackError(true);
       onError?.();
     };
@@ -301,6 +428,8 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
 
     node.addEventListener('loadstart', handleLoadStart);
     node.addEventListener('waiting', handleWaiting);
+    node.addEventListener('stalled', recoverFromStallOnce);
+    node.addEventListener('suspend', recoverFromStallOnce);
     node.addEventListener('loadeddata', handleLoadedData);
     node.addEventListener('canplay', handleCanPlay);
     node.addEventListener('playing', handlePlaying);
@@ -312,6 +441,8 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     return () => {
       node.removeEventListener('loadstart', handleLoadStart);
       node.removeEventListener('waiting', handleWaiting);
+      node.removeEventListener('stalled', recoverFromStallOnce);
+      node.removeEventListener('suspend', recoverFromStallOnce);
       node.removeEventListener('loadeddata', handleLoadedData);
       node.removeEventListener('canplay', handleCanPlay);
       node.removeEventListener('playing', handlePlaying);
@@ -320,10 +451,20 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
       node.removeEventListener('emptied', handleEmptied);
       node.removeEventListener('error', handleError);
     };
-  }, [onCanPlay, onError, onLoadStart, onLoadedData, onPlaying, src, shouldLoadSource]);
+  }, [
+    activeSourceIndex,
+    activeSrc,
+    onCanPlay,
+    onError,
+    onLoadStart,
+    onLoadedData,
+    onPlaying,
+    shouldLoadSource,
+    sourceCandidates.length
+  ]);
 
   const effectivePreload: 'none' | 'metadata' | 'auto' =
-    shouldLoadSource && active && isInView ? preload : shouldLoadSource ? 'metadata' : 'none';
+    shouldLoadSource && active && isInView ? (autoplayEnabled ? 'auto' : preload) : shouldLoadSource ? 'metadata' : 'none';
 
   useEffect(() => {
     const node = videoRef.current;
@@ -354,6 +495,7 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
 
     const onPlay = () => {
       userPausedRef.current = false;
+      markAutoplayVideoActive(node);
     };
 
     node.addEventListener('volumechange', onVolumeChange);
@@ -371,13 +513,10 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
     return () => {
       const node = videoRef.current;
       if (!node) return;
-      try {
-        node.pause();
-        node.removeAttribute('src');
-        node.load();
-      } catch {
-        // Best-effort cleanup so offscreen story/feed videos do not keep buffers alive.
-      }
+      activeAutoplayVideos.delete(node);
+      if (offscreenReleaseTimerRef.current) window.clearTimeout(offscreenReleaseTimerRef.current);
+      if (stallRecoveryTimerRef.current) window.clearTimeout(stallRecoveryTimerRef.current);
+      releaseVideoBuffer(node);
     };
   }, []);
 
@@ -388,12 +527,14 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
       event?.preventDefault?.();
       event?.stopPropagation?.();
       setHasPlaybackError(false);
-      setIsLoadingVideo(Boolean(src));
+      setActiveSourceIndex(0);
+      stalledRecoveryRef.current = 0;
+      setIsLoadingVideo(Boolean(sourceCandidates[0] || src));
       setShouldLoadSource(true);
       setReloadToken((token) => token + 1);
       window.setTimeout(() => resumePlaybackFromInteraction(), 40);
     },
-    [resumePlaybackFromInteraction, src]
+    [resumePlaybackFromInteraction, sourceCandidates, src]
   );
 
   // Never use the server-generated SVG placeholder as a real poster — it freezes the UI on "Video Preview".
@@ -416,6 +557,10 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
         muted={isMuted}
         loop={loop}
         preload={effectivePreload}
+        disablePictureInPicture
+        disableRemotePlayback
+        // @ts-expect-error webkit-playsinline keeps older Android WebViews in inline mode.
+        webkit-playsinline="true"
         onContextMenu={(event) => event.preventDefault()}
         onDoubleClick={(event) => {
           if (!onDoubleTapLike) return;

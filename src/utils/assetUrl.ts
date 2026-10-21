@@ -203,9 +203,23 @@ export const resolveAssetUrl = (value?: string | null) => {
       // Never rewrite signed URLs (signature is bound to host + path + query).
       if (isSignedOrTokenizedUrl(url)) return trimmed;
 
-      // Never rewrite already-valid API/backend file-content (or upload) URLs.
-      // Example: https://api.scrolith.com/api/files/content/<id>
-      if (isCanonicalApiAssetHost(hostname)) return trimmed;
+      // A direct release-candidate frontend may be built against an isolated
+      // backend origin. Rewrite canonical API media links only in that case;
+      // production remains unchanged because its backend origin is api.scrolith.com.
+      if (isCanonicalApiAssetHost(hostname)) {
+        const candidateOrigin = backendOrigin || '';
+        if (candidateOrigin) {
+          try {
+            const candidateHost = new URL(candidateOrigin).hostname.toLowerCase();
+            if (candidateHost && candidateHost !== hostname) {
+              return `${candidateOrigin}${url.pathname}${url.search}${url.hash}`;
+            }
+          } catch {
+            // Keep the original canonical URL when the configured origin is invalid.
+          }
+        }
+        return trimmed;
+      }
 
       // Only rewrite SPA hosts that would otherwise return HTML for /api or /uploads.
       if (!isSpaAssetHost(hostname)) return trimmed;
@@ -288,6 +302,29 @@ export const resolveResponsiveAssetUrl = (
 export const resolveOptimizedStaticImageUrl = (value?: string | null) => {
   const resolved = resolveAssetUrl(value);
   if (!resolved) return resolved ?? '';
+
+  // Keep the built-in relative logo fallback on the small immutable asset too.
+  // Auth pages commonly receive `/logo.png` from their default config before
+  // the asynchronous branding payload is available.
+  if (resolved === '/logo.png' || resolved === '/logo-64.png') {
+    return '/logo-64.png';
+  }
+
+  // Keep legacy CMS brand settings on the small immutable logo asset. This is
+  // intentionally limited to the platform logo path; uploaded media and
+  // external assets must retain their original URLs.
+  try {
+    const url = new URL(resolved);
+    const host = url.hostname.toLowerCase();
+    if (
+      (host === 'scrolith.com' || host === 'www.scrolith.com') &&
+      (url.pathname === '/logo.png' || url.pathname === '/logo-64.png')
+    ) {
+      return '/logo-64.png';
+    }
+  } catch {
+    // Keep non-URL values unchanged.
+  }
 
   return resolved;
 };

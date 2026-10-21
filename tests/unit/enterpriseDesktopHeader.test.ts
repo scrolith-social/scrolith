@@ -115,7 +115,7 @@ test('messages control preserves HeaderMessagesPopover + dock integration path',
   assert.match(navbar, /useMessages/);
   assert.match(navbar, /messagesPopoverId/);
   assert.match(navbar, /aria-controls=\{/);
-  assert.match(navbar, /to="\/messages"/);
+  assert.match(navbar, /isPathActive\("\/messages"\)/);
 });
 
 // ── Notifications ──────────────────────────────────────────────────────────
@@ -127,12 +127,21 @@ test('notifications control keeps popup + mark-read wiring', () => {
   assert.match(navbar, /actionType === "notifications"/);
 });
 
+test('compact header popovers use viewport-safe positioning and measured trigger offsets', () => {
+  assert.match(navbar, /syncCompactNotificationPosition/);
+  assert.match(navbar, /data-testid="header-notifications-popover"/);
+  assert.match(headerCss, /\.scrolith-header-popover--compact/);
+  assert.match(headerCss, /position: fixed !important/);
+  assert.match(headerCss, /left: max\(0\.75rem, env\(safe-area-inset-left/);
+  assert.match(headerCss, /right: max\(0\.75rem, env\(safe-area-inset-right/);
+});
+
 // ── Create ─────────────────────────────────────────────────────────────────
 
 test('create menu only exposes existing platform routes with role filters', () => {
   assert.match(navbar, /renderCreateControl/);
   assert.match(navbar, /showCreateMenu/);
-  assert.match(navbar, /url: "\/member-home"/);
+  assert.match(navbar, /url: "\/post\/create"/);
   assert.match(navbar, /url: "\/create-job"/);
   assert.match(navbar, /url: "\/create-gig"/);
   assert.match(navbar, /url: "\/marketplace\/create"/);
@@ -350,6 +359,6 @@ test('long CMS/i18n labels truncate inside fixed-width nav items', () => {
 
 test('compact desktop narrows fixed nav width before hiding CMS items', () => {
   assert.match(headerCss, /@media \(min-width: 1024px\) and \(max-width: 1279px\)/);
-  assert.match(headerCss, /--scrolith-header-nav-item-w:\s*3\.85rem/);
+  assert.match(headerCss, /--scrolith-header-nav-item-w:\s*4\.75rem/);
   assert.match(headerCss, /max-width: min\(200px, 20vw\)/);
 });

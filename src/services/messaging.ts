@@ -301,11 +301,14 @@ const normalizeConversation = (raw: any): Conversation => {
   } as Conversation;
 };
 
-const normalizeList = (raw: any): Conversation[] => {
+const normalizeList = (raw: any, selfUserId?: string): Conversation[] => {
   const list = Array.isArray(raw)
     ? raw
     : safeArray<any>(raw?.conversations ?? raw?.items ?? raw?.data ?? []);
-  return mergeDirectConversations(list.map(normalizeConversation));
+  return mergeDirectConversations(
+    list.map(normalizeConversation),
+    selfUserId || safeString((raw as any)?.viewerUserId || (raw as any)?.userId)
+  );
 };
 
 export type MessageSearchMatchType = 'user' | 'username' | 'message';
@@ -371,13 +374,46 @@ export const MessagingService = {
     const data = extractData<any>(response) || {};
     return {
       enabledVoiceCalls: Boolean(data.enabledVoiceCalls ?? true),
+      iceServers: Array.isArray(data.iceServers) ? data.iceServers : undefined,
+      iceTransportPolicy: data.iceTransportPolicy === 'relay' ? 'relay' : 'all',
+      hasTurn: Boolean(data.hasTurn),
       enabledConferenceCalls: Boolean(data.enabledConferenceCalls ?? true),
       enabledVoiceNotes: Boolean(data.enabledVoiceNotes ?? true),
       maxParticipants: Number(data.maxParticipants ?? 20),
       maxVoiceNoteDurationSeconds: Number(data.maxVoiceNoteDurationSeconds ?? 180),
       blockedUserIds: [],
-      blockedForCurrentUser: Boolean(data.blockedForCurrentUser ?? false)
+      blockedForCurrentUser: Boolean(data.blockedForCurrentUser ?? false),
+      platformVideoCallsEnabled: Boolean(data.platformVideoCallsEnabled ?? data.enabledVideoCalls ?? true),
+      enabledVideoCalls: Boolean(data.enabledVideoCalls ?? true),
+      enabledScreenSharing: Boolean(data.enabledScreenSharing ?? true),
+      maxVideoParticipants: Number(data.maxVideoParticipants ?? 6),
+      defaultVideoQuality: (data.defaultVideoQuality as any) || 'medium',
+      maxResolution: String(data.maxResolution || '1280x720'),
+      maxFrameRate: Number(data.maxFrameRate ?? 30),
+      cameraRecordingPolicy: String(data.cameraRecordingPolicy || 'disabled'),
+      maxBitrateKbps: Number(data.maxBitrateKbps ?? 0),
+      allowVirtualBackground: Boolean(data.allowVirtualBackground ?? false),
+      mediaTopology: data.mediaTopology || 'mesh',
+      sfuReady: Boolean(data.sfuReady ?? false)
     };
+  },
+
+  getConversationCallPolicy: async (conversationId: string) => {
+    const response = await api.get(
+      `/messages/conversations/${encodeURIComponent(conversationId)}/call-policy`
+    );
+    return extractData<any>(response);
+  },
+
+  patchConversationCallPolicy: async (
+    conversationId: string,
+    callPolicy: Record<string, any>
+  ) => {
+    const response = await api.patch(
+      `/messages/conversations/${encodeURIComponent(conversationId)}/call-policy`,
+      { callPolicy }
+    );
+    return extractData<any>(response);
   },
 
   getAllConversations: async (
@@ -418,7 +454,9 @@ export const MessagingService = {
       })
       .then(response => {
         const data = extractData<any>(response);
-        const normalized = normalizeList(data);
+        // Always merge with the authenticated viewer id so peer-relative / Scrolitha
+        // keys do not collapse other users' threads (admin list) into the viewer's.
+        const normalized = normalizeList(data, userId);
         if (!updatedSince) {
           conversationCache.set(`${userId}:${role}`, { timestamp: Date.now(), data: normalized });
         }
@@ -561,6 +599,8 @@ export const MessagingService = {
     const maxAttempts = isScrolitha && !clientMessageId ? 0 : WRITE_RETRY_ATTEMPTS;
     for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
       try {
+        // senderId is informational for idempotency keys only — server always
+        // attributes the message to the authenticated session user.
         const response = await api.post(
           `/messages/conversations/${conversationId}/messages`,
           {
@@ -607,18 +647,33 @@ export const MessagingService = {
 
   sendVoiceNote: async (
     conversationId: string,
-    payload: { fileId: string; durationMs: number; text?: string }
+    payload: { fileId: string; durationMs: number; text?: string; clientMessageId?: string }
   ): Promise<Message> => {
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       throw createOfflineRecoveryError('Voice note is paused while you are offline. Retry when your connection returns.');
     }
-    const request = beginManagedIdempotentRequest(`voice-note:${conversationId}:${payload.fileId}`);
+    const clientMessageId = String(payload.clientMessageId || '').trim();
+    const request = beginManagedIdempotentRequest(
+      `voice-note:${conversationId}:${clientMessageId || payload.fileId}`
+    );
     let lastError: any = null;
     for (let attempt = 0; attempt <= WRITE_RETRY_ATTEMPTS; attempt += 1) {
       try {
-        const response = await api.post(`/messages/conversations/${conversationId}/voice-notes`, payload, {
-          headers: request.headers
-        });
+        const response = await api.post(
+          `/messages/conversations/${conversationId}/voice-notes`,
+          {
+            ...payload,
+            ...(clientMessageId
+              ? { clientMessageId, client_message_id: clientMessageId, clientSendId: clientMessageId }
+              : {})
+          },
+          {
+            headers: {
+              ...request.headers,
+              ...(clientMessageId ? { 'X-Client-Message-Id': clientMessageId } : {})
+            }
+          }
+        );
         request.complete();
         return normalizeMessage(extractData<any>(response));
       } catch (error) {
@@ -717,9 +772,30 @@ export const MessagingService = {
 
   updateConversationPreferences: async (
     conversationId: string,
-    updates: { label?: 'other' | 'jobs'; isStarred?: boolean; isMuted?: boolean; isArchived?: boolean }
+    updates: {
+      label?: 'other' | 'jobs';
+      isStarred?: boolean;
+      isMuted?: boolean;
+      isArchived?: boolean;
+      chatAppearance?: Record<string, unknown>;
+    }
   ): Promise<any> => {
     const response = await api.patch(`/messages/conversations/${conversationId}/preferences`, updates);
+    return extractData<any>(response);
+  },
+
+  getChatAppearance: async (conversationId: string) => {
+    const response = await api.get(`/messages/conversations/${conversationId}/appearance`);
+    return extractData<any>(response);
+  },
+
+  saveChatAppearance: async (conversationId: string, appearance: Record<string, unknown>) => {
+    const response = await api.put(`/messages/conversations/${conversationId}/appearance`, appearance);
+    return extractData<any>(response);
+  },
+
+  resetChatAppearance: async (conversationId: string) => {
+    const response = await api.delete(`/messages/conversations/${conversationId}/appearance`);
     return extractData<any>(response);
   },
 

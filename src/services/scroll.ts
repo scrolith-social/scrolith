@@ -41,6 +41,10 @@ export interface ScrollVideo {
     avatar?: string | null;
     username?: string | null;
     isVerified?: boolean;
+    availability?: any;
+    hiring?: any;
+    availableForHire?: boolean;
+    weAreHiring?: boolean;
     email?: string | null;
     role?: string | null;
   };
@@ -72,6 +76,10 @@ export interface ScrollVideo {
       avatar?: string | null;
       username?: string | null;
       isVerified?: boolean;
+      availability?: any;
+      hiring?: any;
+      availableForHire?: boolean;
+      weAreHiring?: boolean;
     };
     title?: string | null;
     description?: string | null;
@@ -209,6 +217,10 @@ export interface ScrollComment {
   userName?: string;
   userUsername?: string | null;
   userAvatar?: string | null;
+  availability?: any;
+  hiring?: any;
+  availableForHire?: boolean;
+  weAreHiring?: boolean;
   content?: string;
   status?: 'active' | 'deleted' | string;
   deletedAt?: string | null;
@@ -254,6 +266,23 @@ class ScrollService {
     if (typeof params?.limit !== 'undefined') query.set('limit', String(params.limit));
     const response = await api.get(`/scroll/feed${query.toString() ? `?${query.toString()}` : ''}`);
     return extractData<{ items: ScrollVideo[]; nextCursor?: string | null; config?: ScrollConfig }>(response);
+  }
+
+  /** Search only server-authorized, playable Scroll videos. */
+  static async search(params: {
+    query: string;
+    cursor?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }) {
+    const query = new URLSearchParams();
+    query.set('q', String(params.query || '').trim());
+    if (params.cursor) query.set('cursor', String(params.cursor));
+    if (typeof params.limit !== 'undefined') query.set('limit', String(params.limit));
+    const response = await api.get(`/scroll/search?${query.toString()}`, {
+      signal: params.signal
+    });
+    return extractData<{ items: ScrollVideo[]; nextCursor?: string | null }>(response);
   }
 
   /** Owner inventory of active Scroll videos. */

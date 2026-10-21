@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { encodeJobAttachment, isSameJobAttachment, parseJobAttachment } from '../../src/utils/jobAttachments';
+import type { UploadedFile } from '../../src/types';
+
+const baseFile = {
+  id: 'file-123',
+  user_id: 'user-1',
+  name: 'brief.mp4',
+  type: 'video',
+  size: 1024,
+  url: 'https://cdn.scrolith.com/uploads/brief.mp4',
+  category: 'portfolio',
+  created_at: '2026-08-02T00:00:00.000Z'
+} as UploadedFile;
+
+test('encodes uploaded files without using the filename as a caption', () => {
+  const encoded = encodeJobAttachment(baseFile);
+  const parsed = parseJobAttachment(encoded);
+
+  assert.equal(parsed.fileId, 'file-123');
+  assert.equal(parsed.name, 'brief.mp4');
+  assert.equal(parsed.kind, 'video');
+  assert.equal(parsed.url, baseFile.url);
+  assert.equal(encoded.includes('"caption"'), false);
+});
+
+test('infers PDF and image previews from legacy attachment URLs', () => {
+  assert.equal(parseJobAttachment('https://cdn.scrolith.com/spec.pdf').kind, 'pdf');
+  assert.equal(parseJobAttachment('https://cdn.scrolith.com/reference.JPG?token=redacted').kind, 'image');
+});
+
+test('parses URI-encoded serialized attachments for image previews and open links', () => {
+  const payload = {
+    fileId: 'd6a2b183-fc0e-4a99-8c26-1a551070fdfa',
+    url: 'https://api.scrolith.com/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa',
+    name: 'reference.png',
+    type: 'image',
+    mimeType: 'image/png'
+  };
+  const encoded = `scrolith-job-attachment:${encodeURIComponent(JSON.stringify(payload))}`;
+  const fullyEncoded = encodeURIComponent(encoded);
+
+  for (const value of [encoded, fullyEncoded]) {
+    const parsed = parseJobAttachment(value);
+    assert.equal(parsed.fileId, payload.fileId);
+    assert.equal(parsed.url, payload.url);
+    assert.equal(parsed.kind, 'image');
+    assert.equal(parsed.name, payload.name);
+  }
+});
+
+test('parses serialized attachments wrapped in an API URL', () => {
+  const payload = {
+    fileId: 'd6a2b183-fc0e-4a99-8c26-1a551070fdfa',
+    url: 'https://api.scrolith.com/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa',
+    name: 'reference.png',
+    type: 'image',
+    mimeType: 'image/png'
+  };
+  const wrapped = `https://api.scrolith.com/${'scrolith-job-attachment:'}${encodeURIComponent(JSON.stringify(payload))}`;
+
+  const parsed = parseJobAttachment(wrapped);
+  const fullyEncodedParsed = parseJobAttachment(encodeURIComponent(wrapped));
+
+  assert.equal(parsed.fileId, payload.fileId);
+  assert.equal(parsed.url, payload.url);
+  assert.equal(parsed.kind, 'image');
+  assert.equal(parsed.name, payload.name);
+  assert.equal(fullyEncodedParsed.fileId, payload.fileId);
+  assert.equal(fullyEncodedParsed.kind, 'image');
+});
+
+test('does not expose malformed serialized metadata as a file URL', () => {
+  const parsed = parseJobAttachment('https://api.scrolith.com/scrolith-job-attachment:%7B%22name%22:%22broken.png%22');
+
+  assert.equal(parsed.url, '');
+  assert.equal(parsed.name, 'Attachment');
+});
+
+test('deduplicates by file identity when metadata is present', () => {
+  const first = encodeJobAttachment(baseFile);
+  const second = encodeJobAttachment({ ...baseFile, name: 'renamed.mp4' });
+
+  assert.equal(isSameJobAttachment(first, second), true);
+});
