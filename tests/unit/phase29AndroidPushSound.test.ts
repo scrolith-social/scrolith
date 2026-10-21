@@ -20,33 +20,62 @@ import {
   resolveAndroidChannelId,
   resolveNotificationCategory
 } from '../../src/utils/notificationTaxonomy.ts';
+import {
+  resolveTestDependencyFile,
+  resolveTestDependencyRoot
+} from './testDependencyRoots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pushSrc = readFileSync(join(here, '../../src/mobile/push.ts'), 'utf8');
+const mobileRoot = resolveTestDependencyRoot('SCROLITH_TEST_MOBILE_ROOT', 'mobile sources');
+const backendRoot = resolveTestDependencyRoot('SCROLITH_TEST_BACKEND_ROOT', 'backend sources');
 const manifest = readFileSync(
-  join(here, '../../../mobile/android/app/src/main/AndroidManifest.xml'),
+  resolveTestDependencyFile(
+    mobileRoot,
+    'android/app/src/main/AndroidManifest.xml',
+    'Android manifest'
+  ),
   'utf8'
 );
-const gradle = readFileSync(join(here, '../../../mobile/android/app/build.gradle'), 'utf8');
-const capacitor = readFileSync(join(here, '../../../mobile/capacitor.config.ts'), 'utf8');
-const packageJson = JSON.parse(
-  readFileSync(join(here, '../../../mobile/package.json'), 'utf8')
+const gradle = readFileSync(
+  resolveTestDependencyFile(mobileRoot, 'android/app/build.gradle', 'Android app Gradle file'),
+  'utf8'
 );
-const rawSoundPath = join(here, '../../../mobile/android/app/src/main/res/raw/scrolith.wav');
-const smallIconPath = join(
-  here,
-  '../../../mobile/android/app/src/main/res/drawable/ic_stat_scrolith.xml'
+const capacitor = readFileSync(
+  resolveTestDependencyFile(mobileRoot, 'capacitor.config.ts', 'Capacitor config'),
+  'utf8'
+);
+const packageJson = JSON.parse(
+  readFileSync(resolveTestDependencyFile(mobileRoot, 'package.json', 'mobile package manifest'), 'utf8')
+);
+const rawSoundPath = resolveTestDependencyFile(
+  mobileRoot,
+  'android/app/src/main/res/raw/scrolith.wav',
+  'Android notification sound'
+);
+const smallIconPath = resolveTestDependencyFile(
+  mobileRoot,
+  'android/app/src/main/res/drawable/ic_stat_scrolith.xml',
+  'Android notification icon'
 );
 const networkSecurity = readFileSync(
-  join(here, '../../../mobile/android/app/src/main/res/xml/network_security_config.xml'),
+  resolveTestDependencyFile(
+    mobileRoot,
+    'android/app/src/main/res/xml/network_security_config.xml',
+    'Android network security config'
+  ),
   'utf8'
 );
 const beChannels = readFileSync(
-  join(here, '../../../geezle-backend/src/services/notificationAndroidChannels.ts'),
+  resolveTestDependencyFile(
+    backendRoot,
+    'src/services/notificationAndroidChannels.ts',
+    'Android notification channel service'
+  ),
   'utf8'
 );
 const bePush = readFileSync(
-  join(here, '../../../geezle-backend/src/services/pushNotifications.ts'),
+  resolveTestDependencyFile(backendRoot, 'src/services/pushNotifications.ts', 'push notification service'),
   'utf8'
 );
 
