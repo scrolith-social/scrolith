@@ -3,7 +3,7 @@
  * Classification uses authoritative conversation metadata only — no name/text guessing.
  */
 import type { Conversation, Message } from '../types';
-import { getConversationMergeKey } from './messagingMerge';
+import { getConversationMergeKey, mergeDirectConversations } from './messagingMerge';
 import {
   formatConversationPreview,
   getConversationPreviewText,
@@ -32,6 +32,14 @@ export const isMessagingDockExcludedPath = (pathname: string | null | undefined)
   // Phase 26B — onboarding must not be blocked by floating messaging launcher.
   if (path === '/auth/follow-onboarding') return true;
   if (path.startsWith('/auth/follow-onboarding/')) return true;
+  // Creation surfaces need the full viewport for upload/composer controls.
+  // Unmount the floating dock so it cannot overlap a composer action or picker.
+  if (
+    path === '/post/create' ||
+    path === '/create-job' ||
+    path === '/create-gig' ||
+    path === '/marketplace/create'
+  ) return true;
   return false;
 };
 
@@ -484,6 +492,26 @@ export const filterConversationsForTab = (
   return filtered.slice(0, max);
 };
 
+/**
+ * Shared conversation source for the header popover and floating dock.
+ * Keep this aligned with the full /messages workspace so legacy direct rows
+ * cannot render the same participant pair twice in compact surfaces.
+ */
+export const getMessagingSurfaceConversations = (
+  conversations: Conversation[],
+  currentUserId: string | null | undefined,
+  tab: MessagingInboxTab,
+  limit = MESSAGING_PREVIEW_LIMIT
+): Conversation[] =>
+  filterConversationsForTab(
+    mergeDirectConversations(
+      Array.isArray(conversations) ? conversations : [],
+      currentUserId || undefined
+    ),
+    tab,
+    limit
+  );
+
 export const localSearchConversations = (
   conversations: Conversation[],
   query: string,
@@ -550,6 +578,22 @@ export const getConversationAvatarParticipant = (
     participants[0] ||
     null
   );
+};
+
+/**
+ * Group/community avatar file id when set; otherwise null (caller shows initials).
+ * Personal DM avatars come from participants — use getConversationAvatarParticipant.
+ */
+export const getConversationGroupAvatarFileId = (
+  conversation: Conversation | null | undefined
+): string | null => {
+  if (!conversation) return null;
+  const category = getConversationCategory(conversation);
+  if (category !== 'group' && category !== 'community') return null;
+  const fileId = safeString(
+    (conversation as any).avatarFileId ?? (conversation as any).avatar_file_id
+  );
+  return fileId || null;
 };
 
 export const formatRelativeMessageTime = (value: unknown, nowMs = Date.now()): string => {

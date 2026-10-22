@@ -8,23 +8,31 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  resolveTestDependencyFile,
+  resolveTestDependencyRoot
+} from './testDependencyRoots.ts';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '../..');
-const monorepo = join(root, '..');
+const backendRoot = resolveTestDependencyRoot('SCROLITH_TEST_BACKEND_ROOT', 'backend sources');
 
 const avatar = readFileSync(join(root, 'src/components/common/EnterpriseAvatar.tsx'), 'utf8');
 const social = readFileSync(join(root, 'src/auth/AuthSocialButtons.tsx'), 'utf8');
 const profilePhoto = readFileSync(join(root, 'src/utils/profilePhoto.ts'), 'utf8');
 const messaging = readFileSync(join(root, 'src/services/messaging.ts'), 'utf8');
 const adminMw = readFileSync(
-  join(monorepo, 'geezle-backend/src/middleware/admin.middleware.ts'),
+  resolveTestDependencyFile(backendRoot, 'src/middleware/admin.middleware.ts', 'admin middleware'),
   'utf8'
 );
 const msgCtrl = readFileSync(
-  join(monorepo, 'geezle-backend/src/controllers/messages.controller.ts'),
+  resolveTestDependencyFile(backendRoot, 'src/controllers/messages.controller.ts', 'messages controller'),
   'utf8'
 );
-const rbac = readFileSync(join(monorepo, 'geezle-backend/src/services/rbac.service.ts'), 'utf8');
+const rbac = readFileSync(
+  resolveTestDependencyFile(backendRoot, 'src/services/rbac.service.ts', 'RBAC service'),
+  'utf8'
+);
 
 test('EnterpriseAvatar retries and prefers eager loading', () => {
   assert.match(avatar, /loading = 'eager'/);

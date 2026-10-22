@@ -12,9 +12,11 @@ import {
   ShoppingCartIcon as ShoppingCart,
   Repeat2Icon as Repeat2,
   SettingsIcon as Settings,
+  SparklesIcon as Sparkles,
   StarIcon as Star,
   TagIcon as Tag,
-  UsersIcon as Users
+  UsersIcon as Users,
+  VideoIcon as Video
 } from '../../../components/icons/ShellIcons';
 import { MOBILE_SHEET_CARD_CLASS } from '../mobileShellLayout';
 import EnterpriseAvatar from '../../../components/common/EnterpriseAvatar';
@@ -36,9 +38,12 @@ type QuickMenuConfig = {
   switchUser?: boolean;
   browseJobs?: boolean;
   browseGigs?: boolean;
+  match?: boolean;
+  scroll?: boolean;
   community?: boolean;
   marketplace?: boolean;
   groups?: boolean;
+  foundingPartnership?: boolean;
   projectBrief?: boolean;
   gigCreation?: boolean;
   settings?: boolean;
@@ -69,6 +74,8 @@ type MobileHomeSheetsProps = {
   userAvatar?: string | null;
   onRefreshMessages: () => void;
   onOpenConversation: (conversationId: string) => void;
+  /** Avatar-only profile open (soft SPA shell navigation). */
+  onOpenParticipantProfile?: (profilePath: string) => void;
   onOpenAllMessages: () => void;
   onOpenNotifications: () => void;
   normalizedRole: string;
@@ -86,9 +93,12 @@ type MobileHomeSheetsProps = {
   onCreatePost: () => void;
   onBrowseJobs: () => void;
   onBrowseGigs: () => void;
+  onMatch: () => void;
+  onScroll: () => void;
   onCommunity: () => void;
   onMarketplace: () => void;
   onGroups: () => void;
+  onFoundingPartnership: () => void;
   onProjectBriefs: () => void;
   onGigCreation: () => void;
 };
@@ -139,6 +149,7 @@ const Sheet = ({
   children: React.ReactNode;
 }) => {
   const titleId = React.useId();
+  const gestureStartY = React.useRef<number | null>(null);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[1000]">
@@ -156,7 +167,21 @@ const Sheet = ({
           className={MOBILE_SHEET_CARD_CLASS}
           onClick={(event) => event.stopPropagation()}
         >
-          <div className="flex justify-center pt-3">
+          <div
+            className="flex cursor-grab justify-center pt-3 touch-none active:cursor-grabbing"
+            onPointerDown={(event) => {
+              gestureStartY.current = event.clientY;
+            }}
+            onPointerUp={(event) => {
+              const startY = gestureStartY.current;
+              gestureStartY.current = null;
+              if (startY !== null && event.clientY - startY > 72) onClose();
+            }}
+            onPointerCancel={() => {
+              gestureStartY.current = null;
+            }}
+            aria-hidden="true"
+          >
             <div className="h-1.5 w-14 rounded-full bg-slate-200" />
           </div>
           <div className="flex max-h-[82dvh] flex-col">
@@ -309,6 +334,7 @@ export default function MobileHomeSheets({
   userAvatar,
   onRefreshMessages,
   onOpenConversation,
+  onOpenParticipantProfile,
   onOpenAllMessages,
   onOpenNotifications,
   normalizedRole,
@@ -326,9 +352,12 @@ export default function MobileHomeSheets({
   onCreatePost,
   onBrowseJobs,
   onBrowseGigs,
+  onMatch,
+  onScroll,
   onCommunity,
   onMarketplace,
   onGroups,
+  onFoundingPartnership,
   onProjectBriefs,
   onGigCreation
 }: MobileHomeSheetsProps) {
@@ -504,6 +533,26 @@ export default function MobileHomeSheets({
           onClick: onBrowseGigs
         }
       : null,
+    quickMenu.match !== false
+      ? {
+          id: 'quick-match',
+          icon: <Sparkles className="h-4 w-4" />,
+          label: 'Match',
+          description: 'Discover professional connections and opportunities matched to you.',
+          tone: 'indigo',
+          onClick: onMatch
+        }
+      : null,
+    quickMenu.scroll !== false
+      ? {
+          id: 'quick-scroll',
+          icon: <Video className="h-4 w-4" />,
+          label: 'Scroll',
+          description: 'Watch and explore the latest short-form community videos.',
+          tone: 'amber',
+          onClick: onScroll
+        }
+      : null,
     quickMenu.community !== false
       ? {
           id: 'quick-community',
@@ -532,6 +581,17 @@ export default function MobileHomeSheets({
           description: 'Open clubs, requests, and community spaces.',
           tone: 'amber',
           onClick: onGroups
+        }
+      : null,
+    quickMenu.foundingPartnership !== false
+      ? {
+          id: 'quick-founding-partnership',
+          icon: <Coins className="h-4 w-4" />,
+          label: 'Founding Partnership',
+          description: 'Review your participation, enrollment status, and partner earnings.',
+          badge: 'NEW',
+          tone: 'green',
+          onClick: onFoundingPartnership
         }
       : null,
     quickMenu.settings !== false
@@ -643,22 +703,70 @@ export default function MobileHomeSheets({
               const lastAt = conversation?.lastMessageAt || conversation?.last_message_at || null;
               const unread = Number(conversation?.unreadCount ?? conversation?.unread_count ?? 0) || 0;
               const starred = Boolean(conversation?.isStarred ?? conversation?.is_starred ?? false);
+              const isScrolitha = Boolean(
+                conversation?.isScrolitha ||
+                  conversation?.is_scrolitha ||
+                  other?.isScrolitha ||
+                  other?.is_scrolitha
+              );
+              const username = String(other?.username || '').trim().replace(/^@+/, '');
+              const profilePath =
+                !isScrolitha && other
+                  ? username
+                    ? `/u/${encodeURIComponent(username)}`
+                    : other?.profileUrl || other?.profile_url
+                      ? String(other.profileUrl || other.profile_url)
+                      : other?.id
+                        ? `/profile/${encodeURIComponent(String(other.id))}`
+                        : null
+                  : null;
 
               return (
-                <button
+                <div
                   key={convoId || `${name}-${lastAt || 'time'}`}
-                  type="button"
-                  onClick={() => onOpenConversation(convoId)}
-                  className="flex w-full items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white px-3 py-3 text-left shadow-sm transition hover:border-indigo-200 hover:bg-slate-50"
+                  className="flex w-full items-center gap-2 rounded-3xl border border-slate-200 bg-white px-3 py-3 shadow-sm transition hover:border-indigo-200 hover:bg-slate-50"
                 >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <EnterpriseAvatar
-                      src={avatarUrl}
-                      name={name}
-                      size="lg"
-                      className="!h-11 !w-11 border border-slate-200"
-                      alt={name}
-                    />
+                  {/* Avatar → profile; name/preview → soft-open inbox conversation. */}
+                  {profilePath && onOpenParticipantProfile ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenParticipantProfile(profilePath)}
+                      className="shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                      aria-label={`View ${name} profile`}
+                      title="View profile"
+                    >
+                      <EnterpriseAvatar
+                        src={avatarUrl}
+                        name={name}
+                        user={other}
+                        size="lg"
+                        className="!h-11 !w-11 border border-slate-200"
+                        alt={name}
+                      />
+                    </button>
+                  ) : (
+                    <div className="shrink-0">
+                      <EnterpriseAvatar
+                        src={avatarUrl}
+                        name={name}
+                        user={other}
+                        size="lg"
+                        className="!h-11 !w-11 border border-slate-200"
+                        alt={name}
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => onOpenConversation(convoId)}
+                    className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/30"
+                    aria-label={
+                      unread > 0
+                        ? `Open conversation with ${name}, ${unread} unread`
+                        : `Open conversation with ${name}`
+                    }
+                  >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <div className="truncate text-sm font-semibold text-slate-900">{name}</div>
@@ -668,17 +776,17 @@ export default function MobileHomeSheets({
                         {lastMessage || 'Tap to open conversation'}
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <div className="text-[10px] font-semibold text-slate-400">{relativeTime(lastAt) || ''}</div>
-                    {unread > 0 ? (
-                      <span className="min-w-[18px] rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white">
-                        {unread > 99 ? '99+' : unread}
-                      </span>
-                    ) : null}
-                  </div>
-                </button>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <div className="text-[10px] font-semibold text-slate-400">{relativeTime(lastAt) || ''}</div>
+                      {unread > 0 ? (
+                        <span className="min-w-[18px] rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                          {unread > 99 ? '99+' : unread}
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                </div>
               );
             })}
           </div>

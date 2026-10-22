@@ -14,15 +14,15 @@ import {
   messageMatchesConversation,
   normalizeMessageReactions
 } from '../services/messaging';
-import { getConversationMergeKey } from '../services/messagingMerge';
+import { getConversationMergeKey, mergeDirectConversations } from '../services/messagingMerge';
 import {
   applyIncomingPreviewUpdate,
   clearConversationDraft,
   dedupeMessagesById,
-  filterConversationsForTab,
   getConversationDraft,
   getConversationUnreadCount,
   getMessagePreviewText,
+  getMessagingSurfaceConversations,
   localSearchConversations,
   MESSAGING_PREVIEW_LIMIT,
   MESSAGING_SEARCH_DEBOUNCE_MS,
@@ -143,6 +143,9 @@ interface MessageContextType {
   copyMessage: (conversationId: string, message: Message) => Promise<void>;
   voiceRuntimeConfig: {
     enabledVoiceNotes: boolean;
+    enabledVoiceCalls?: boolean;
+    enabledConferenceCalls?: boolean;
+    enabledVideoCalls?: boolean;
     maxVoiceNoteDurationSeconds: number;
     blockedForCurrentUser: boolean;
   };
@@ -203,6 +206,9 @@ const DEFAULT_MESSAGE_CONTEXT: MessageContextType = {
   copyMessage: async () => {},
   voiceRuntimeConfig: {
     enabledVoiceNotes: true,
+    enabledVoiceCalls: true,
+    enabledConferenceCalls: true,
+    enabledVideoCalls: true,
     maxVoiceNoteDurationSeconds: DEFAULT_MAX_VOICE_NOTE_SECONDS,
     blockedForCurrentUser: false
   },
@@ -283,6 +289,9 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [searchError, setSearchError] = useState<string | null>(null);
   const [voiceRuntimeConfig, setVoiceRuntimeConfig] = useState({
     enabledVoiceNotes: true,
+    enabledVoiceCalls: true,
+    enabledConferenceCalls: true,
+    enabledVideoCalls: true,
     maxVoiceNoteDurationSeconds: DEFAULT_MAX_VOICE_NOTE_SECONDS,
     blockedForCurrentUser: false
   });
@@ -393,13 +402,19 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
           );
           // Phase 22.1 — soft refresh isolates new rows; force replace still allowed.
-          let sorted = incoming;
+          // Always re-merge DIRECT participant pairs so delta soft-refresh cannot reintroduce
+          // a legacy duplicate conversation id that was previously collapsed.
+          const selfId = String(userIdRef?.current || user?.id || '').trim() || undefined;
+          let sorted = mergeDirectConversations(incoming, selfId);
           if (!options?.force && conversationsRef.current.length > 0 && updatedSince) {
             const isolated = isolateInboxSoftRefresh(conversationsRef.current, incoming);
             // Auto-apply pending for messaging (unlike feed) so users see new DMs,
             // but preserve relative order of existing sessions (no full reorder thrash).
-            sorted = sortConversationsByRecent(
-              applyPendingInboxItems(isolated.sessionItems, isolated.pendingNewItems)
+            sorted = mergeDirectConversations(
+              sortConversationsByRecent(
+                applyPendingInboxItems(isolated.sessionItems, isolated.pendingNewItems)
+              ),
+              selfId
             );
           }
           setConversations(sorted);
@@ -451,7 +466,7 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
           : debouncedSearch.trim().length >= 1
             ? localSearchConversations(conversations, debouncedSearch, user?.id)
             : conversations;
-      return filterConversationsForTab(source, tab, limit);
+      return getMessagingSurfaceConversations(source, user?.id, tab, limit);
     },
     [conversations, debouncedSearch, searchResults, user?.id]
   );
@@ -651,13 +666,17 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }));
           if (full) {
             setConversations((prev) => {
-              const mergeKey = getConversationMergeKey(full);
+              const selfId = userIdRef.current;
+              const mergeKey = getConversationMergeKey(full, selfId);
               const without = prev.filter((entry) => {
                 if (entry.id === full.id) return false;
-                if (mergeKey && getConversationMergeKey(entry) === mergeKey) return false;
+                if (mergeKey && getConversationMergeKey(entry, selfId) === mergeKey) return false;
                 return true;
               });
-              return sortConversationsByRecent([full, ...without]);
+              return mergeDirectConversations(
+                sortConversationsByRecent([full, ...without]),
+                selfId
+              );
             });
           }
         } catch (e: any) {
@@ -785,6 +804,9 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
       .then((config) => {
         setVoiceRuntimeConfig({
           enabledVoiceNotes: Boolean(config?.enabledVoiceNotes ?? true),
+          enabledVoiceCalls: Boolean(config?.enabledVoiceCalls ?? true),
+          enabledConferenceCalls: Boolean(config?.enabledConferenceCalls ?? true),
+          enabledVideoCalls: Boolean((config as any)?.enabledVideoCalls ?? true),
           maxVoiceNoteDurationSeconds: Number(
             config?.maxVoiceNoteDurationSeconds ?? DEFAULT_MAX_VOICE_NOTE_SECONDS
           ),
@@ -859,6 +881,7 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       sendingIdsRef.current.add(id);
       setSendingConversationIds((prev) => ({ ...prev, [id]: true }));
+      const clientSendId = buildClientSendId(id, Date.now());
       const optimisticId = safeId(options?.optimisticId) || buildClientSendId(id, Date.now());
       const replyToMessageId = options?.replyToMessageId || replyToByConversation[id]?.id || null;
       const optimistic: Message = {
@@ -1099,6 +1122,7 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
     ): Promise<Message | null> => {
       const id = safeId(conversationId);
       if (!id || !user?.id) return null;
+      const clientSendId = buildClientSendId(id, Date.now());
       if (!voiceRuntimeConfig.enabledVoiceNotes || voiceRuntimeConfig.blockedForCurrentUser) {
         throw new Error('Voice notes are disabled for this account.');
       }
@@ -1132,7 +1156,8 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
         const message = await MessagingService.sendVoiceNote(id, {
           fileId,
-          durationMs: Math.max(1, Math.trunc(payload.durationMs || 0))
+          durationMs: Math.max(1, Math.trunc(payload.durationMs || 0)),
+          clientMessageId: clientSendId
         });
         seenMessageIdsRef.current.add(safeId(message.id));
         updateThreadMessages(id, (messages) => dedupeMessagesById([...messages, message]));
@@ -1589,14 +1614,18 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
             .then((full) => {
               if (!full) return;
               setConversations((current) => {
-                const mergeKey = getConversationMergeKey(full);
+                const selfId = userIdRef.current;
+                const mergeKey = getConversationMergeKey(full, selfId);
                 const without = current.filter((entry) => {
                   if (entry.id === full.id) return false;
-                  if (mergeKey && getConversationMergeKey(entry) === mergeKey) return false;
+                  if (mergeKey && getConversationMergeKey(entry, selfId) === mergeKey) return false;
                   return true;
                 });
                 // Prefer server unread for newly discovered conversations to avoid local double-count.
-                const next = sortConversationsByRecent([full, ...without]);
+                const next = mergeDirectConversations(
+                  sortConversationsByRecent([full, ...without]),
+                  selfId
+                );
                 recomputeUnread(next);
                 return next;
               });

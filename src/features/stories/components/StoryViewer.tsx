@@ -6,6 +6,7 @@ import FollowButton from '../../../community/components/FollowButton';
 import { getStoryTextStyle } from '../../../community/storyStyles';
 import ExpandablePreviewText from '../../../components/common/ExpandablePreviewText';
 import InlineAutoplayVideo from '../../../components/media/InlineAutoplayVideo';
+import VideoCaptionOverlay from '../../../components/media/VideoCaptionOverlay';
 import StoryAuthorAvatar from '../../../components/stories/StoryAuthorAvatar';
 import { useNotification } from '../../../context/NotificationContext';
 import { usePerformanceProfile } from '../../../hooks/usePerformanceProfile';
@@ -45,6 +46,7 @@ const resolveStoryMedia = (story: any) => {
   return {
     isVideo: media.kind === 'video',
     url: media.src || null,
+    fallbackUrl: media.fallbackSrc || null,
     thumbnailUrl: media.poster || null
   };
 };
@@ -628,6 +630,9 @@ export default function StoryViewer({
             >
               <StoryAuthorAvatar
                 src={avatar}
+                user={story?.author || story}
+                availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                 name={name}
                 initial={name.charAt(0) || 'S'}
                 className="inline-flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/25 bg-white/10 text-xs font-semibold text-white"
@@ -806,6 +811,7 @@ export default function StoryViewer({
               <InlineAutoplayVideo
                 key={String(story?.id || media.url || '')}
                 src={media.url}
+                fallbackSrc={media.fallbackUrl}
                 poster={media.thumbnailUrl}
                 className="h-full w-full object-contain"
                 containerClassName="mx-auto h-full w-full max-w-[720px]"
@@ -846,6 +852,11 @@ export default function StoryViewer({
               Story media not available.
             </div>
           )}
+          {type !== 'text' && content ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-4 sm:bottom-5">
+              <VideoCaptionOverlay text={content} className="max-w-[min(42rem,100%)]" />
+            </div>
+          ) : null}
         </main>
 
         <footer className="px-3 pb-[calc(0.85rem+env(safe-area-inset-bottom))] pt-3 sm:px-5">

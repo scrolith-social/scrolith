@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { ArrowRight, Play, Sparkles } from 'lucide-react';
 import InlineAutoplayVideo from '../media/InlineAutoplayVideo';
 import OptimizedImage from '../media/OptimizedImage';
 import { resolveResponsiveAssetUrl } from '../../utils/assetUrl';
@@ -208,11 +208,13 @@ const ModuleThumb = ({
   item,
   compact,
   large = false,
+  stacked = false,
   hoverPreview = false
 }: {
   item: MemberHomeHighlightItem;
   compact: boolean;
   large?: boolean;
+  stacked?: boolean;
   hoverPreview?: boolean;
 }) => {
   const fallbackMediaUrl = String(item.fallbackMediaUrl || '').trim();
@@ -268,37 +270,13 @@ const ModuleThumb = ({
     if (activePreviewToken === tokenRef.current) setActivePreviewToken(null);
   };
 
-  // Brand logo must never become a large module hero — icon badge handles identity.
-  if (isBrandLogoUrl(src) || isBrandLogoUrl(initialSrc)) {
-    return null;
-  }
-
-  if (hidden && !item.icon) return null;
-  if (hidden && item.icon) {
-    const tone = toneClasses[item.tone || 'slate'];
-    return (
-      <span
-        className={[
-          large
-            ? 'inline-flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl sm:h-28 sm:w-28'
-            : 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl sm:h-12 sm:w-12',
-          tone.icon
-        ].join(' ')}
-        aria-hidden
-      >
-        {item.icon}
-      </span>
-    );
-  }
-
-  if (hidden || (!src && !videoUrl)) return null;
-
-  // large ≈ 100–112px for marketplace / series product media
-  const size = large ? (compact ? 96 : 112) : compact ? 44 : 48;
+  // Keep preview state and hooks above conditional returns so media fallback changes cannot alter hook order.
+  const size = stacked ? (compact ? 220 : 280) : large ? (compact ? 96 : 112) : compact ? 44 : 48;
+  const sourceIsVideo = Boolean(src && (src === videoUrl || isVideoUrl(src)));
+  const imageSrc = sourceIsVideo ? '' : src;
   const shouldRenderVideo = Boolean(
     videoUrl && (isVideoUrl(videoUrl) || videoUrl.includes('/api/files/content/') || Boolean(posterUrl))
   );
-  // Touch/mobile: autoplay when in view (hoverPreview still limits desktop to hover).
   const isCoarsePointer =
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
@@ -312,7 +290,7 @@ const ModuleThumb = ({
     shouldRenderVideo &&
     !prefersReducedMotion &&
     (!hoverPreview || isCoarsePointer || (hoverActive && previewAllowed));
-  const rawPoster = posterUrl || src || fallbackMediaUrl || '';
+  const rawPoster = posterUrl || (sourceIsVideo ? '' : src) || fallbackMediaUrl || '';
   const hasRealPoster =
     Boolean(rawPoster) && !/__video_fallback_thumbnail|video_fallback/i.test(String(rawPoster));
   const optimizedPosterUrl =
@@ -324,7 +302,6 @@ const ModuleThumb = ({
           quality: 72
         })
       : '';
-
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Mobile series: exclusive autoplay only when this thumb is in viewport.
@@ -350,14 +327,41 @@ const ModuleThumb = ({
     };
   }, [mobileAutoPreview, shouldRenderVideo, videoUrl]);
 
+  // Brand logo must never become a large module hero; icon badge handles identity.
+  if (isBrandLogoUrl(src) || isBrandLogoUrl(initialSrc)) {
+    return null;
+  }
+
+  if (hidden && !item.icon) return null;
+  if (hidden && item.icon) {
+    const tone = toneClasses[item.tone || 'slate'];
+    return (
+      <span
+        className={[
+          large
+            ? 'inline-flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl sm:h-28 sm:w-28'
+            : 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl sm:h-12 sm:w-12',
+          tone.icon
+        ].join(' ')}
+        aria-hidden
+      >
+        {item.icon}
+      </span>
+    );
+  }
+
+  if (hidden || (!src && !videoUrl)) return null;
+
   return (
     <div
       ref={rootRef}
       className={[
         'relative shrink-0 overflow-hidden border border-slate-200/80 bg-slate-50',
-        large
-          ? 'h-24 w-24 rounded-2xl sm:h-28 sm:w-28'
-          : 'h-11 w-11 rounded-xl sm:h-12 sm:w-12',
+        stacked
+          ? 'aspect-[16/10] w-full rounded-xl'
+          : large
+            ? 'h-24 w-24 rounded-2xl sm:h-28 sm:w-28'
+            : 'h-11 w-11 rounded-xl sm:h-12 sm:w-12',
         shouldRenderVideo ? 'ring-1 ring-slate-900/5' : ''
       ].join(' ')}
       aria-hidden={!shouldRenderVideo}
@@ -374,9 +378,9 @@ const ModuleThumb = ({
       }
     >
       {/* Poster always present for zero flash; video fades over it. */}
-      {(optimizedPosterUrl || src) && shouldRenderVideo ? (
+      {(optimizedPosterUrl || imageSrc) && shouldRenderVideo ? (
         <img
-          src={optimizedPosterUrl || src}
+          src={optimizedPosterUrl || imageSrc}
           alt=""
           className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ease-out motion-reduce:transition-none ${
             playVideo && previewAllowed ? 'opacity-0' : 'opacity-100'
@@ -417,9 +421,15 @@ const ModuleThumb = ({
           }
           preload="auto"
         />
+      ) : shouldRenderVideo ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-white">
+          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/95 text-slate-900 shadow-lg">
+            <Play className="ml-0.5 h-5 w-5 fill-current" aria-hidden />
+          </span>
+        </div>
       ) : (
         <OptimizedImage
-          src={src || optimizedPosterUrl || posterUrl}
+          src={imageSrc || optimizedPosterUrl || posterUrl}
           fallbackSrc={fallbackMediaUrl || undefined}
           alt=""
           width={size * 2}
@@ -584,34 +594,45 @@ const ModuleCard = ({
   const tone = toneClasses[item.tone || 'slate'];
   const seriesLike = isSeriesPlaylistHighlight(item);
   const listingLike = isMarketplaceOrListingHighlight(item);
-  const largeThumb = seriesLike || listingLike;
+  // Large thumbs only for series/video previews — listing cards stay compact so
+  // titles/CTAs never collide in multi-column grids (mobile + desktop).
+  const hasMedia = Boolean(
+    String(item.mediaUrl || '').trim() || String(item.videoUrl || '').trim() || String(item.posterUrl || '').trim()
+  );
+  // Recommendation media is the primary scan target. Keep it above the copy so
+  // narrow board columns never compress the title, reason, or CTA into a sliver.
+  const largeThumb = hasMedia;
 
   return (
     <div
       className={[
-        'rounded-2xl border p-2.5 shadow-sm transition hover:border-slate-300 hover:shadow-md sm:p-3',
+        'h-full min-h-[18rem] min-w-0 overflow-hidden rounded-2xl border p-3 shadow-sm transition',
+        'hover:border-slate-300 hover:shadow-md sm:min-h-[19rem] sm:p-3.5',
         tone.ring
       ].join(' ')}
       data-testid="scrolith-discovery-module-card"
       data-module-kind={seriesLike ? 'series' : listingLike ? 'listing' : 'generic'}
     >
-      <ActionSurface item={item}>
-        <div className="flex items-start gap-2.5 sm:gap-3">
+      <ActionSurface item={item} className="h-full min-w-0">
+        <div className="flex h-full min-w-0 flex-col">
           <ModuleThumb
             item={item}
             compact={compact}
             large={largeThumb}
-            hoverPreview={seriesLike}
+            stacked={hasMedia}
+            hoverPreview={Boolean(item.videoUrl)}
           />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-col pt-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {item.eyebrow ? (
-                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">{item.eyebrow}</p>
+                <p className="max-w-full truncate text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+                  {item.eyebrow}
+                </p>
               ) : null}
               {item.badge ? (
                 <span
                   className={[
-                    'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                    'max-w-[9rem] truncate rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
                     tone.badge
                   ].join(' ')}
                 >
@@ -619,25 +640,25 @@ const ModuleCard = ({
                 </span>
               ) : null}
             </div>
-            <h3 className="mt-0.5 text-sm font-semibold leading-snug text-slate-900 line-clamp-2 sm:text-[15px]">
+            <h3 className="mt-1 break-words text-sm font-semibold leading-snug text-slate-900 line-clamp-2 sm:text-[15px]">
               {item.title}
             </h3>
-            <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-slate-600 sm:text-[13px] sm:leading-5">
+            <p className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600 sm:text-[13px] sm:leading-5">
               {item.description}
             </p>
             {item.reason ? (
-              <p className="mt-1 line-clamp-1 text-[11px] font-medium text-sky-700">
-                Why: {item.reason}
+              <p className="mt-1.5 line-clamp-2 break-words text-[11px] font-medium leading-4 text-sky-700">
+                <span className="text-sky-500">Why:</span> {item.reason}
               </p>
             ) : null}
-            <div className="mt-1.5 flex items-center justify-between gap-2">
-              <span className={['truncate', enterpriseWidgetMeta].join(' ')}>
+            <div className="mt-auto flex min-w-0 items-center justify-between gap-2 pt-2">
+              <span className={['min-w-0 flex-1 truncate', enterpriseWidgetMeta].join(' ')}>
                 {item.meta || 'Live on member home'}
               </span>
               {item.ctaLabel ? (
-                <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-slate-900 sm:text-sm">
-                  {item.ctaLabel}
-                  <ArrowRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" aria-hidden />
+                <span className="inline-flex max-w-[45%] shrink-0 items-center gap-1 truncate text-xs font-semibold text-slate-900 sm:text-sm">
+                  <span className="truncate">{item.ctaLabel}</span>
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0 transition group-hover:translate-x-0.5" aria-hidden />
                 </span>
               ) : null}
             </div>
@@ -680,7 +701,7 @@ export default function MemberHomeHighlightsBoard({
     <section
       className={[
         enterprisePanel,
-        'p-4 sm:p-5',
+        'overflow-hidden p-4 sm:p-5',
         className
       ]
         .filter(Boolean)
@@ -742,19 +763,21 @@ export default function MemberHomeHighlightsBoard({
         </div>
       ) : null}
 
-      {/* C. Secondary discovery modules — tighter grid spacing */}
+      {/* C. Secondary discovery modules — stable equal-height grid, no overlap */}
       {moduleItems.length ? (
         <div
           className={[
             'mt-3 sm:mt-3.5',
-            compact ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-2.5 xl:grid-cols-3'
+            compact
+              ? 'grid grid-cols-1 gap-2.5'
+              : 'grid auto-rows-fr grid-cols-1 gap-2.5 sm:grid-cols-2 sm:gap-3'
           ].join(' ')}
           data-testid="scrolith-discovery-module-grid"
         >
           {moduleItems.map((item) => (
-            <React.Fragment key={item.id}>
+            <div key={item.id} className="min-w-0">
               <ModuleCard item={item} compact={compact} />
-            </React.Fragment>
+            </div>
           ))}
         </div>
       ) : null}

@@ -29,17 +29,29 @@ import OptimizedImage from '../../../components/media/OptimizedImage';
 import EnterpriseAvatar from '../../../components/common/EnterpriseAvatar';
 import type { PreviewMedia } from '../../../components/media/MediaPreviewModal';
 import PostVideoActionBar from '../../../components/media/PostVideoActionBar';
+import VideoCaptionOverlay from '../../../components/media/VideoCaptionOverlay';
 import TranslatablePostText from '../../../components/translation/TranslatablePostText';
+import PostTextBackgroundBody from '../../../components/post/PostTextBackgroundBody';
+import {
+  resolvePostPresentation,
+  shouldRenderTextBackground
+} from '../../../utils/postTextBackgrounds';
 import { INLINE_VIDEO_PREVIEW_AUTOPLAY } from '../../../utils/inlineMedia';
 import { resolveAssetUrl } from '../../../utils/assetUrl';
 import { normalizeContentOfferTags } from '../../../utils/contentOffers';
-import { resolvePostAttachmentMediaUrl, resolvePostAttachmentPosterUrl } from '../../../utils/postAttachmentMedia';
+import {
+  resolvePostAttachmentMediaPair,
+  resolvePostAttachmentMediaUrl,
+  resolvePostAttachmentPosterUrl
+} from '../../../utils/postAttachmentMedia';
 import {
   buildPostVideoScrollViewerPath,
   stashPendingPostVideoScrollViewerSource,
   type PendingPostVideoScrollViewerSource
 } from '../../../utils/postVideoScrollBridge';
 import { resolveVerificationLevel } from '../../../utils/verification';
+import { resolvePublicAvailabilityFlags } from '../../../utils/publicAvailability';
+import { resolveVideoCaption } from '../../../utils/videoCaption';
 import FeedAdCard from './FeedAdCard';
 import RecommendedListingCard from './RecommendedListingCard';
 import SuggestedCard from './SuggestedCard';
@@ -62,6 +74,7 @@ import {
   resolvePageRecoPresentation,
   resolvePersonRecoPresentation
 } from '../../../utils/feedIntelligence';
+import { filterUnfollowedRecommendations, recommendationIsFollowing } from '../../../utils/recommendationVisibility';
 import { MemberFeedService } from '../../../services/memberFeed';
 import {
   buildNormalizedViewerFeedPreference,
@@ -864,6 +877,12 @@ export default function MobileFeed({
       post?.author?.userId ||
       post?.author?.user_id ||
       (authorType === 'user' ? authorId : null);
+    const publicAvailabilityFlags = resolvePublicAvailabilityFlags({
+      availability: post?.author?.availability ?? post?.author?.professionalAvailability ?? post?.availability ?? post?.professionalAvailability,
+      hiring: post?.author?.hiring ?? post?.author?.clientHiringStatus ?? post?.hiring ?? post?.clientHiringStatus,
+      availableForHire: post?.author?.availableForHire ?? post?.author?.available_for_hire ?? post?.availableForHire ?? post?.available_for_hire,
+      weAreHiring: post?.author?.weAreHiring ?? post?.author?.we_are_hiring ?? post?.weAreHiring ?? post?.we_are_hiring
+    });
 
     return {
       ...post,
@@ -892,7 +911,13 @@ export default function MobileFeed({
         type: authorType,
         businessSlug: post?.author?.businessSlug || post?.businessPage?.slug || null,
         isVerified: Boolean(post?.author?.isVerified ?? post?.authorIsVerified ?? post?.author_verified),
-        isPro: Boolean(post?.author?.isPro ?? post?.authorIsPro ?? post?.author_pro)
+        isPro: Boolean(post?.author?.isPro ?? post?.authorIsPro ?? post?.author_pro),
+        availability: post?.author?.availability ?? post?.author?.professionalAvailability ?? post?.availability ?? post?.professionalAvailability,
+        professionalAvailability: post?.author?.professionalAvailability ?? post?.author?.availability ?? post?.professionalAvailability ?? post?.availability,
+        hiring: post?.author?.hiring ?? post?.author?.clientHiringStatus ?? post?.hiring ?? post?.clientHiringStatus,
+        clientHiringStatus: post?.author?.clientHiringStatus ?? post?.author?.hiring ?? post?.clientHiringStatus ?? post?.hiring,
+        availableForHire: publicAvailabilityFlags.availableForHire,
+        weAreHiring: publicAvailabilityFlags.weAreHiring
       },
       viewer: {
         ...(post?.viewer || {}),
@@ -915,6 +940,28 @@ export default function MobileFeed({
       topic: post?.topic || null,
       location: post?.location || null,
       visibility: post?.visibility || 'public',
+      presentation: (() => {
+        const resolved = resolvePostPresentation(post);
+        return resolved
+          ? {
+              type: resolved.type,
+              themeId: resolved.themeId,
+              background: resolved.background,
+              textColor: resolved.textColor
+            }
+          : post?.presentation || null;
+      })(),
+      textBackground:
+        post?.textBackground ||
+        post?.text_background ||
+        resolvePostPresentation(post)?.background ||
+        null,
+      textColor: post?.textColor || post?.text_color || resolvePostPresentation(post)?.textColor || null,
+      textBackgroundId:
+        post?.textBackgroundId ||
+        post?.text_background_id ||
+        resolvePostPresentation(post)?.themeId ||
+        null,
       commentPolicy: post?.commentPolicy || post?.comment_policy || 'everyone',
       repostsEnabled: post?.repostsEnabled ?? post?.reposts_enabled ?? true,
       isPinned: post?.isPinned ?? post?.is_pinned ?? false,
@@ -1617,11 +1664,20 @@ export default function MobileFeed({
       if (!postId || !mediaUrl) return;
       const sourcePayload: PendingPostVideoScrollViewerSource = {
         sourcePostId: postId,
-        fileId: String(media?.fileId || media?.file_id || media?.file?.id || media?.asset?.id || media?.id || '').trim() || null,
+        fileId:
+          String(
+            resolvePostAttachmentMediaPair(media).fileId ||
+              media?.fileId ||
+              media?.file_id ||
+              media?.file?.id ||
+              media?.asset?.id ||
+              media?.id ||
+              ''
+          ).trim() || null,
         mediaUrl,
         thumbnailUrl: String(media?.thumbnailUrl || resolvePostAttachmentPosterUrl(media) || '').trim() || null,
         title: String(post?.title || '').trim() || null,
-        description: String(post?.content || '').trim() || null,
+        description: resolveVideoCaption(post, media) || null,
         location: String(post?.location || '').trim() || null,
         authorName: String(post?.author?.displayName || post?.authorName || '').trim() || null,
         authorAvatar: String(post?.author?.avatarUrl || post?.authorAvatar || '').trim() || null,
@@ -1823,7 +1879,9 @@ export default function MobileFeed({
       return;
     }
     loadInFlightRef.current = true;
-    const feedLimit = Math.max(6, Math.min(24, adaptiveFeedLimit));
+    // Facebook-style continuous feed: larger pages + no hard cap on total posts
+    // (pagination ends only when API/cursor terminal). Page size still adaptive.
+    const feedLimit = Math.max(10, Math.min(40, adaptiveFeedLimit || 20));
     const requestId = ++feedLoadRequestIdRef.current;
     const requestedCursor = mode === 'more' ? String(cursorRef.current || '').trim() || null : null;
     const requestStartedAt = Date.now();
@@ -2523,7 +2581,7 @@ export default function MobileFeed({
           results.forEach((r) => {
             if (r.status === 'fulfilled' && Array.isArray(r.value)) merged.push(...r.value);
           });
-          const mapped = merged
+          const mapped = filterUnfollowedRecommendations(merged)
             .map((p: any) => {
               const account = p?.account || p;
               const id = String(account?.id || p?.entityId || p?.id || p?.userId || '').trim();
@@ -2540,7 +2598,8 @@ export default function MobileFeed({
                 targetType: 'user' as const,
                 reasons: intel.reasons,
                 whyRecommended: intel.whyRecommended,
-                badge: intel.badge
+                badge: intel.badge,
+                isFollowing: recommendationIsFollowing(p)
               };
             })
             .filter(Boolean);
@@ -2568,7 +2627,7 @@ export default function MobileFeed({
       RecoService.getAccounts({ surface: 'member_home', type: 'page', limit: requestLimit })
         .then((items) => {
           if (cancelled) return;
-          const mapped = (Array.isArray(items) ? items : [])
+          const mapped = filterUnfollowedRecommendations(Array.isArray(items) ? items : [])
             .map((p: any) => {
               const account = p?.account || p;
               const id = String(account?.id || p?.entityId || p?.id || p?.pageId || '').trim();
@@ -2585,7 +2644,8 @@ export default function MobileFeed({
                 targetType: 'page' as const,
                 reasons: intel.reasons,
                 whyRecommended: intel.whyRecommended,
-                badge: intel.badge
+                badge: intel.badge,
+                isFollowing: recommendationIsFollowing(p)
               };
             })
             .filter(Boolean);
@@ -3182,29 +3242,75 @@ export default function MobileFeed({
                           .then(() => setPosts((prev) => prev.filter((p) => String(p?.id) !== id)))
                           .catch(() => {});
                       }}
+                      onTogglePin={(targetPost) => {
+                        const id = String(targetPost?.id || '').trim();
+                        if (!id) return;
+                        void CommunityService.updatePost(id, { isPinned: !Boolean(targetPost?.isPinned) })
+                          .then((updated) => {
+                            setPosts((prev) => prev.map((item) => String(item?.id) === id
+                              ? { ...item, ...(updated || {}), isPinned: updated?.isPinned ?? !targetPost?.isPinned }
+                              : item));
+                          })
+                          .catch(() => setStatusMessage('Unable to update the post pin.'));
+                      }}
+                      onToggleHighlight={(targetPost) => {
+                        const id = String(targetPost?.id || '').trim();
+                        if (!id) return;
+                        void CommunityService.updatePost(id, { isHighlighted: !Boolean(targetPost?.isHighlighted) })
+                          .then((updated) => {
+                            setPosts((prev) => prev.map((item) => String(item?.id) === id
+                              ? { ...item, ...(updated || {}), isHighlighted: updated?.isHighlighted ?? !targetPost?.isHighlighted }
+                              : item));
+                          })
+                          .catch(() => setStatusMessage('Unable to update the post highlight.'));
+                      }}
                     />
                   </div>
                 </div>
 
                 <div className={postCardSectionStackClass}>
-                  <TranslatablePostText
-                    post={post}
-                    viewerId={user?.id}
-                    viewerUsername={user?.username}
-                    expandable
-                    titleClassName={`text-left break-words [overflow-wrap:anywhere] hover:text-slate-700 ${postCardType.title}`}
-                    contentWrapperClassName={`cursor-pointer break-words [overflow-wrap:anywhere] ${postCardType.body}`}
-                    buttonClassName="text-slate-900"
-                    translationRowClassName="text-slate-500"
-                    onTitleClick={post?.title ? () => openPostCard(post) : undefined}
-                    onContentClick={(event) => openPostFromText(event, post)}
-                    onContentKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        openPostCard(post);
-                      }
-                    }}
-                  />
+                  {shouldRenderTextBackground(post) ? (
+                    <div>
+                      {post?.title ? (
+                        <button
+                          type="button"
+                          onClick={() => openPostCard(post)}
+                          className={`mb-2 block w-full text-left break-words [overflow-wrap:anywhere] hover:text-slate-700 ${postCardType.title}`}
+                        >
+                          {post.title}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(event) => openPostFromText(event as any, post)}
+                        className="block w-full text-left"
+                      >
+                        <PostTextBackgroundBody
+                          post={post}
+                          content={String(post?.content || post?.body || '')}
+                        />
+                      </button>
+                    </div>
+                  ) : (
+                    <TranslatablePostText
+                      post={post}
+                      viewerId={user?.id}
+                      viewerUsername={user?.username}
+                      expandable
+                      titleClassName={`text-left break-words [overflow-wrap:anywhere] hover:text-slate-700 ${postCardType.title}`}
+                      contentWrapperClassName={`cursor-pointer break-words [overflow-wrap:anywhere] ${postCardType.body}`}
+                      buttonClassName="text-slate-900"
+                      translationRowClassName="text-slate-500"
+                      onTitleClick={post?.title ? () => openPostCard(post) : undefined}
+                      onContentClick={(event) => openPostFromText(event, post)}
+                      onContentKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openPostCard(post);
+                        }
+                      }}
+                    />
+                  )}
 
                   {showHashtags && tags.length ? (
                     <div className="flex flex-wrap gap-2">
@@ -3287,6 +3393,11 @@ export default function MobileFeed({
                       <div className={shouldBlurMedia ? 'pointer-events-none blur-sm' : ''}>
                         {attachments.slice(0, 3).map((file: any) => {
                           const mediaKey = String(file.id || file.url || '');
+                          const mediaPair = resolvePostAttachmentMediaPair(file);
+                          const mediaUrl = mediaPair.url || resolvePostAttachmentMediaUrl(file);
+                          const fallbackUrl = mediaPair.fallbackUrl || '';
+                          const posterUrl = resolvePostAttachmentPosterUrl(file);
+                          const caption = resolveVideoCaption(post, file);
                           return (
                             <div
                               key={`${postId}_att_${file.id || file.url}`}
@@ -3314,30 +3425,34 @@ export default function MobileFeed({
                                   }}
                                 >
                                   <InlineAutoplayVideo
-                                    src={resolvePostAttachmentMediaUrl(file)}
-                                    poster={resolvePostAttachmentPosterUrl(file)}
+                                    src={mediaUrl}
+                                    fallbackSrc={fallbackUrl}
+                                    poster={posterUrl}
                                     className="h-[22rem] w-full object-cover sm:h-[26rem] md:h-[30rem]"
                                     controls={false}
                                     autoplayEnabled={INLINE_VIDEO_PREVIEW_AUTOPLAY}
                                     preload="metadata"
-                                    preloadRootMargin={constrainedForFeed ? '80px 0px 80px 0px' : '260px 0px 260px 0px'}
+                                    preloadRootMargin={constrainedForFeed ? '160px 0px 240px 0px' : '400px 0px 600px 0px'}
                                     loadingLabel="Video loading"
                                     overlay={(videoElement) => (
-                                      <PostVideoActionBar
-                                        postId={postId}
-                                        postTitle={post?.title}
-                                        postContent={post?.content}
-                                        postLocation={post?.location}
-                                        media={{
-                                          id: file?.id,
-                                          fileId: file?.fileId || file?.file_id || file?.file?.id || file?.asset?.id || file?.id || null,
-                                          url: resolvePostAttachmentMediaUrl(file),
-                                          thumbnailUrl: resolvePostAttachmentPosterUrl(file),
-                                          name: file?.name || file?.originalName || file?.filename,
-                                          mimeType: file?.mimeType || file?.mime_type
-                                        }}
-                                        videoElement={videoElement}
-                                      />
+                                      <div className="w-full space-y-2 px-2">
+                                        <VideoCaptionOverlay text={caption} compact />
+                                        <PostVideoActionBar
+                                          postId={postId}
+                                          postTitle={post?.title}
+                                          postContent={caption || post?.content}
+                                          postLocation={post?.location}
+                                          media={{
+                                            id: file?.id,
+                                            fileId: file?.fileId || file?.file_id || file?.file?.id || file?.asset?.id || file?.id || null,
+                                            url: mediaUrl,
+                                            thumbnailUrl: posterUrl,
+                                            name: file?.name || file?.originalName || file?.filename,
+                                            mimeType: file?.mimeType || file?.mime_type
+                                          }}
+                                          videoElement={videoElement}
+                                        />
+                                      </div>
                                     )}
                                   />
                                 </div>
@@ -3347,7 +3462,7 @@ export default function MobileFeed({
                                   onClick={() => handlePostMediaPrimaryAction(post, file)}
                                   onDoubleClick={(event) => onPostMediaDoubleClick(event, post, mediaKey)}
                                   onTouchEnd={(event) => onPostMediaTouchEnd(event, post, mediaKey)}
-                                  className="block h-[22rem] w-full text-left sm:h-[26rem] md:h-[30rem]"
+                                  className="relative block h-[22rem] w-full text-left sm:h-[26rem] md:h-[30rem]"
                                 >
                                   <OptimizedImage
                                     src={resolvePostAttachmentMediaUrl(file)}
@@ -3361,6 +3476,11 @@ export default function MobileFeed({
                                     decoding="async"
                                     fetchPriority={idx < priorityMediaPostLimit ? 'high' : 'auto'}
                                   />
+                                  {caption ? (
+                                    <div className="absolute inset-x-0 bottom-0 z-10 px-2 pb-2">
+                                      <VideoCaptionOverlay text={caption} compact />
+                                    </div>
+                                  ) : null}
                                 </button>
                               ) : (
                                 <button

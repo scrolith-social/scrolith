@@ -64,15 +64,25 @@ const mapSubmission = (submission: any): KYCSubmission => ({
 
 const toSubmissionPayload = (data: CreateKYCSubmissionData | Partial<CreateKYCSubmissionData>) => ({
   personal_info: data.personalInfo,
+  personalInfo: data.personalInfo,
   documents: Array.isArray(data.documents)
-    ? data.documents.map((doc) => ({
-        type: doc.type,
-        document_id: doc.documentId || doc.fileId
-      }))
+    ? data.documents
+        .map((doc) => {
+          const documentId = String(doc.documentId || doc.fileId || '').trim();
+          return {
+            type: doc.type,
+            document_id: documentId,
+            documentId
+          };
+        })
+        .filter((doc) => Boolean(doc.document_id))
     : undefined,
   consent_accepted: data.consentAccepted === true,
+  consentAccepted: data.consentAccepted === true,
   consent_policy_version: data.consentPolicyVersion,
-  source_surface: data.sourceSurface || 'kyc_form'
+  consentPolicyVersion: data.consentPolicyVersion,
+  source_surface: data.sourceSurface || 'kyc_form',
+  sourceSurface: data.sourceSurface || 'kyc_form'
 });
 
 export type KYCStatus = 'not_submitted' | 'pending' | 'under_review' | 'approved' | 'rejected' | 'requires_updates';
@@ -380,12 +390,19 @@ const normalizeKycFormConfig = (raw: any): KYCFormConfig => {
 };
 
 export const kycApi = {
-  getKYCStatus: async (): Promise<{ status: KYCStatus; submission?: KYCSubmission }> => {
+  getKYCStatus: async (): Promise<{
+    status: KYCStatus;
+    submission?: KYCSubmission;
+    /** Clean uploads not yet attached to a submission (draft retention). */
+    pendingDocuments?: KYCDocument[];
+  }> => {
     const response = await api.get<ApiResponse<{ status: KYCStatus; submission?: KYCSubmission }>>('/kyc/me');
     const data = handleApiResponse<any>(response);
+    const pendingRaw = data.pendingDocuments || data.pending_documents || [];
     return {
       status: data.status,
-      submission: data.submission ? mapSubmission(data.submission) : undefined
+      submission: data.submission ? mapSubmission(data.submission) : undefined,
+      pendingDocuments: Array.isArray(pendingRaw) ? pendingRaw.map(mapDocument) : []
     };
   },
 
@@ -409,12 +426,30 @@ export const kycApi = {
   ): Promise<KYCSecureUploadResult> => {
     const form = new FormData();
     form.append('type', type);
+    form.append('document_type', type);
     form.append('file', file, filename || (file as File).name || 'document');
     const response = await api.post<ApiResponse<KYCSecureUploadResult>>('/kyc/uploads', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 180000
     });
-    return handleApiResponse(response);
+    const raw = handleApiResponse<any>(response) || {};
+    // Normalize snake/camel shapes so submit always receives a durable documentId.
+    const documentId = String(
+      raw.documentId || raw.document_id || raw.id || raw.data?.documentId || raw.data?.id || ''
+    ).trim();
+    if (!documentId) {
+      throw new Error('KYC upload succeeded but no document id was returned. Please try again.');
+    }
+    return {
+      documentId,
+      type: String(raw.type || type),
+      status: String(raw.status || 'pending'),
+      quarantineStatus: raw.quarantineStatus || raw.quarantine_status,
+      scanStatus: raw.scanStatus || raw.scan_status,
+      contentType: raw.contentType || raw.content_type,
+      sizeBytes: raw.sizeBytes ?? raw.size_bytes,
+      metadataStripped: Boolean(raw.metadataStripped ?? raw.metadata_stripped),
+      correlationId: raw.correlationId || raw.correlation_id
+    };
   },
 
   /** @deprecated retired — use uploadSecureDocument */
@@ -427,6 +462,15 @@ export const kycApi = {
       `/admin/kyc/documents/${encodeURIComponent(documentId)}/view`
     );
     return handleApiResponse(response);
+  },
+
+  /** Fetch a private KYC document through the authenticated backend stream. */
+  streamDocumentSecure: async (documentId: string): Promise<Blob> => {
+    const response = await api.get<Blob>(
+      `/admin/kyc/documents/${encodeURIComponent(documentId)}/view?mode=stream`,
+      { responseType: 'blob' }
+    );
+    return response.data;
   },
 
   updateKYCStatus: async (

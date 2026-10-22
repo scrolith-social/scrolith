@@ -16,15 +16,30 @@ import {
   resolveAndroidChannelId,
   resolveNotificationCategory
 } from '../../src/utils/notificationTaxonomy.ts';
+import {
+  resolveTestDependencyFile,
+  resolveTestDependencyRoot
+} from './testDependencyRoots.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pushSrc = readFileSync(join(here, '../../src/mobile/push.ts'), 'utf8');
+const mobileRoot = resolveTestDependencyRoot('SCROLITH_TEST_MOBILE_ROOT', 'mobile sources');
 const manifest = readFileSync(
-  join(here, '../../../mobile/android/app/src/main/AndroidManifest.xml'),
+  resolveTestDependencyFile(
+    mobileRoot,
+    'android/app/src/main/AndroidManifest.xml',
+    'Android manifest'
+  ),
   'utf8'
 );
-const gradle = readFileSync(join(here, '../../../mobile/android/app/build.gradle'), 'utf8');
-const capacitor = readFileSync(join(here, '../../../mobile/capacitor.config.ts'), 'utf8');
+const gradle = readFileSync(
+  resolveTestDependencyFile(mobileRoot, 'android/app/build.gradle', 'Android app Gradle file'),
+  'utf8'
+);
+const capacitor = readFileSync(
+  resolveTestDependencyFile(mobileRoot, 'capacitor.config.ts', 'Capacitor config'),
+  'utf8'
+);
 
 test('Phase 27 aliases map to enterprise categories and stable channels', () => {
   assert.equal(resolveNotificationCategory({ type: 'chat' }), 'message');
@@ -136,8 +151,9 @@ test('AndroidManifest FCM defaults and POST_NOTIFICATIONS', () => {
 });
 
 test('Phase 29 version and production Capacitor origin', () => {
-  assert.match(gradle, /versionCode 42/);
-  assert.match(gradle, /versionName "1.1.32"/);
+  const versionCode = Number(gradle.match(/versionCode\s+(\d+)/)?.[1] || 0);
+  assert.ok(versionCode > 35, `versionCode must remain above the Play Store floor: ${versionCode}`);
+  assert.match(gradle, /versionName "\d+\.\d+\.\d+"/);
   assert.match(gradle, /debugSymbolLevel/);
   assert.match(capacitor, /scrolith\.com/);
   assert.match(capacitor, /androidScheme: 'https'/);

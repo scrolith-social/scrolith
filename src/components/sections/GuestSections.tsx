@@ -2,6 +2,7 @@ import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import AuthSocialButtons from "../../auth/AuthSocialButtons";
 import { useUser } from "../../context/UserContext";
+import { loadPublicCurrencyCatalog } from "../../context/CurrencyContext";
 import { type Gig } from "../../services/gigs";
 import { CMSService } from "../../services/cms";
 import { listMarketplaceListings } from "../../services/marketplace";
@@ -41,7 +42,9 @@ import {
 } from "./GuestAuthExperience";
 
 const ensureArray = <T = any,>(value: any): T[] => (Array.isArray(value) ? value : []);
-const SCROLITH_LOGO = "/logo.png";
+const SCROLITH_LOGO = "/logo-64.png";
+const GUEST_NETWORKING_IMAGE = "/images/guest-diverse-networking.webp";
+const GUEST_NETWORKING_IMAGE_FALLBACK = "/images/guest-diverse-networking.jpg";
 
 const resolveUrl = (item: any) => item?.url ?? item?.href ?? item?.link ?? "";
 
@@ -477,6 +480,12 @@ export const GuestHeroAuthSection: React.FC<{ content: GuestHeroAuthContent; sty
         { title: 'Smart Hiring Pipeline', subtitle: 'Post, screen, and hire with automated workflows.' },
         { title: 'Creator Growth Engine', subtitle: 'Publish once and distribute across network, stories, and scroll.' }
       ]).slice(0, compactMode ? 2 : 3);
+  const platformHighlights = [
+    { label: 'Opportunity graph', detail: 'Meet the right people, teams, and clients.', accent: 'from-sky-500 to-cyan-400' },
+    { label: 'Work marketplace', detail: 'Discover jobs, gigs, and trusted services.', accent: 'from-violet-500 to-fuchsia-400' },
+    { label: 'Scrolitha AI', detail: 'Turn ideas into clear next steps faster.', accent: 'from-amber-400 to-orange-500' },
+    { label: 'Trust by design', detail: 'Build with verification, privacy, and control.', accent: 'from-emerald-500 to-lime-400' }
+  ];
 
   React.useEffect(() => {
     let mounted = true;
@@ -598,9 +607,17 @@ export const GuestHeroAuthSection: React.FC<{ content: GuestHeroAuthContent; sty
                 Work · Market · AI · Community
               </span>
             </div>
-            <h1 className="max-w-[14ch] text-[2rem] font-extrabold leading-[1.03] tracking-[-0.04em] text-slate-900 sm:max-w-none sm:text-3xl lg:text-4xl xl:text-[3.3rem]">
-              {content?.headline || 'Build your next opportunity on Scrolith'}
-            </h1>
+            <div className="guest-hero-title-wrap relative max-w-[23rem] sm:max-w-[31rem]">
+              <span className="guest-hero-title-glow" aria-hidden="true" />
+              <h1
+                data-testid="guest-hero-headline"
+                className="guest-hero-title relative max-w-[20ch] text-balance bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-700 bg-clip-text text-[clamp(1.7rem,3vw,2.45rem)] font-extrabold leading-[1.04] tracking-[-0.042em] text-transparent drop-shadow-[0_8px_18px_rgba(30,41,59,0.12)] sm:max-w-[22ch] lg:max-w-[20ch]"
+              >
+                {content?.headline || 'Build your next opportunity on Scrolith'}
+              </h1>
+              <span className="guest-hero-title-spark" aria-hidden="true">✦</span>
+              <span className="guest-hero-title-rule" aria-hidden="true" />
+            </div>
             {content?.subheadline ? (
               <p className="mt-4 max-w-2xl text-[15px] leading-7 text-slate-600 sm:text-base sm:leading-8">{content.subheadline}</p>
             ) : (
@@ -771,6 +788,39 @@ export const GuestHeroAuthSection: React.FC<{ content: GuestHeroAuthContent; sty
                 </div>
               </div>
             ) : null}
+            <figure className="mt-5 overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-[0_18px_40px_-28px_rgba(15,23,42,0.38)]">
+              <picture>
+                <source srcSet={GUEST_NETWORKING_IMAGE} type="image/webp" />
+                <img
+                  src={GUEST_NETWORKING_IMAGE_FALLBACK}
+                  alt="Diverse professionals connecting on Scrolith - social and professional networking platform"
+                  width={1280}
+                  height={720}
+                  loading="lazy"
+                  decoding="async"
+                  sizes="(min-width: 1024px) 50vw, 100vw"
+                  className="block h-auto w-full object-cover"
+                />
+              </picture>
+            </figure>
+            <div className="mt-4 rounded-[22px] border border-slate-200/80 bg-white/80 p-3 shadow-[0_18px_38px_-30px_rgba(15,23,42,0.35)] backdrop-blur-sm sm:p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-indigo-600">Built for momentum</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">Everything important, in one connected workspace.</p>
+                </div>
+                <span className="hidden shrink-0 rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-indigo-700 min-[420px]:inline-flex">Explore</span>
+              </div>
+              <div className="grid gap-2 min-[420px]:grid-cols-2">
+                {platformHighlights.map((item) => (
+                  <div key={item.label} className="group min-w-0 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50/80 p-3 transition duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-sm motion-reduce:transition-none motion-reduce:hover:translate-y-0">
+                    <div className={`mb-2 h-1.5 w-9 rounded-full bg-gradient-to-r ${item.accent}`} />
+                    <p className="truncate text-xs font-bold text-slate-900 sm:text-sm">{item.label}</p>
+                    <p className="mt-1 text-[11px] leading-5 text-slate-600 sm:text-xs">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
           {backgroundImageUrl ? <div className="absolute inset-0 bg-gradient-to-t from-white/55 via-white/20 to-transparent" /> : null}
         </div>
@@ -911,7 +961,8 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     loading: boolean;
     loaded: boolean;
     gigs: Gig[];
-  }>({ loading: false, loaded: false, gigs: [] });
+    retryAfterSeconds: number | null;
+  }>({ loading: false, loaded: false, gigs: [], retryAfterSeconds: null });
   const [communityPreview, setCommunityPreview] = React.useState<{
     loading: boolean;
     loaded: boolean;
@@ -990,7 +1041,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
   }, [hasAnyLivePreviewTab, shouldLoadMarketplacePreview]);
 
   React.useEffect(() => {
-    if (!hasMarketplaceTab || !shouldLoadMarketplacePreview || marketplacePreview.loaded || marketplacePreviewRequestRef.current) return undefined;
+    if (!hasMarketplaceTab || !showMarketplacePreview || !shouldLoadMarketplacePreview || marketplacePreview.loaded || marketplacePreviewRequestRef.current) return undefined;
     let cancelled = false;
     marketplacePreviewRequestRef.current = true;
 
@@ -1012,13 +1063,13 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
           });
 
         let previewItems = extractMarketplacePreviewItems(
-          await withTimeout(listMarketplaceListings({ page: 1, pageSize: 3, status: 'active', sort: 'recommended' }), 7000)
+          await withTimeout(listMarketplaceListings({ page: 1, pageSize: 3, status: 'active', sort: 'recommended' }, { skipRetry: true }), 7000)
         );
 
         if (!previewItems.length) {
           try {
             previewItems = extractMarketplacePreviewItems(
-              await withTimeout(listMarketplaceListings({ page: 1, pageSize: 3, status: 'active', sort: 'popular' }), 5000)
+              await withTimeout(listMarketplaceListings({ page: 1, pageSize: 3, status: 'active', sort: 'popular' }, { skipRetry: true }), 5000)
             );
           } catch {
             previewItems = [];
@@ -1027,7 +1078,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
 
         if (!previewItems.length) {
           try {
-            const homepage = await withTimeout(fetchGuestJson("/homepage/guest"), 7000);
+            const homepage = await withTimeout(CMSService.getGuestHomepage(), 7000);
             previewItems = extractMarketplacePreviewItems(homepage);
           } catch {
             previewItems = [];
@@ -1035,11 +1086,12 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
         }
 
         if (!cancelled) {
-          setMarketplacePreview({ loading: false, loaded: true, gigs: previewItems as any });
+          setMarketplacePreview({ loading: false, loaded: true, gigs: previewItems as any, retryAfterSeconds: null });
         }
-      } catch {
+      } catch (error: any) {
         if (!cancelled) {
-          setMarketplacePreview({ loading: false, loaded: true, gigs: [] });
+          const retryAfter = Number(error?.response?.headers?.['retry-after'] || error?.response?.headers?.['Retry-After']);
+          setMarketplacePreview({ loading: false, loaded: true, gigs: [], retryAfterSeconds: error?.response?.status === 429 && Number.isFinite(retryAfter) ? Math.max(1, Math.ceil(retryAfter)) : null });
         }
       } finally {
         if (!cancelled) {
@@ -1052,10 +1104,10 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     return () => {
       cancelled = true;
     };
-  }, [hasMarketplaceTab, marketplacePreview.loaded, shouldLoadMarketplacePreview]);
+  }, [hasMarketplaceTab, marketplacePreview.loaded, shouldLoadMarketplacePreview, showMarketplacePreview]);
 
   React.useEffect(() => {
-    if (!hasCommunityTab || !shouldLoadMarketplacePreview || communityPreview.loaded || communityPreviewRequestRef.current) return undefined;
+    if (!hasCommunityTab || !showCommunityPreview || !shouldLoadMarketplacePreview || communityPreview.loaded || communityPreviewRequestRef.current) return undefined;
     let cancelled = false;
     communityPreviewRequestRef.current = true;
 
@@ -1063,7 +1115,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
       setCommunityPreview((prev) => ({ ...prev, loading: true }));
       try {
         const payload = await fetchGuestJson("/community/feed?limit=4&scope=public");
-        const homepage = await fetchGuestJson("/homepage/guest").catch(() => null);
+        const homepage = await CMSService.getGuestHomepage().catch(() => null);
         if (!cancelled) {
           const liveItems = extractCommunityPreviewItems(payload);
           const homepageItems = extractCommunityPreviewItems(homepage);
@@ -1083,10 +1135,10 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     return () => {
       cancelled = true;
     };
-  }, [communityPreview.loaded, hasCommunityTab, shouldLoadMarketplacePreview]);
+  }, [communityPreview.loaded, hasCommunityTab, shouldLoadMarketplacePreview, showCommunityPreview]);
 
   React.useEffect(() => {
-    if (!hasMessagingTab || !shouldLoadMarketplacePreview || messagingPreview.loaded || messagingPreviewRequestRef.current) return undefined;
+    if (!hasMessagingTab || !showMessagingPreview || !shouldLoadMarketplacePreview || messagingPreview.loaded || messagingPreviewRequestRef.current) return undefined;
     let cancelled = false;
     messagingPreviewRequestRef.current = true;
 
@@ -1100,7 +1152,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
 
         const threads = threadsPayload.status === "fulfilled" ? threadsPayload.value : null;
         const feed = feedPayload.status === "fulfilled" ? feedPayload.value : null;
-        const homepage = await fetchGuestJson("/homepage/guest").catch(() => null);
+        const homepage = await CMSService.getGuestHomepage().catch(() => null);
         const primaryItems = extractMessagingPreviewItems(threads, feed);
         const homepageItems = extractMessagingPreviewItems(homepage, homepage);
         const items = primaryItems.length ? primaryItems : homepageItems;
@@ -1121,10 +1173,10 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     return () => {
       cancelled = true;
     };
-  }, [hasMessagingTab, messagingPreview.loaded, shouldLoadMarketplacePreview]);
+  }, [hasMessagingTab, messagingPreview.loaded, shouldLoadMarketplacePreview, showMessagingPreview]);
 
   React.useEffect(() => {
-    if (!hasAiAssistantTab || !shouldLoadMarketplacePreview || aiPreview.loaded || aiPreviewRequestRef.current) return undefined;
+    if (!hasAiAssistantTab || !showAiPreview || !shouldLoadMarketplacePreview || aiPreview.loaded || aiPreviewRequestRef.current) return undefined;
     let cancelled = false;
     aiPreviewRequestRef.current = true;
 
@@ -1148,10 +1200,10 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     return () => {
       cancelled = true;
     };
-  }, [aiPreview.loaded, hasAiAssistantTab, shouldLoadMarketplacePreview]);
+  }, [aiPreview.loaded, hasAiAssistantTab, shouldLoadMarketplacePreview, showAiPreview]);
 
   React.useEffect(() => {
-    if (!hasPaymentsTab || !shouldLoadMarketplacePreview || paymentsPreview.loaded || paymentsPreviewRequestRef.current) return undefined;
+    if (!hasPaymentsTab || !showPaymentsPreview || !shouldLoadMarketplacePreview || paymentsPreview.loaded || paymentsPreviewRequestRef.current) return undefined;
     let cancelled = false;
     paymentsPreviewRequestRef.current = true;
 
@@ -1159,7 +1211,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
       setPaymentsPreview((prev) => ({ ...prev, loading: true }));
       try {
         const [currenciesPayload, methodsPayload] = await Promise.all([
-          fetchGuestJson("/currencies/active"),
+          loadPublicCurrencyCatalog().then((catalog) => ({ data: catalog.list, meta: { baseCurrency: catalog.baseCurrency } })),
           fetchGuestJson("/payments/methods/active")
         ]);
         if (!cancelled) {
@@ -1182,7 +1234,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     return () => {
       cancelled = true;
     };
-  }, [hasPaymentsTab, paymentsPreview.loaded, shouldLoadMarketplacePreview]);
+  }, [hasPaymentsTab, paymentsPreview.loaded, shouldLoadMarketplacePreview, showPaymentsPreview]);
 
   if (!content?.title && visibleTabs.length === 0) return null;
   return (
@@ -1290,7 +1342,10 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
                     ) : (
                       <div className="grid h-full min-h-[12rem] place-items-center rounded-2xl border border-dashed border-slate-200 bg-white/70 px-4 text-center">
                         <div>
-                          <p className="text-sm font-semibold text-slate-800">No live marketplace listings available right now.</p>
+                          <p className="text-sm font-semibold text-slate-800">{marketplacePreview.retryAfterSeconds ? 'Marketplace preview is temporarily busy.' : 'No live marketplace listings available right now.'}</p>
+                          {marketplacePreview.retryAfterSeconds ? (
+                            <p className="mt-1 text-xs leading-5 text-slate-500">Try again in about {marketplacePreview.retryAfterSeconds} seconds. You can continue browsing Scrolith.</p>
+                          ) : null}
                           <p className="mt-1 text-xs leading-5 text-slate-500">
                             We only show real production listings — never placeholders.
                           </p>

@@ -1,10 +1,14 @@
 import React from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { BriefcaseBusiness, ShieldCheck, UserRoundCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import FollowButton from './FollowButton';
 import VerifiedBadge from '../../components/common/VerifiedBadge';
 import EnterpriseAvatar from '../../components/common/EnterpriseAvatar';
-import { resolveVerificationLevel } from '../../utils/verification';
+import {
+  identityTrustStateLabel,
+  resolveIdentityTrustState,
+  resolveVerificationLevel
+} from '../../utils/verification';
 import {
   postCardAvatarClass,
   postCardFollowButtonClass,
@@ -26,6 +30,15 @@ type PostHeaderAuthor = {
   isPro?: boolean;
   verificationLevel?: string | null;
   verification_level?: string | null;
+  kycStatus?: string | null;
+  kyc_status?: string | null;
+  verificationStatus?: string | null;
+  verification_status?: string | null;
+  availability?: any;
+  hiring?: any;
+  clientHiringStatus?: string | null;
+  availableForHire?: boolean;
+  weAreHiring?: boolean;
   /** Optional professional headline / context line */
   headline?: string | null;
 };
@@ -98,10 +111,23 @@ const PostHeader: React.FC<PostHeaderProps> = ({
   const authorName = author.displayName || 'Community member';
   const authorType = String(author.type || 'user').toLowerCase();
   const verificationLevel = resolveVerificationLevel(author);
+  const identityTrustState = resolveIdentityTrustState(author);
   const authorHandle = String(author.username || '').trim().replace(/^@+/, '');
   const headline = String(author.headline || '').trim();
   const formattedCreatedAt = formatPostHeaderTimestamp(createdAt);
   const isBusinessAuthor = authorType === 'business' || authorType === 'page' || authorType === 'company';
+  const isAvailableForHire = Boolean(
+    author.availableForHire ||
+      author.availability?.availableForHire ||
+      author.availability?.available_for_hire
+  );
+  const isHiring = Boolean(
+    author.weAreHiring ||
+      author.hiring?.weAreHiring ||
+      author.hiring?.we_are_hiring ||
+      author.hiring?.active ||
+      String(author.clientHiringStatus || '').toUpperCase() === 'ACTIVE'
+  );
   const canShowFollow =
     showFollow &&
     Boolean(author.id) &&
@@ -137,7 +163,7 @@ const PostHeader: React.FC<PostHeaderProps> = ({
               >
                 {authorName}
               </Link>
-              {verificationLevel ? (
+              {verificationLevel && identityTrustState === 'verified' ? (
                 <VerifiedBadge
                   level={verificationLevel}
                   size={16}
@@ -146,6 +172,20 @@ const PostHeader: React.FC<PostHeaderProps> = ({
                   subjectRole={authorType === 'business' ? 'business' : 'user'}
                 />
               ) : null}
+              {identityTrustState === 'pending' || identityTrustState === 'needs_action' ? (
+                <span
+                  className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    identityTrustState === 'pending'
+                      ? 'bg-amber-50 text-amber-700'
+                      : identityTrustState === 'needs_action'
+                        ? 'bg-rose-50 text-rose-700'
+                        : 'bg-slate-100 text-slate-600'
+                  }`}
+                  title={identityTrustStateLabel(identityTrustState)}
+                >
+                  {identityTrustStateLabel(identityTrustState)}
+                </span>
+              ) : null}
               {author.isPro ? (
                 <span
                   className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700"
@@ -153,6 +193,24 @@ const PostHeader: React.FC<PostHeaderProps> = ({
                 >
                   <ShieldCheck className="h-3 w-3" aria-hidden="true" />
                   Pro
+                </span>
+              ) : null}
+              {isAvailableForHire ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700"
+                  title="Available for Hire"
+                >
+                  <UserRoundCheck className="h-3 w-3" aria-hidden="true" />
+                  Available for Hire
+                </span>
+              ) : null}
+              {isHiring ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-700"
+                  title="We Are Hiring"
+                >
+                  <BriefcaseBusiness className="h-3 w-3" aria-hidden="true" />
+                  We Are Hiring
                 </span>
               ) : null}
             </div>

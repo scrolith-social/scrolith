@@ -19,7 +19,6 @@ import {
   Maximize2
 } from 'lucide-react';
 import { ScrollService, type ScrollEngagementType, type ScrollVideo } from '../../services/scroll';
-import ExpandablePreviewText from '../../components/common/ExpandablePreviewText';
 import ContentOfferTags from '../../components/commerce/ContentOfferTags';
 import ReactionBar from '../../community/components/ReactionBar';
 import FollowButton from '../../community/components/FollowButton';
@@ -29,6 +28,7 @@ import { resolveInlineMedia } from '../../utils/inlineMedia';
 import GraphicWarningGate from '../../components/media/GraphicWarningGate';
 import OverlayActionRailButton from '../../components/media/OverlayActionRailButton';
 import OptimizedImage from '../../components/media/OptimizedImage';
+import VideoCaptionOverlay from '../../components/media/VideoCaptionOverlay';
 import { resolvePostAttachmentMediaUrl } from '../../utils/postAttachmentMedia';
 import ContentInterestSurvey from '../../components/recommendation/ContentInterestSurvey';
 import ReactionReactorsModal from '../../community/components/ReactionReactorsModal';
@@ -158,8 +158,6 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
   onDelete,
   onRemix,
   onOpenSeries,
-  headlinePreviewLimit = 56,
-  descriptionPreviewLimit = 90,
   interestSurveyEnabled = false,
   initialIsFollowing,
   reactionTargetType = 'SCROLL',
@@ -186,9 +184,21 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
   const [bufferHealth, setBufferHealth] = useState(0);
   const [mediaError, setMediaError] = useState(false);
   const [mediaReloadToken, setMediaReloadToken] = useState(0);
+  const [activeMediaSourceIndex, setActiveMediaSourceIndex] = useState(0);
   const [interestSignal, setInterestSignal] = useState<string | null>(scroll.viewer?.feedbackSignal || null);
   const media = resolveInlineMedia(scroll?.media || scroll, { typeHint: 'video' });
-  const mediaUrl = media.src;
+  const mediaSourceCandidates = useMemo(() => {
+    const seen = new Set<string>();
+    return [media.src, media.fallbackSrc]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .filter((value) => {
+        if (seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
+  }, [media.fallbackSrc, media.src]);
+  const mediaUrl = mediaSourceCandidates[activeMediaSourceIndex] || mediaSourceCandidates[0] || '';
   const playbackSrc = (() => {
     const raw = String(mediaUrl || '').trim();
     if (!raw) return '';
@@ -204,7 +214,8 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
   useEffect(() => {
     setMediaError(false);
     setMediaReloadToken(0);
-  }, [mediaUrl, scroll.id]);
+    setActiveMediaSourceIndex(0);
+  }, [media.fallbackSrc, media.src, scroll.id]);
   const preloadMode = resolveScrollPreloadMode({
     isActive,
     isNeighbor,
@@ -240,8 +251,7 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
   const authorProfileUrl = resolveScrollAuthorProfileUrl(scroll);
   const description = String(scroll.description || '').trim();
   const title = String(scroll.title || '').trim();
-  const headlineLine = title || description || 'Scroll video';
-  const secondaryLine = title && description ? description : '';
+  const captionLine = description;
   const dashGcoinTotal = Number(scroll.dashGcoinTotal ?? scroll.metrics?.dashGcoinTotal ?? 0);
   const tagCount = Array.isArray(scroll.tags) ? scroll.tags.length : 0;
   const sourceHeadline = String(scroll.sourceScroll?.title || scroll.sourceScroll?.description || '').trim();
@@ -258,6 +268,56 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
   const canDeleteScroll = Boolean(scroll.canDelete) || isOwner;
   const hasOwnerActions = canEditScroll || canDeleteScroll;
   const overlayControlsVisible = controlsVisible || ownerMenuOpen;
+  // Keep the core engagement rail available on touch surfaces; media and metadata can still recede.
+  const actionRailVisible = overlayControlsVisible || touchOverlayMode;
+  // Follow and response actions remain usable on touch surfaces after the cinematic chrome fades.
+  const persistentTouchControlsVisible = overlayControlsVisible || touchOverlayMode;
+  const authorIdentity = (
+    <>
+      <div className="h-10 w-10 shrink-0 overflow-hidden rounded-full bg-white/15 ring-2 ring-white/70 flex items-center justify-center text-sm font-semibold">
+        {authorAvatar ? (
+          <OptimizedImage
+            src={authorAvatar}
+            alt={authorName}
+            width={80}
+            height={80}
+            sizes="40px"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span>{authorInitial(authorName)}</span>
+        )}
+      </div>
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <p className="truncate text-sm font-semibold leading-tight">{authorName}</p>
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5">
+          <p className="min-w-0 truncate text-xs text-white/80">
+            {scroll.author?.username ? `@${scroll.author.username}` : 'Scrolith'}
+          </p>
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/25 bg-black/50 px-2 py-1 text-[10px] font-semibold tracking-wide text-white shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md"
+            data-testid="scroll-brand-label"
+            title="Scroll"
+          >
+            <img src="/scroll-mark.svg" alt="" className="h-4 w-3.5 object-contain" aria-hidden="true" />
+            <span>Scroll</span>
+          </span>
+          {scroll.isAIEnhanced ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/20 px-2 py-1 text-[10px] font-semibold text-cyan-100 ring-1 ring-cyan-300/40">
+              <Sparkles className="h-3 w-3" />
+              AI
+            </span>
+          ) : null}
+          {scroll.graphicWarning ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-1 text-[10px] font-semibold text-amber-100 ring-1 ring-amber-300/40">
+              <AlertTriangle className="h-3 w-3" />
+              Graphic warning
+            </span>
+          ) : null}
+        </div>
+      </div>
+    </>
+  );
   const reactionInitialCounts = useMemo(
     () => (Number(scroll.metrics?.likes || 0) > 0 ? { like: Number(scroll.metrics.likes || 0) } : undefined),
     [scroll.metrics?.likes]
@@ -850,13 +910,21 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
               onPause={handlePause}
               onPlay={handlePlay}
               onSeeked={handleSeeked}
-              onError={() => setMediaError(true)}
+              onError={() => {
+                if (activeMediaSourceIndex + 1 < mediaSourceCandidates.length) {
+                  setActiveMediaSourceIndex((index) => index + 1);
+                  setMediaError(false);
+                  return;
+                }
+                setMediaError(true);
+              }}
               poster={safePoster}
               onContextMenu={(event) => event.preventDefault()}
               onClick={(event) => {
                 event.stopPropagation();
                 if (mediaError) {
                   setMediaError(false);
+                  setActiveMediaSourceIndex(0);
                   setMediaReloadToken((token) => token + 1);
                   return;
                 }
@@ -878,6 +946,7 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
                     event.preventDefault();
                     event.stopPropagation();
                     setMediaError(false);
+                    setActiveMediaSourceIndex(0);
                     setMediaReloadToken((token) => token + 1);
                   }}
                   className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-slate-900"
@@ -913,8 +982,9 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
 
       {/* top-14 clears feed Mute/Create header so the name never sits under those controls */}
       <div className="pointer-events-none absolute left-3 right-3 top-14 z-30 flex items-start justify-between gap-2 sm:left-4 sm:right-4 sm:top-16 sm:gap-3">
-          {/* Author column — full remaining width under header; name truncates, never under Mute */}
-          <div className="pointer-events-auto min-w-0 flex-1 pr-2">
+        {/* Author identity and Follow share one stable row on touch and desktop surfaces. */}
+        <div className="pointer-events-auto min-w-0 flex-1 pr-2">
+          <div className="flex w-full max-w-full items-start gap-2 sm:gap-2.5">
             {authorProfileUrl ? (
               <button
                 type="button"
@@ -923,84 +993,22 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
                   event.stopPropagation();
                   navigate(authorProfileUrl, { state: { fromMobileHome: true } });
                 }}
-                className="flex w-full max-w-full items-start gap-2.5 text-left sm:gap-3"
+                className="flex min-w-0 flex-1 items-start gap-2.5 text-left sm:gap-3"
               >
-                <div className="h-10 w-10 shrink-0 rounded-full bg-white/15 ring-2 ring-white/70 overflow-hidden flex items-center justify-center text-sm font-semibold">
-                  {authorAvatar ? (
-                    <OptimizedImage
-                      src={authorAvatar}
-                      alt={authorName}
-                      width={80}
-                      height={80}
-                      sizes="40px"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <span>{authorInitial(authorName)}</span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  <p className="truncate text-sm font-semibold leading-tight">{authorName}</p>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2">
-                    <p className="truncate text-xs text-white/80">{scroll.author?.username ? `@${scroll.author.username}` : 'Scrolith'}</p>
-                    {scroll.isAIEnhanced ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/20 px-2 py-1 text-[10px] font-semibold text-cyan-100 ring-1 ring-cyan-300/40">
-                        <Sparkles className="h-3 w-3" />
-                        AI
-                      </span>
-                    ) : null}
-                    {scroll.graphicWarning ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-1 text-[10px] font-semibold text-amber-100 ring-1 ring-amber-300/40">
-                        <AlertTriangle className="h-3 w-3" />
-                        Graphic warning
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
+                {authorIdentity}
               </button>
             ) : (
-              <div className="flex w-full max-w-full items-start gap-2.5 sm:gap-3">
-                <div className="h-10 w-10 shrink-0 rounded-full bg-white/15 ring-2 ring-white/70 overflow-hidden flex items-center justify-center text-sm font-semibold">
-                  {authorAvatar ? (
-                    <OptimizedImage
-                      src={authorAvatar}
-                      alt={authorName}
-                      width={80}
-                      height={80}
-                      sizes="40px"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <span>{authorInitial(authorName)}</span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 overflow-hidden">
-                  <p className="truncate text-sm font-semibold leading-tight">{authorName}</p>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-2">
-                    <p className="truncate text-xs text-white/80">{scroll.author?.username ? `@${scroll.author.username}` : 'Scrolith'}</p>
-                    {scroll.isAIEnhanced ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/20 px-2 py-1 text-[10px] font-semibold text-cyan-100 ring-1 ring-cyan-300/40">
-                        <Sparkles className="h-3 w-3" />
-                        AI
-                      </span>
-                    ) : null}
-                    {scroll.graphicWarning ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-1 text-[10px] font-semibold text-amber-100 ring-1 ring-amber-300/40">
-                        <AlertTriangle className="h-3 w-3" />
-                        Graphic warning
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
+              <div className="flex min-w-0 flex-1 items-start gap-2.5 sm:gap-3">{authorIdentity}</div>
             )}
-            <div className="min-w-0">
+            <div className="shrink-0 pt-0.5">
               <div
-                className={`mt-2 transition-all duration-300 ${
+                className={`transition-all duration-300 ${
                   touchOverlayMode
-                    ? overlayControlsVisible
-                      ? 'max-h-10 opacity-100'
-                      : 'max-h-0 overflow-hidden opacity-0 pointer-events-none'
+                    ? (
+                      persistentTouchControlsVisible
+                        ? 'max-h-10 opacity-100'
+                        : 'max-h-0 overflow-hidden opacity-0 pointer-events-none'
+                    )
                     : ''
                 }`}
               >
@@ -1012,18 +1020,9 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
                   className="h-7 border-white/15 bg-white/10 px-2.5 text-[11px] text-white shadow-sm backdrop-blur-sm hover:bg-white/20 hover:text-white"
                 />
               </div>
-              {/* Scroll brand — directly under Follow (enterprise product label) */}
-              <div
-                className="mt-1.5"
-                data-testid="scroll-brand-label"
-              >
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-white/25 bg-black/50 px-2.5 py-1 text-[10px] font-semibold tracking-wide text-white shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md">
-                  <Clapperboard className="h-3 w-3 text-cyan-200" aria-hidden />
-                  <span>Scroll</span>
-                </div>
-              </div>
             </div>
           </div>
+        </div>
 
         {/* Right chrome: owner/expand only. Mute is in ScrollFeed header next to Create (no name overlap). */}
         <div
@@ -1124,7 +1123,7 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
 
       <div
         className={`absolute right-2.5 top-1/2 z-30 pointer-events-auto flex -translate-y-1/2 flex-col items-center gap-1.5 transition-all duration-300 sm:right-3 ${
-          overlayControlsVisible ? 'translate-x-0 opacity-100' : 'translate-x-6 opacity-0 pointer-events-none'
+          actionRailVisible ? 'translate-x-0 opacity-100' : 'translate-x-6 opacity-0 pointer-events-none'
         }`}
       >
         <ReactionBar
@@ -1195,10 +1194,10 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
 
       <div
         className={`pointer-events-none absolute inset-x-3 bottom-4 z-20 transition-all duration-300 ease-out motion-reduce:transition-none sm:inset-x-4 sm:bottom-5 ${
-          !overlayControlsVisible
+          !persistentTouchControlsVisible
             ? 'translate-y-4 opacity-0 pointer-events-none'
             : 'translate-y-0 opacity-100'
-        } ${overlayControlsVisible ? 'pr-[72px] sm:pr-[88px]' : 'pr-0'}`}
+        } ${persistentTouchControlsVisible ? 'pr-[72px] sm:pr-[88px]' : 'pr-0'}`}
       >
         <div className="w-full max-w-[min(32rem,100%)] space-y-1.5">
           {scroll.sourceScroll ? (
@@ -1218,24 +1217,8 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
               </div>
             </div>
           ) : null}
+          <VideoCaptionOverlay text={captionLine} className="max-w-full" />
           <div className="pointer-events-auto rounded-2xl border border-white/10 bg-black/22 px-2.5 py-2 text-white shadow-[0_14px_34px_-30px_rgba(15,23,42,0.88)] backdrop-blur-[3px]">
-            <ExpandablePreviewText
-              text={headlineLine}
-              limit={headlinePreviewLimit}
-              textClassName="text-[14px] font-semibold leading-snug text-white sm:text-[15px]"
-              buttonClassName="text-white/90"
-              moreLabel="More"
-              lessLabel="Less"
-            />
-            {secondaryLine ? (
-              <ExpandablePreviewText
-                text={secondaryLine}
-                limit={descriptionPreviewLimit}
-                className="mt-1"
-                textClassName="text-[13px] leading-snug text-white/82 sm:text-sm sm:leading-relaxed"
-                buttonClassName="text-white/90"
-              />
-            ) : null}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-white/70 sm:text-[11px]">
               {scroll.location ? (
                 <span className="inline-flex items-center rounded-full border border-white/10 bg-white/8 px-2 py-0.5">

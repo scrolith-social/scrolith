@@ -1,12 +1,12 @@
 import React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Sparkles, X } from "lucide-react";
+import { KeyRound, Sparkles, X } from "lucide-react";
 import AuthSocialButtons from "../../auth/AuthSocialButtons";
-import ScrolithHumanVerification from "../human-verification/ScrolithHumanVerification";
 import { useContent } from "../../context/ContentContext";
 import { useUser } from "../../context/UserContext";
 import { CMSService } from "../../services/cms";
 import { executeRecaptcha } from "../../services/recaptcha";
+import ScrolithHumanVerification from "../human-verification/ScrolithHumanVerification";
 import {
   AuthPagesConfig,
   GuestHeroAuthContent,
@@ -15,6 +15,12 @@ import {
   UserRole
 } from "../../types";
 import { buildScrolithaPath } from "../../utils/scrolithaLaunch";
+import { resolveAuthenticatedEntryPath } from "../../utils/authRedirect";
+import { PasskeyService, passkeySupport } from "../../services/passkeys";
+import RememberedProfilesPanel from "../auth/RememberedProfilesPanel";
+import type { RememberedProfile } from "../../services/rememberedProfiles";
+
+type LoginApprovalState = { id: string; approvalToken: string; expiresAt?: string | null };
 
 const sanitizeLines = (value: any): string[] =>
   Array.isArray(value)
@@ -30,6 +36,20 @@ export const isInlineGuestAuthUrl = (url?: string): boolean => {
 };
 
 const isExternalUrl = (url?: string): boolean => /^https?:\/\//i.test(String(url || "").trim());
+const formatLoginApprovalExpiry = (value?: string | null) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+const describeLoginError = (error: any) => {
+  const code = String(error?.code || error?.response?.data?.code || error?.response?.data?.data?.code || '').toUpperCase();
+  if (code === 'DEVICE_POSSESSION_REQUIRED') return 'This trusted device must verify its security key before signing in.';
+  if (code === 'DEVICE_KEY_REQUIRED') return 'This device cannot create its security key. Enable secure storage and try again.';
+  if (code === 'LOGIN_APPROVAL_INVALID') return 'This login approval is no longer valid. Please sign in again.';
+  if (code === 'LOGIN_APPROVAL_REQUIRED') return 'Approve this login from an existing trusted Scrolith session.';
+  return error?.message || 'Unable to sign in.';
+};
 
 const scheduleGuestIdleTask = (callback: () => void, timeout = 1200) => {
   if (typeof window === "undefined") return () => {};
@@ -104,6 +124,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   const [showSignupPassword, setShowSignupPassword] = React.useState(false);
   const [showSignupConfirm, setShowSignupConfirm] = React.useState(false);
   const [loginLoading, setLoginLoading] = React.useState(false);
+  const [passkeyLoading, setPasskeyLoading] = React.useState(false);
   const [signupLoading, setSignupLoading] = React.useState(false);
   const [loginError, setLoginError] = React.useState("");
   const [signupErrors, setSignupErrors] = React.useState<Record<string, string>>({});
@@ -111,9 +132,43 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   const [loginHvRequired, setLoginHvRequired] = React.useState(true);
   const [signupHvToken, setSignupHvToken] = React.useState<string | null>(null);
   const [signupHvRequired, setSignupHvRequired] = React.useState(true);
+  const [loginApproval, setLoginApproval] = React.useState<LoginApprovalState | null>(null);
+  const approvalStatusInFlightRef = React.useRef(false);
+  const approvalExchangeInFlightRef = React.useRef(false);
   const embeddedModalSurface = hideStandaloneLinks;
   const formSpacingClass = embeddedModalSurface ? "space-y-3" : "space-y-4";
   const inputPaddingClass = embeddedModalSurface && !compactSurface ? "py-2.5" : "py-3";
+  const passkeysEnabled = passkeySupport.enabled();
+  const passkeysAvailable = passkeySupport.available();
+
+  const handleRememberedContinue = async (profile: RememberedProfile) => {
+    setLoginError("");
+    try {
+      const { AuthService } = await import("../../services/authService");
+      const current = await AuthService.getCurrentUserWithStatus();
+      if (current.user && String(current.user.id) === profile.userId) {
+        window.location.assign(resolveAuthenticatedEntryPath(current.user as any));
+        return;
+      }
+      if (current.unauthorized) await AuthService.clearToken();
+    } catch {
+      // Fall through to the normal identity-aware login form.
+    }
+    setLoginError(`Continue as ${profile.displayName} requires a quick sign-in to confirm this account.`);
+    setActiveTab("login");
+  };
+
+  const handleUseAnotherProfile = async () => {
+    try {
+      const { AuthService } = await import("../../services/authService");
+      await AuthService.clearToken();
+    } catch {
+      // Best effort only; the generic login form remains available.
+    }
+    setLoginForm({ email: "", password: "" });
+    setLoginError("");
+    setActiveTab("login");
+  };
 
   React.useEffect(() => {
     setActiveTab(normalizeGuestAuthTab(defaultTab || content?.defaultTab));
@@ -148,6 +203,56 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
     };
   }, []);
 
+  React.useEffect(() => {
+    approvalStatusInFlightRef.current = false;
+    approvalExchangeInFlightRef.current = false;
+  }, [loginApproval?.id]);
+
+  React.useEffect(() => {
+    if (!loginApproval?.id || !loginApproval.approvalToken) return undefined;
+    let stopped = false;
+    const pollApproval = async () => {
+      if (approvalStatusInFlightRef.current || approvalExchangeInFlightRef.current) return;
+      approvalStatusInFlightRef.current = true;
+      try {
+        const { DeviceSecurityService, traceDeviceSecurity } = await import("../../services/deviceSecurity");
+        traceDeviceSecurity("approval_poll_started", { approvalStateInitialized: true, statusPollingStarted: true });
+        const status = await DeviceSecurityService.getApprovalStatus(loginApproval.id, loginApproval.approvalToken);
+        if (stopped) return;
+        const current = String(status?.status || "").toUpperCase();
+        if (!current || current === "PENDING") return;
+        if (current === "APPROVED") {
+          approvalExchangeInFlightRef.current = true;
+          setLoginLoading(true);
+          const { AuthService } = await import("../../services/authService");
+          const exchanged = await AuthService.exchangeApprovedLogin(loginApproval.id, loginApproval.approvalToken);
+          if (stopped) return;
+          if (exchanged.success && exchanged.user) {
+            window.dispatchEvent(new Event("scrolith:auth-changed"));
+            window.location.assign(resolveAuthenticatedEntryPath(exchanged.user as any));
+            return;
+          }
+          setLoginApproval(null);
+          setLoginError(exchanged.error || "Unable to complete approved login.");
+          return;
+        }
+        setLoginApproval(null);
+        setLoginError(current === "REJECTED" ? "This login was rejected from your trusted session." : current === "EXPIRED" ? "This login approval expired. Please sign in again." : "This login approval is no longer valid. Please sign in again.");
+      } catch (error: any) {
+        if (!stopped) {
+          setLoginApproval(null);
+          setLoginError(error?.response?.data?.error || error?.message || "Unable to check login approval.");
+        }
+      } finally {
+        approvalStatusInFlightRef.current = false;
+        if (!stopped && approvalExchangeInFlightRef.current) setLoginLoading(false);
+      }
+    };
+    void pollApproval();
+    const timer = window.setInterval(() => void pollApproval(), 3000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [loginApproval]);
+
   const socialConfig = authConfig?.social_auth ?? (authConfig as any)?.socialAuth;
   const signupContent = authConfig?.signup;
 
@@ -176,20 +281,46 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   const handleLoginSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginError("");
+    if (loginApproval) return;
     if (loginHvRequired && !loginHvToken) {
       setLoginError("Please complete human verification to continue.");
       return;
     }
     setLoginLoading(true);
+    let approvalRequired = false;
     try {
       const ok = await login(loginForm.email.trim(), loginForm.password, {
-        humanVerificationToken: loginHvToken || undefined
+        humanVerificationToken: loginHvToken || undefined,
+        onLoginApprovalRequired: (approval) => {
+          approvalRequired = true;
+          setLoginApproval(approval);
+          setLoginError("");
+        }
       });
-      if (!ok) setLoginError("Invalid credentials. Please try again.");
+      if (!ok && !approvalRequired) setLoginError("Invalid credentials. Please try again.");
     } catch (error: any) {
-      setLoginError(error?.message || "Unable to sign in.");
+      setLoginError(describeLoginError(error));
     } finally {
       setLoginLoading(false);
+    }
+  };
+
+  const handlePasskeyLogin = async () => {
+    if (loginLoading || passkeyLoading || loginApproval) return;
+    setLoginError("");
+    setPasskeyLoading(true);
+    try {
+      const result = await PasskeyService.authenticate(loginForm.email);
+      window.dispatchEvent(new Event("scrolith:auth-changed"));
+      window.location.assign(resolveAuthenticatedEntryPath(result.user as any));
+    } catch (error: any) {
+      const message = PasskeyService.getErrorMessage(
+        error,
+        "Passkey sign-in was cancelled or could not be completed."
+      );
+      if (!/cancel|abort|dismiss/i.test(message)) setLoginError(message);
+    } finally {
+      setPasskeyLoading(false);
     }
   };
 
@@ -282,11 +413,44 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
       </div>
       {activeTab === "login" ? (
         <form className={formSpacingClass} onSubmit={handleLoginSubmit}>
+          <RememberedProfilesPanel
+            compact={embeddedModalSurface || compactSurface}
+            onContinue={handleRememberedContinue}
+            onUseAnother={handleUseAnotherProfile}
+          />
           {content?.enableSocialLogin !== false ? (
             <AuthSocialButtons mode="login" config={socialConfig || undefined} redirectTo="/" />
           ) : null}
+          {passkeysEnabled ? (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={handlePasskeyLogin}
+                disabled={loginLoading || passkeyLoading || Boolean(loginApproval) || !passkeysAvailable}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-900 transition hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <KeyRound className="h-4 w-4" />
+                {passkeyLoading ? "Waiting for passkey..." : passkeysAvailable ? "Continue with a passkey" : "Passkey unavailable in this browser"}
+              </button>
+              <p className="text-center text-xs leading-5 text-slate-500">
+                {passkeysAvailable
+                  ? "Use a saved Scrolith passkey on this device. Enter your email first when you want to use a specific account. After password sign-in, open Settings > Security to save this account with a passkey."
+                  : "Passkeys require a supported secure browser or the latest Scrolith mobile app. Password and social sign-in remain available."}
+              </p>
+            </div>
+          ) : null}
           {loginError ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{loginError}</div>
+          ) : null}
+          {loginApproval ? (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 shadow-sm">
+              <p className="font-semibold text-blue-950">Waiting for trusted-device approval</p>
+              <p className="mt-1 leading-6">Open Scrolith on a device that is already signed in, go to Settings &gt; Security, then approve this login.</p>
+              {formatLoginApprovalExpiry(loginApproval.expiresAt) ? <p className="mt-1 text-xs font-medium text-blue-800">Expires at {formatLoginApprovalExpiry(loginApproval.expiresAt)}</p> : null}
+              <button type="button" disabled={loginLoading} onClick={() => { if (!loginLoading) { setLoginApproval(null); setLoginError(""); } }} className="mt-3 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60">
+                {loginLoading ? "Completing approved login..." : "Cancel approval request"}
+              </button>
+            </div>
           ) : null}
           <input
             type="email"
@@ -318,7 +482,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
           <div className="flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
-              onClick={() => selectAuthTab("signup")}
+              onClick={() => setActiveTab("signup")}
               className="text-left font-semibold text-blue-700 hover:text-blue-800"
             >
               New here? Create account
@@ -337,10 +501,11 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
           <div className={embeddedModalSurface ? "pt-1" : ""}>
             <button
               type="submit"
-              disabled={loginLoading || (loginHvRequired && !loginHvToken)}
+                disabled={loginLoading || (loginHvRequired && !loginHvToken)}
+                aria-disabled={Boolean(loginApproval)}
               className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loginLoading ? "Signing in..." : content?.loginCtaLabel || "Login"}
+              {loginApproval ? "Waiting for approval..." : loginLoading ? "Signing in..." : content?.loginCtaLabel || "Login"}
             </button>
           </div>
           {!hideStandaloneLinks ? (
@@ -475,13 +640,6 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
             </span>
           </label>
           {signupErrors.terms ? <p className="mt-1 text-xs text-red-600">{signupErrors.terms}</p> : null}
-          <ScrolithHumanVerification
-            endpoint="signup"
-            onVerified={setSignupHvToken}
-            onRequiredChange={setSignupHvRequired}
-            onError={(message) => setSignupErrors((prev) => ({ ...prev, submit: message }))}
-            className={embeddedModalSurface ? "p-3 shadow-none" : ""}
-          />
           <div className="flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
             <button
               type="button"
@@ -496,6 +654,13 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
               </Link>
             ) : null}
           </div>
+          <ScrolithHumanVerification
+            endpoint="signup"
+            onVerified={setSignupHvToken}
+            onRequiredChange={setSignupHvRequired}
+            onError={(message) => setSignupErrors((prev) => ({ ...prev, submit: message }))}
+            className={embeddedModalSurface ? "p-3 shadow-none" : ""}
+          />
           <div className={embeddedModalSurface ? "pt-1" : ""}>
             <button
               type="submit"

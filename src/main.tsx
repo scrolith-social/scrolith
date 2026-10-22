@@ -3,11 +3,13 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 
-const WEB_CACHE_RESET_RELOAD_KEY = 'scrolith:web-cache-reset-reloaded-v6'
+// Hotfix 2026-07-24: bust Vite entry hash after canary poisoned immutable 404 caches.
+const WEB_CACHE_RESET_RELOAD_KEY = 'scrolith:web-cache-reset-reloaded-v7'
 const FORCE_BROWSER_CACHE_RESET =
   import.meta.env.VITE_FORCE_BROWSER_CACHE_RESET === 'true' ||
   (typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('resetAppShell') === '1');
+const INSTANT_GRAPH_BUILD_ENABLED = import.meta.env.VITE_INSTANT_GRAPH_ENABLED === 'true';
 
 const runWhenIdle = (callback: () => void, timeout = 1200) => {
   const idleCallback = (window as any).requestIdleCallback;
@@ -124,7 +126,28 @@ if (import.meta.env.PROD && FORCE_BROWSER_CACHE_RESET && 'serviceWorker' in navi
   });
 }
 
-if (isNative()) {
+// Phase 1: keep the native WebView HTTP cache intact between launches. The old
+// startup cleanup erased precisely the shell/media cache needed for offline
+// repeat opens. The explicit resetAppShell escape hatch above remains intact.
+if (INSTANT_GRAPH_BUILD_ENABLED && !isNative() && import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    runWhenIdle(() => {
+      void navigator.serviceWorker
+        .register('/sw.js', { scope: '/' })
+        .then(() => {
+          void import('./services/instantGraph').then(({ trackInstantGraphMetric }) => {
+            trackInstantGraphMetric('sw_registered');
+          });
+        })
+        .catch(() => {});
+    }, 1000);
+  }, { once: true });
+}
+
+// Preserve the legacy native cache-reset behavior for builds that do not carry
+// the Instant Graph candidate. Candidate builds intentionally retain WebView
+// cache between launches so the new offline shell can work.
+if (!INSTANT_GRAPH_BUILD_ENABLED && isNative()) {
   runAfterLoadIdle(() => {
     void clearBrowserCaches();
   }, 1800);

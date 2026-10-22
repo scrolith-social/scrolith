@@ -32,10 +32,10 @@ import { useCurrency } from '../context/CurrencyContext';
 import { useUser } from '../context/UserContext';
 import FilePickerModal from '../dashboard/shared/FilePickerModal';
 import AdVideoPlayer from '../components/ads/AdVideoPlayer';
+import AIComposerAssist from '../components/ai/AIComposerAssist';
 import { PaymentService } from '../services/payment';
 import { PaymentGateway } from '../types';
 import { getUserFacingPaymentMethodName } from '../utils/paymentGatewayDisplay';
-import { DEFAULT_AD_TARGET_COUNTRIES } from '../constants/defaultAudienceOptions';
 import { resolveAssetUrl } from '../utils/assetUrl';
 import {
   resolvePostAttachmentMediaUrl,
@@ -789,7 +789,7 @@ const MyAds = () => {
       ? adsConfig.targetCountries
           .map((entry: any) => String(entry || '').trim())
           .filter(Boolean)
-      : DEFAULT_AD_TARGET_COUNTRIES;
+      : [];
     const selected = Array.isArray(form.targetCountries)
       ? form.targetCountries.map((entry) => String(entry || '').trim()).filter(Boolean)
       : [];
@@ -3820,6 +3820,14 @@ const MyAds = () => {
                   placeholder="Ad copy"
                   className="rounded-xl border border-gray-200 px-4 py-3 text-sm w-full"
                   rows={3}
+                />
+                <AIComposerAssist
+                  value={form.body}
+                  surface="ads"
+                  defaultMode="professional"
+                  compact
+                  className="mt-3"
+                  onApplyDraft={(draft) => setForm((prev) => ({ ...prev, body: draft }))}
                 />
               </div>
               <div className="space-y-3">

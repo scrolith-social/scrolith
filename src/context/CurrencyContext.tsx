@@ -3,7 +3,9 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { Currency } from '../types';
 import { INITIAL_CURRENCIES } from '../constants';
 import api from '../services/api';
+import { tokenStore } from '../services/tokenStore';
 import { useSocket } from './SocketContext';
+import { useUser } from './UserContext';
 import { convertMajorUnits, formatConvertedMoney, formatMoneyMajor } from '../utils/moneyConversion';
 
 interface CurrencyContextType {
@@ -35,6 +37,66 @@ interface CurrencyContextType {
 const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'Scrolith.pref.currency';
+const PUBLIC_CURRENCY_CACHE_TTL_MS = 60 * 1000;
+
+type ActiveCurrencyCatalog = {
+  list: Currency[];
+  baseCurrency: string;
+};
+
+let publicCurrencyCache: { catalog: ActiveCurrencyCatalog; cachedAt: number } | null = null;
+let publicCurrencyRequest: Promise<ActiveCurrencyCatalog> | null = null;
+
+type PublicCurrencyCatalogState = {
+  cache: { catalog: ActiveCurrencyCatalog; cachedAt: number } | null;
+  request: Promise<ActiveCurrencyCatalog> | null;
+};
+
+const getSharedPublicCurrencyState = (): PublicCurrencyCatalogState => {
+  const globalScope = globalThis as typeof globalThis & {
+    __SCROLITH_PUBLIC_CURRENCY_CATALOG__?: PublicCurrencyCatalogState;
+  };
+  if (!globalScope.__SCROLITH_PUBLIC_CURRENCY_CATALOG__) {
+    globalScope.__SCROLITH_PUBLIC_CURRENCY_CATALOG__ = {
+      cache: publicCurrencyCache,
+      request: publicCurrencyRequest
+    };
+  }
+  return globalScope.__SCROLITH_PUBLIC_CURRENCY_CATALOG__;
+};
+
+export const loadPublicCurrencyCatalog = async (options?: { force?: boolean }): Promise<ActiveCurrencyCatalog> => {
+  const sharedState = getSharedPublicCurrencyState();
+  const now = Date.now();
+  if (!options?.force && sharedState.cache && now - sharedState.cache.cachedAt < PUBLIC_CURRENCY_CACHE_TTL_MS) {
+    return sharedState.cache.catalog;
+  }
+  if (!options?.force && sharedState.request) return sharedState.request;
+
+  const request = api
+    .get('/currencies/active')
+    .then((response) => {
+      const payload = response?.data?.data ?? response?.data ?? [];
+      const meta = response?.data?.meta || {};
+      const list = Array.isArray(payload) && payload.length ? payload : INITIAL_CURRENCIES;
+      const catalog = {
+        list,
+        baseCurrency: meta.baseCurrency ? String(meta.baseCurrency).toUpperCase() : 'USD'
+      };
+      const cache = { catalog, cachedAt: Date.now() };
+      publicCurrencyCache = cache;
+      sharedState.cache = cache;
+      return catalog;
+    })
+    .finally(() => {
+      publicCurrencyRequest = null;
+      sharedState.request = null;
+    });
+
+  publicCurrencyRequest = request;
+  sharedState.request = request;
+  return request;
+};
 
 export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [availableCurrencies, setAvailableCurrencies] = useState<Currency[]>(INITIAL_CURRENCIES);
@@ -44,6 +106,7 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const defaultCurrency = INITIAL_CURRENCIES.find((c) => c.isDefault) || INITIAL_CURRENCIES[0];
   const [currency, setCurrencyState] = useState<Currency>(defaultCurrency);
   const { socket } = useSocket();
+  const { isAuthenticated, isLoading: authLoading } = useUser();
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -54,21 +117,25 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const refreshCurrencies = useCallback(async () => {
     try {
-      const response = await api.get('/currencies/active');
-      const payload = response?.data?.data ?? response?.data ?? [];
-      const meta = response?.data?.meta || {};
-      const list = Array.isArray(payload) && payload.length ? payload : INITIAL_CURRENCIES;
+      // Public catalog — safe for guest login/signup surfaces.
+      const { list, baseCurrency: loadedBaseCurrency } = await loadPublicCurrencyCatalog();
       setAvailableCurrencies(list);
-      if (meta.baseCurrency) setBaseCurrency(String(meta.baseCurrency).toUpperCase());
-      else setBaseCurrency('USD');
+      setBaseCurrency(loadedBaseCurrency || 'USD');
 
       let preferredCode: string | null = localStorage.getItem(STORAGE_KEY);
-      try {
-        const prefRes = await api.get('/currencies/preference');
-        const pref = prefRes?.data?.data?.preferredCurrency;
-        if (pref) preferredCode = String(pref).toUpperCase();
-      } catch {
-        /* unauthenticated or endpoint unavailable */
+
+      // Auth-only preference endpoint. Skip when guest so DevTools never logs 401
+      // on Welcome/Login/Signup (browser still surfaces failed XHR even if caught).
+      const token = await tokenStore.get();
+      const canLoadServerPreference = Boolean(token) && !authLoading && isAuthenticated;
+      if (canLoadServerPreference) {
+        try {
+          const prefRes = await api.get('/currencies/preference');
+          const pref = prefRes?.data?.data?.preferredCurrency;
+          if (pref) preferredCode = String(pref).toUpperCase();
+        } catch {
+          /* token expired or endpoint unavailable — keep local preference */
+        }
       }
 
       const selected =
@@ -85,15 +152,17 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       console.warn('Failed to load currencies, using defaults.', error);
       setRatesReady(false);
     }
-  }, []);
+  }, [authLoading, isAuthenticated]);
 
   useEffect(() => {
-    refreshCurrencies();
+    void refreshCurrencies();
   }, [refreshCurrencies]);
 
   useEffect(() => {
     if (!socket) return;
-    const handleSettings = () => refreshCurrencies();
+    const handleSettings = () => {
+      void refreshCurrencies();
+    };
     // Phase 28D — real-time pricing/catalog invalidation hooks (project conventions)
     socket.on('settings:updated', handleSettings);
     socket.on('currency:catalog:updated', handleSettings);
@@ -113,7 +182,16 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!found) return;
       setCurrencyState(found);
       localStorage.setItem(STORAGE_KEY, found.code);
-      void api.put('/currencies/preference', { preferredCurrency: found.code }).catch(() => undefined);
+      // Persist server-side only when a session exists (guest stays localStorage-only).
+      void (async () => {
+        const token = await tokenStore.get();
+        if (!token) return;
+        try {
+          await api.put('/currencies/preference', { preferredCurrency: found.code });
+        } catch {
+          /* ignore unauthenticated / transient failures */
+        }
+      })();
     },
     [availableCurrencies]
   );

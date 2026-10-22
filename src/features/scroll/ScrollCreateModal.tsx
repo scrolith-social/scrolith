@@ -17,6 +17,9 @@ import { ScrollService, type ScrollConfig, type ScrollSeriesDetail, type ScrollV
 import { useNotification } from '../../context/NotificationContext';
 import { useUser } from '../../context/UserContext';
 import OfferTagSelector from '../../components/commerce/OfferTagSelector';
+import CaptionEnhancementToolbar from '../../components/composer/CaptionEnhancementToolbar';
+import MentionHashtagTextarea from '../../community/components/MentionHashtagTextarea';
+import RichCaptionText from '../../community/components/RichCaptionText';
 import type { OfferTagSelection } from '../../utils/contentOffers';
 import type { PendingPostVideoScrollSource } from '../../utils/postVideoScrollBridge';
 import { LocationService } from '../../services/location';
@@ -24,6 +27,7 @@ import { getCurrentDeviceCoordinates } from '../../utils/deviceLocation';
 import type { ScrolithaRewriteMode } from '../../services/scrolitha';
 import { runScrolithaRewrite } from '../../utils/scrolithaRewrite';
 import type { LocationSuggestion } from '../../types';
+import ScrolithaMediaEnhanceOffer from '../../components/ai/ScrolithaMediaEnhanceOffer';
 
 type ScrollCreateModalProps = {
   open: boolean;
@@ -240,6 +244,12 @@ const ScrollCreateModal: React.FC<ScrollCreateModalProps> = ({
     const nextFile = event.target.files?.[0] || null;
     setVideoFile(nextFile);
     event.currentTarget.value = '';
+  };
+
+  const handleScrollMediaEnhancement = async (enhancedFile: File) => {
+    setVideoFile(enhancedFile);
+    setIsAIEnhanced(true);
+    showNotification('success', 'Scrolitha', 'Enhanced Scroll video is ready to review.');
   };
 
   useEffect(() => {
@@ -618,6 +628,12 @@ const ScrollCreateModal: React.FC<ScrollCreateModalProps> = ({
                 <div className="px-3 py-4 text-xs text-white/70">No video selected</div>
               )}
             </div>
+            <ScrolithaMediaEnhanceOffer
+              file={videoFile}
+              kind="video"
+              dark
+              onAccept={handleScrollMediaEnhancement}
+            />
           </div>
 
           {linkedSourceScroll ? (
@@ -755,19 +771,39 @@ const ScrollCreateModal: React.FC<ScrollCreateModalProps> = ({
           </div>
 
           <label className="block">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-white/70">Description</span>
-            <textarea
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="block text-xs font-semibold uppercase tracking-wide text-white/70">Caption</span>
+              <span className="text-[11px] font-medium text-white/45">{description.trim().length} characters</span>
+            </div>
+            <MentionHashtagTextarea
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              rows={3}
-              placeholder="Describe your scroll video"
-              className="w-full rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm outline-none focus:border-cyan-300"
+              onChange={setDescription}
+              placeholder="Optional caption. Add @mentions, #tags, emojis, or a polished highlight..."
+              className="min-h-[112px] w-full resize-none rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-sm outline-none focus:border-cyan-300"
             />
+            <div className="mt-3">
+              <CaptionEnhancementToolbar
+                value={description}
+                onChange={setDescription}
+                disabled={uploading || aiRewriting !== null}
+                variant="dark"
+              />
+            </div>
+            {description.trim() ? (
+              <div className="mt-2 rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs leading-5 text-white/70">
+                <span className="font-semibold text-cyan-100">Live caption preview:</span>{' '}
+                <RichCaptionText text={description.trim()} preserveWhitespace={false} />
+              </div>
+            ) : (
+              <div className="mt-2 text-xs leading-5 text-white/50">
+                Captions appear with the Scroll video across desktop, mobile web, and the Android app.
+              </div>
+            )}
             <div className="mt-3 rounded-2xl border border-cyan-300/15 bg-cyan-400/5 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold text-cyan-100">Improve with Scrolitha</div>
-                  <div className="text-xs text-white/50">Polish your description before publishing without leaving Scroll.</div>
+                  <div className="text-xs text-white/50">Polish your caption before publishing without leaving Scroll.</div>
                 </div>
                 {aiRewriting ? (
                   <div className="inline-flex items-center gap-2 text-xs text-cyan-100">

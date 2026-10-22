@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Loader2, PlusCircle, Radio, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Clapperboard, Loader2, PlusCircle, Radio, Search, Volume2, VolumeX, X } from 'lucide-react';
 import FeedLoadSkeleton from '../../components/feed/FeedLoadSkeleton';
 import type { AdCampaign, ScrollAdsRuntimePolicy } from '../../types';
 import ScrollCard from './ScrollCard';
@@ -8,6 +8,7 @@ import ScrollAdOverlay from './ScrollAdOverlay';
 import ScrollCreateModal from './ScrollCreateModal';
 import ScrollCommentsSheet from './ScrollCommentsSheet';
 import ScrollSeriesModal from './ScrollSeriesModal';
+import ScrollSearchOverlay from './ScrollSearchOverlay';
 import {
   ScrollService,
   type ScrollConfig,
@@ -31,17 +32,24 @@ import { INLINE_VIDEO_PREVIEW_AUTOPLAY } from '../../utils/inlineMedia';
 import {
   clearPendingPostVideoScrollSource,
   clearPendingPostVideoScrollViewerSource,
+  hasPostVideoViewerSource,
+  isPostVideoWatchSearch,
   readPendingPostVideoScrollSource,
   readPendingPostVideoScrollViewerSource,
   type PendingPostVideoScrollSource,
   type PendingPostVideoScrollViewerSource
 } from '../../utils/postVideoScrollBridge';
-import { resolvePostAttachmentMediaUrl, resolvePostAttachmentPosterUrl } from '../../utils/postAttachmentMedia';
+import {
+  resolvePostAttachmentMediaPair,
+  resolvePostAttachmentMediaUrl,
+  resolvePostAttachmentPosterUrl
+} from '../../utils/postAttachmentMedia';
 import { buildPublicAppUrl } from '../../utils/siteUrl';
 import { pickInterestSurveyCandidateIds } from '../../components/recommendation/ContentInterestSurvey';
 import { postOptionsApi } from '../../services/postOptions';
 import {
   buildScrollVideoUrl,
+  hasExplicitScrollVideoQuery,
   parseScrollVideoIdFromSearch
 } from '../../utils/scrollVideoRoutes';
 import {
@@ -98,6 +106,17 @@ const readStoredIndex = () => {
   if (!Number.isFinite(value) || value < 0) return 0;
   return Math.floor(value);
 };
+
+/** Clicked post-card / deep-linked video must not restore the previous session index. */
+const hasExplicitClickedVideoTarget = (
+  search?: string | null,
+  viewerSource?: PendingPostVideoScrollViewerSource | null
+) => {
+  const value = search ?? (typeof window !== 'undefined' ? window.location.search : '');
+  return isPostVideoWatchSearch(value) || hasExplicitScrollVideoQuery(value) || hasPostVideoViewerSource(viewerSource);
+};
+
+const readInitialActiveIndex = () => (hasExplicitClickedVideoTarget() ? 0 : readStoredIndex());
 
 const readMutedPreference = () => {
   const raw = String(localStorage.getItem(GLOBAL_SCROLL_MUTED_KEY) || 'true').toLowerCase();
@@ -340,9 +359,11 @@ const inferPostAttachmentType = (attachment: any) => {
 };
 
 const resolveAttachmentBridgeId = (attachment: any, fallback = '') => {
+  const descriptorFileId = resolvePostAttachmentMediaPair(attachment).fileId;
   return (
     String(
-      attachment?.fileId ||
+      descriptorFileId ||
+        attachment?.fileId ||
         attachment?.file_id ||
         attachment?.file?.id ||
         attachment?.asset?.id ||
@@ -502,6 +523,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
 }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const isPostVideoRoute = !embedded && isPostVideoWatchSearch(location.search);
   const routeState = (location.state as ScrollFeedRouteState | null) || null;
   const routePendingViewerSource = routeState?.pendingViewerSource || null;
   const { user } = useUser();
@@ -513,9 +535,10 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(() => readStoredIndex());
+  const [activeIndex, setActiveIndex] = useState(() => readInitialActiveIndex());
   const [muted, setMuted] = useState(() => readMutedPreference());
   const [createOpen, setCreateOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [config, setConfig] = useState<ScrollConfig | null>(null);
   const [sourceVideo, setSourceVideo] = useState<PendingPostVideoScrollSource | null>(null);
   const [editingScroll, setEditingScroll] = useState<ScrollVideo | null>(null);
@@ -548,13 +571,15 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
   const autoAdvanceOnEnd = !embedded && SCROLL_VIDEO_ROUTE_PATTERN.test(location.pathname);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const searchTriggerRef = useRef<HTMLButtonElement | null>(null);
   const itemRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const observerRef = useRef<IntersectionObserver | null>(null);
-  const viewerSeedSourceRef = useRef<PendingPostVideoScrollViewerSource | null>(null);
+  const viewerSeedSourceRef = useRef<PendingPostVideoScrollViewerSource | null>(initialViewerSource || null);
   const seededItemsRef = useRef<ScrollVideo[]>(Array.isArray(initialItems) ? initialItems.filter(Boolean) : []);
   const openedSeriesSourceRef = useRef<string | null>(null);
   const pendingViewerSourceConsumedRef = useRef(false);
   const consumedPostVideoRouteKeyRef = useRef<string | null>(null);
+  const targetLockIdRef = useRef<string | null>(null);
   const itemsRef = useRef<ScrollVideo[]>([]);
   const activeIndexRef = useRef(activeIndex);
   const nextCursorRef = useRef<string | null>(null);
@@ -796,6 +821,13 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
 
   const loadFeed = useCallback(
     async (cursor?: string | null) => {
+      // Explicit post-video routes are hydrated by the canonical target
+      // resolver below; the normal feed must not compete with that target.
+      if (!cursor && isPostVideoRoute) {
+        setLoading(false);
+        setLoadingMore(false);
+        return;
+      }
       try {
         if (cursor) {
           setLoadingMore(true);
@@ -818,8 +850,17 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
         const nextItems = Array.isArray(data?.items) ? data.items : [];
         const postVideoSeeds = Array.isArray(postVideoSeedResult?.items) ? postVideoSeedResult.items : [];
         postVideoNextCursorRef.current = postVideoSeedResult?.nextCursor || null;
-        const seededSource = !cursor ? viewerSeedSourceRef.current : null;
+        const seededSource = !cursor
+          ? viewerSeedSourceRef.current ||
+            (hasExplicitClickedVideoTarget(typeof window !== 'undefined' ? window.location.search : '')
+              ? readPendingPostVideoScrollViewerSource()
+              : null)
+          : null;
         const seededItem = seededSource ? buildViewerSeedScroll(seededSource) : null;
+        if (seededItem?.id && hasExplicitClickedVideoTarget(typeof window !== 'undefined' ? window.location.search : '', seededSource)) {
+          viewerSeedSourceRef.current = seededSource;
+          targetLockIdRef.current = seededItem.id;
+        }
         if (!isPostVideoOnlyCursor) {
           setConfig((data?.config as ScrollConfig) || null);
         }
@@ -858,7 +899,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
         setLoadingMore(false);
       }
     },
-    [loadPostVideoSeeds, profile.feedPageSize, showNotification]
+    [isPostVideoRoute, loadPostVideoSeeds, profile.feedPageSize, showNotification]
   );
 
   useEffect(() => {
@@ -983,6 +1024,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
       viewerSeedSourceRef.current = pendingViewerSource;
       const seededItem = buildViewerSeedScroll(pendingViewerSource);
       seededItemsRef.current = [seededItem];
+      targetLockIdRef.current = seededItem.id;
       setActiveIndex(0);
       setItems((prev) => [seededItem, ...prev.filter((entry) => entry.id !== seededItem.id)]);
       void hydratePostVideoStream(pendingViewerSource);
@@ -1033,6 +1075,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
     viewerSeedSourceRef.current = pendingViewerSource;
     const seededItem = buildViewerSeedScroll(pendingViewerSource);
     seededItemsRef.current = [seededItem];
+    targetLockIdRef.current = seededItem.id;
     setActiveIndex(0);
     setItems((prev) => [seededItem, ...prev.filter((entry) => entry.id !== seededItem.id)]);
     void hydratePostVideoStream(pendingViewerSource);
@@ -1075,6 +1118,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
     const localIndex = items.findIndex((entry) => entry.id === targetId);
     if (localIndex >= 0) {
       deepLinkResolvedRef.current = targetId;
+      targetLockIdRef.current = targetId;
       setDeepLinkError(null);
       setActiveIndex(localIndex);
       trackScrollDeepLinkSuccess(targetId);
@@ -1092,6 +1136,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
           throw new Error('unavailable');
         }
         deepLinkResolvedRef.current = targetId;
+        targetLockIdRef.current = video.id;
         setDeepLinkError(null);
         setItems((prev) => {
           if (prev.some((entry) => entry.id === video.id)) return prev;
@@ -1297,8 +1342,10 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
   ]);
 
   useEffect(() => {
+    if (targetLockIdRef.current) return;
+    if (hasExplicitClickedVideoTarget(location.search)) return;
     localStorage.setItem(LAST_SCROLL_INDEX_KEY, String(Math.max(0, activeIndex)));
-  }, [activeIndex]);
+  }, [activeIndex, location.search]);
 
   useEffect(() => {
     localStorage.setItem(GLOBAL_SCROLL_MUTED_KEY, muted ? 'true' : 'false');
@@ -1379,7 +1426,15 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
             best = { idx, ratio: entry.intersectionRatio };
           }
         }
-        if (best) setActiveIndex(best.idx);
+        if (best) {
+          const lockedId = targetLockIdRef.current;
+          if (lockedId) {
+            const lockedIdx = itemsRef.current.findIndex((entry) => entry.id === lockedId);
+            if (lockedIdx >= 0 && best.idx !== lockedIdx) return;
+            if (best.idx === lockedIdx) targetLockIdRef.current = null;
+          }
+          setActiveIndex(best.idx);
+        }
       },
       {
         root: container,
@@ -1398,11 +1453,51 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
 
   useEffect(() => {
     if (loading) return;
-    const idx = Math.max(0, Math.min(activeIndex, itemsRef.current.length - 1));
+    if (itemsRef.current.length === 0) return;
+
+    const lockedId = targetLockIdRef.current;
+    const seededSource = viewerSeedSourceRef.current;
+    const explicit = hasExplicitClickedVideoTarget(location.search, seededSource);
+    let idx = 0;
+
+    if (lockedId) {
+      const found = itemsRef.current.findIndex((entry) => entry.id === lockedId);
+      idx = found >= 0 ? found : 0;
+    } else if (explicit && (isPostVideoWatchSearch(location.search) || hasPostVideoViewerSource(seededSource))) {
+      const seed = seededSource;
+      const seedId = seed ? buildViewerSeedScroll(seed).id : '';
+      const found = seedId
+        ? itemsRef.current.findIndex((entry) => entry.id === seedId)
+        : itemsRef.current.findIndex((entry) => String(entry.id || '').startsWith('post-video:'));
+      idx = found >= 0 ? found : 0;
+      if (itemsRef.current[idx]?.id) targetLockIdRef.current = itemsRef.current[idx].id;
+    } else if (explicit) {
+      const deepLinkId = parseScrollVideoIdFromSearch(location.search);
+      const found = deepLinkId ? itemsRef.current.findIndex((entry) => entry.id === deepLinkId) : -1;
+      idx = found >= 0 ? found : 0;
+      if (found >= 0) targetLockIdRef.current = deepLinkId;
+    } else {
+      idx = Math.max(0, Math.min(activeIndexRef.current, itemsRef.current.length - 1));
+    }
+
+    setActiveIndex(idx);
     itemRefs.current[idx]?.scrollIntoView({ block: 'start', behavior: 'auto' });
-    // restore once after initial load
+    // restore once after initial load — never reuse lastIndex for a clicked/deep-linked video
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
+
+  useEffect(() => {
+    const lockedId = targetLockIdRef.current;
+    if (!lockedId || items.length === 0) return;
+    const idx = items.findIndex((entry) => entry.id === lockedId);
+    if (idx < 0) return;
+    if (activeIndexRef.current !== idx) setActiveIndex(idx);
+    itemRefs.current[idx]?.scrollIntoView({ block: 'start', behavior: 'auto' });
+    const timer = window.setTimeout(() => {
+      if (targetLockIdRef.current === lockedId) targetLockIdRef.current = null;
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [items, loading]);
 
   useEffect(() => {
     const threshold = Math.max(1, profile.prefetchWindow);
@@ -1421,6 +1516,29 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
     }
     prefetchScrollMediaUrls(urls, profile.dataSaver ? 1 : 2);
   }, [activeIndex, items, profile.dataSaver]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+
+    // React's delegated wheel listener may be passive; use a native listener because
+    // snap navigation intentionally consumes qualifying wheel gestures.
+    const onWheel = (event: WheelEvent) => {
+      if (isInteractiveScrollControlTarget(event.target)) return;
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || Math.abs(event.deltaY) < 40) return;
+      const now = Date.now();
+      if (now - wheelNavigationLockRef.current < 420) {
+        event.preventDefault();
+        return;
+      }
+      wheelNavigationLockRef.current = now;
+      event.preventDefault();
+      void navigateRelative(event.deltaY > 0 ? 1 : -1);
+    };
+
+    container.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => container.removeEventListener('wheel', onWheel, { capture: true });
+  }, [navigateRelative]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1895,7 +2013,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
   }, [embedded, navigate, onClose]);
 
   return (
-    <div className="relative h-screen bg-black text-white">
+    <div className="relative h-[100dvh] min-h-[100svh] w-full overflow-hidden bg-black text-white">
       {deepLinkError ? (
         <div
           className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-black/95 px-6 text-center"
@@ -1920,7 +2038,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
         Top chrome: Back | spacer | Mute + Create.
         Mute stays in the right cluster only — never centered over the author name.
       */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-2 px-3 py-3 sm:gap-3 sm:px-4 sm:py-4">
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-between gap-1 px-2 py-3 sm:gap-3 sm:px-4 sm:py-4">
         <button
           type="button"
           onClick={handleClose}
@@ -1929,18 +2047,41 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
         >
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <div className="pointer-events-auto ml-auto flex shrink-0 items-center gap-2">
+        <div className="pointer-events-auto mr-auto flex min-w-0 items-center gap-2 pl-1">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-cyan-200/30 bg-cyan-300/15 text-cyan-100 shadow-lg backdrop-blur-md">
+            <Clapperboard className="h-4 w-4" aria-hidden />
+          </span>
+          <div className="hidden min-w-0 sm:block">
+            <p className="truncate text-sm font-semibold tracking-wide text-white">Scroll</p>
+            <p className="truncate text-[10px] uppercase tracking-[0.18em] text-white/55">Discover in motion</p>
+          </div>
+        </div>
+        <div className="pointer-events-auto ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+          <button
+            ref={searchTriggerRef}
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-full border border-white/20 bg-black/45 px-0 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition hover:bg-black/75 [&>span]:hidden sm:h-11 sm:w-auto sm:px-3 sm:[&>span]:inline"
+            aria-label="Search Scroll videos"
+            aria-expanded={searchOpen}
+            aria-controls="scroll-search-dialog"
+            aria-haspopup="dialog"
+            data-testid="scroll-search-trigger"
+          >
+            <Search className="h-5 w-5 sm:h-4 sm:w-4" aria-hidden />
+            <span>Search</span>
+          </button>
           <button
             type="button"
             onClick={() => setMuted((prev) => !prev)}
-            className="inline-flex h-10 max-w-full items-center gap-1.5 rounded-full border border-white/20 bg-black/55 px-3 text-xs font-semibold text-white shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition hover:bg-black/75"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-full border border-white/20 bg-black/55 px-0 text-xs font-semibold text-white shadow-[0_8px_24px_rgba(0,0,0,0.35)] backdrop-blur-md transition hover:bg-black/75 sm:h-10 sm:w-auto sm:px-3"
             aria-label={muted ? 'Unmute all Scrolls' : 'Mute all Scrolls'}
             aria-pressed={muted}
             data-testid="scroll-mute-control"
-            title={muted ? 'Unmute' : 'Mute'}
-          >
-            {muted ? <VolumeX className="h-4 w-4 shrink-0" aria-hidden /> : <Volume2 className="h-4 w-4 shrink-0" aria-hidden />}
-            <span className="whitespace-nowrap">{muted ? 'Unmute' : 'Mute'}</span>
+            title={muted ? 'Unmute all Scrolls' : 'Mute all Scrolls'}
+            >
+            {muted ? <VolumeX className="h-5 w-5 shrink-0 sm:h-4 sm:w-4" aria-hidden /> : <Volume2 className="h-5 w-5 shrink-0 sm:h-4 sm:w-4" aria-hidden />}
+            <span className="hidden whitespace-nowrap sm:inline">{muted ? 'Unmute' : 'Mute'}</span>
           </button>
           <button
             type="button"
@@ -1950,10 +2091,12 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
               setRemixSource(null);
               setCreateOpen(true);
             }}
-            className="inline-flex shrink-0 items-center gap-2 rounded-full bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-200 transition"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center gap-2 rounded-full bg-cyan-300 px-0 text-sm font-semibold text-slate-950 hover:bg-cyan-200 transition sm:h-auto sm:w-auto sm:px-4 sm:py-2"
+            aria-label="Create Scroll"
+            title="Create Scroll"
           >
-            <PlusCircle className="h-4 w-4" />
-            Create
+            <PlusCircle className="h-5 w-5 sm:h-4 sm:w-4" aria-hidden />
+            <span className="hidden sm:inline">Create</span>
           </button>
         </div>
       </header>
@@ -1992,20 +2135,8 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
 
       <div
         ref={containerRef}
-        className="h-screen snap-y snap-mandatory overflow-y-auto"
+        className="h-[100dvh] min-h-[100svh] snap-y snap-mandatory overflow-y-auto"
         style={{ WebkitOverflowScrolling: 'touch', overscrollBehaviorY: 'contain', touchAction: 'pan-y' }}
-        onWheelCapture={(event) => {
-          if (isInteractiveScrollControlTarget(event.target)) return;
-          if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || Math.abs(event.deltaY) < 40) return;
-          const now = Date.now();
-          if (now - wheelNavigationLockRef.current < 420) {
-            event.preventDefault();
-            return;
-          }
-          wheelNavigationLockRef.current = now;
-          event.preventDefault();
-          void navigateRelative(event.deltaY > 0 ? 1 : -1);
-        }}
         onTouchStartCapture={(event) => {
           if (isInteractiveScrollControlTarget(event.target)) {
             touchSwipeStartRef.current = null;
@@ -2035,10 +2166,10 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
           <FeedLoadSkeleton
             variant="scroll"
             label="Loading Scroll feed"
-            className="h-screen w-full"
+            className="h-[100dvh] min-h-[100svh] w-full"
           />
         ) : items.length === 0 ? (
-          <div className="flex h-screen flex-col items-center justify-center px-6 text-center">
+          <div className="flex h-[100dvh] min-h-[100svh] flex-col items-center justify-center px-6 text-center">
             <p className="text-xl font-semibold">No Scroll videos yet.</p>
             <p className="mt-2 text-sm text-white/70">Create the first one and start your vertical feed.</p>
               <button
@@ -2073,7 +2204,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
                 ref={(node) => {
                   itemRefs.current[index] = node;
                 }}
-                className="h-screen w-full"
+                className="h-[100dvh] min-h-[100svh] w-full"
                 data-index={index}
                 data-virtualized={inWindow ? 'hot' : 'cold'}
               >
@@ -2091,7 +2222,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
                       return followStateMap[authorId] ?? scroll.viewer?.isFollowingAuthor;
                     })()
                   }
-                  autoplayEnabled={INLINE_VIDEO_PREVIEW_AUTOPLAY}
+                  autoplayEnabled={INLINE_VIDEO_PREVIEW_AUTOPLAY && !searchOpen}
                   muted={muted}
                   dataSaver={Boolean(profile.dataSaver || profile.lowBandwidth)}
                   networkClass={detectNetworkClass()}
@@ -2360,6 +2491,18 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
           setRemixSource(null);
         }}
         config={config}
+      />
+
+      <ScrollSearchOverlay
+        open={searchOpen}
+        onClose={() => {
+          setSearchOpen(false);
+          window.setTimeout(() => searchTriggerRef.current?.focus(), 0);
+        }}
+        onSelect={(selected) => {
+          setSearchOpen(false);
+          navigate(buildScrollVideoUrl(selected.id));
+        }}
       />
 
       <ScrollSeriesModal

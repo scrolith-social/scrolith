@@ -5,6 +5,7 @@ import { resolveAuthenticatedEntryPath } from '../utils/authRedirect';
 
 interface UserContextType {
   user: User | null;
+  activeRole: UserRole | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   getAdminProfile: () => any;
@@ -12,7 +13,7 @@ interface UserContextType {
   login: (
     email: string,
     password: string,
-    options?: { redirect?: boolean; humanVerificationToken?: string | null }
+    options?: UserLoginOptions
   ) => Promise<boolean>;
   logout: () => void;
   register: (
@@ -24,8 +25,16 @@ interface UserContextType {
     humanVerificationToken?: string | null
   ) => Promise<boolean>;
   updateUser: (updates: any) => void;
+  setActiveRole: (role: UserRole.FREELANCER | UserRole.EMPLOYER) => void;
   switchRole: () => void;
 }
+
+type LoginApprovalRequiredPayload = { id: string; approvalToken: string; expiresAt?: string | null };
+type UserLoginOptions = {
+  redirect?: boolean;
+  humanVerificationToken?: string | null;
+  onLoginApprovalRequired?: (approval: LoginApprovalRequiredPayload) => void;
+};
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
@@ -66,6 +75,16 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, fallback:
 
 export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [activeRoleOverride, setActiveRoleOverride] = useState<UserRole | null>(() => {
+    try {
+      const storedRole = String(window.sessionStorage.getItem('activeRole') || '').toLowerCase();
+      if (storedRole.includes('freelancer') || storedRole.includes('seller')) return UserRole.FREELANCER;
+      if (storedRole.includes('employer') || storedRole.includes('client')) return UserRole.EMPLOYER;
+    } catch {
+      // Session storage is best-effort.
+    }
+    return null;
+  });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -148,6 +167,29 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // Backfill the current browser/mobile identity into the additive trusted
+  // device registry. Failures are advisory and never interrupt a session.
+  useEffect(() => {
+    if (!isAuthenticated || !user?.id) return;
+    void import('../services/deviceSecurity')
+      .then(({ DeviceSecurityService }) => DeviceSecurityService.registerTrustedDevice())
+      .catch(() => undefined);
+  }, [isAuthenticated, user?.id]);
+
+  // Phase 1 Instant Graph: warm only non-sensitive critical metadata after the
+  // shell is interactive. The existing feed lifecycle owns the live feed fetch;
+  // this background path fills badges/conversation metadata and never blocks auth.
+  useEffect(() => {
+    if (!isAuthenticated || !user?.id) return;
+    let stop: (() => void) | undefined;
+    void import('../services/instantGraph')
+      .then(({ startInstantGraphPrefetch }) => {
+        stop = startInstantGraphPrefetch(String(user.id));
+      })
+      .catch(() => undefined);
+    return () => stop?.();
+  }, [isAuthenticated, user?.id]);
+
   // Get admin profile from localStorage
   const getAdminProfile = () => {
     try {
@@ -191,16 +233,27 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (
     email: string,
     password: string,
-    options?: { redirect?: boolean; humanVerificationToken?: string | null }
+    options?: UserLoginOptions
   ): Promise<boolean> => {
     setIsLoading(true);
-    
     try {
       const result = await AuthService.login({
         email,
         password,
-        humanVerificationToken: options?.humanVerificationToken
+        humanVerificationToken: options?.humanVerificationToken || undefined
       });
+      if (result.requiresLoginApproval && result.loginApproval?.id) {
+        const approval: LoginApprovalRequiredPayload = {
+          id: String(result.loginApproval.id),
+          approvalToken: String(result.loginApproval.approvalToken || ''),
+          expiresAt: result.loginApproval.expiresAt ? String(result.loginApproval.expiresAt) : null
+        };
+        if (options?.onLoginApprovalRequired && approval.approvalToken) {
+          options.onLoginApprovalRequired(approval);
+          return false;
+        }
+        throw new Error(result.error || 'Approve this login from an existing trusted session.');
+      }
       
       if (result.success && result.user) {
         // CRITICAL: Ensure admin role is recognized (initial best-effort from login payload)
@@ -253,7 +306,9 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         return true;
       }
-      throw new Error(result.error || 'Invalid credentials');
+      const loginError = new Error(result.error || 'Invalid credentials') as Error & { code?: string };
+      loginError.code = result.code;
+      throw loginError;
     } catch (error) {
       console.error('Login error:', error);
       throw error;
@@ -315,11 +370,14 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    const previousUserId = user?.id ? String(user.id) : null;
     setUser(null);
+    setActiveRoleOverride(null);
     setIsAuthenticated(false);
     try {
       localStorage.removeItem('admin_profile');
       localStorage.removeItem('user');
+      window.sessionStorage.removeItem('activeRole');
     } catch {}
 
     // Drop all private messaging media object URLs before navigation.
@@ -330,6 +388,11 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .catch(() => {
         // best-effort
       });
+
+    // Do not leave private feed/conversation metadata on a shared device after logout.
+    void import('../services/instantGraph')
+      .then(({ clearInstantGraphUser }) => clearInstantGraphUser(previousUserId))
+      .catch(() => undefined);
 
     void AuthService.clearToken();
     void (async () => {
@@ -350,6 +413,17 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem('user', JSON.stringify(updated));
       return updated;
     });
+  };
+
+  const setActiveRole = (nextRole: UserRole.FREELANCER | UserRole.EMPLOYER) => {
+    if (!user || user.role === UserRole.ADMIN) return;
+    setActiveRoleOverride(nextRole);
+    try {
+      window.sessionStorage.setItem('activeRole', String(nextRole));
+      window.dispatchEvent(new CustomEvent('scrolith:active-role-changed', { detail: { role: nextRole } }));
+    } catch {
+      // Session storage and custom events are best-effort.
+    }
   };
 
   const switchRole = () => {
@@ -379,6 +453,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
   return (
     <UserContext.Provider value={{
       user,
+      activeRole: activeRoleOverride || user?.role || null,
       isAuthenticated,
       isLoading,
       getAdminProfile,
@@ -387,6 +462,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       logout,
       register,
       updateUser,
+      setActiveRole,
       switchRole
     }}>
       {children}

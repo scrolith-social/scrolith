@@ -7,9 +7,6 @@ import {
   useLocation,
   useNavigate
 } from 'react-router-dom';
-import Navbar from './components/Navbar';
-import ToastContainer from './components/ToastContainer';
-import OfflineBanner from './components/OfflineBanner';
 import { SkipLink, RouteAnnouncer, KeyboardShortcutsHelp } from './components/a11y';
 import { UserRole } from './types';
 import { CurrencyProvider } from './context/CurrencyContext';
@@ -25,10 +22,11 @@ import { PreloaderProvider } from './context/PreloaderContext';
 import { I18nProvider } from './i18n/I18nProvider';
 import GlobalPreloader from './components/GlobalPreloader';
 import { AlertTriangleIcon } from './components/icons/ShellIcons';
-import { MarketingService } from './services/marketing';
 import { resolveResponsiveAssetUrl } from './utils/assetUrl';
 import { getCanonicalAppOrigin, getCanonicalRedirectUrl } from './utils/siteUrl';
 import { isLikelyChunkLoadError, normalizeRouteHref } from './mobile/runtime/routeRecovery';
+import { applyNativeChrome, ensureDocumentScrollEnabled } from './mobile/runtime/nativeChrome';
+import { getScrolithNative } from './mobile/nativeBridge';
 import { shouldUseMobileShellViewport } from './mobile/home/mobileShellLayout';
 import {
   FOLLOW_ONBOARDING_PATH,
@@ -41,11 +39,28 @@ import {
 const HISTORY_SYNC_EVENT = 'scrolith:history-sync';
 const CHUNK_RELOAD_GUARD_KEY = 'scrolith:chunk-reload-target';
 const ROUTE_SYNC_RELOAD_GUARD_KEY = 'scrolith:route-sync-reload-target';
+
+const LazyLoginApprovalOverlay = lazy(() =>
+  import('./components/security/LoginApprovalOverlay').then((module) => ({ default: module.LoginApprovalOverlay }))
+);
+
+const AuthenticatedLoginApprovalOverlay: React.FC = () => {
+  const { isAuthenticated } = useUser();
+  if (!isAuthenticated) return null;
+  return (
+    <Suspense fallback={null}>
+      <LazyLoginApprovalOverlay />
+    </Suspense>
+  );
+};
 const BIOMETRIC_PREF_KEY = 'Scrolith.pref.biometric.enabled';
 const MOBILE_POST_AUTH_TARGET_KEY = 'scrolith:mobile-post-auth-target';
 const IS_MOBILE_APP_BUILD = import.meta.env.VITE_SCROLITH_MOBILE_APP === 'true';
 const AuthenticatedRuntimeProviders = lazy(() => import('./context/AuthenticatedRuntimeProviders'));
 const DesktopMessagingDock = lazy(() => import('./components/messaging/DesktopMessagingDock'));
+const Navbar = lazy(() => import('./components/Navbar'));
+const ToastContainer = lazy(() => import('./components/ToastContainer'));
+const OfflineBanner = lazy(() => import('./components/OfflineBanner'));
 
 const getCapacitorRuntime = () => {
   if (typeof window === 'undefined') return null;
@@ -407,6 +422,8 @@ const NotificationSettings = React.lazy(() => import('./pages/settings/Notificat
 const AISettings = React.lazy(() => import('./pages/settings/AISettings'));
 const ScrolithaAssistantPage = React.lazy(() => import('./pages/assistant/ScrolithaAssistantPage'));
 const PersonalizedDiscovery = React.lazy(() => import('./pages/discovery/PersonalizedDiscovery'));
+const OpportunityActionCenter = React.lazy(() => import('./pages/OpportunityActionCenter'));
+const ScrolithMatch = React.lazy(() => import('./pages/MatchPage'));
 const MobileJobsScreen = React.lazy(() => import('./mobile/home/screens/MobileJobsScreen'));
 const MobileBriefsScreen = React.lazy(() => import('./mobile/home/screens/MobileBriefsScreen'));
 const MobileAppRouteFrame = React.lazy(() => import('./mobile/home/components/MobileAppRouteFrame'));
@@ -430,32 +447,22 @@ const ScrollFeed = React.lazy(() => import('./features/scroll/ScrollFeed'));
 const LiveStudio = React.lazy(() => import('./features/live/LiveStudio'));
 const LiveViewer = React.lazy(() => import('./features/live/LiveViewer'));
 const MemberHomeSection = React.lazy(() => import('./components/sections/MemberHomeSection'));
+const MemberHomeDeveloperWidget = React.lazy(
+  () => import('./components/member-home/MemberHomeDeveloperWidget')
+);
+const HiringRecommendationSlot = React.lazy(
+  () => import('./components/hiring/HiringRecommendationSlot')
+);
 
 const preloadAuthenticatedRouteModules = ({ mobileShell }: { mobileShell: boolean }) => {
-  const commonModules = [
-    import('./pages/PostDetailView'),
-    import('./features/scroll/ScrollFeed'),
-    import('./create-gig/CreateGig'),
-    import('./create-job-post/CreateJob'),
-    import('./pages/Support'),
-    import('./profile/EditProfile'),
-    import('./pages/marketplace/MarketplacePage')
-  ];
+  // Keep the mobile shell's first load focused on the home surface. The Scroll
+  // viewer is loaded on demand when a user opens it; desktop keeps the existing
+  // idle warmup for detail and media destinations.
+  const priorityModules = mobileShell
+    ? []
+    : [import('./pages/PostDetailView'), import('./features/scroll/ScrollFeed')];
 
-  const mobileModules = mobileShell
-    ? [
-        import('./mobile/home/MobileHome'),
-        import('./mobile/home/screens/MobileFeedScreen'),
-        import('./mobile/home/screens/MobileNetworkScreen'),
-        import('./mobile/home/screens/MobilePostScreen'),
-        import('./mobile/home/components/MobileAppRouteFrame'),
-        import('./mobile/home/screens/MobileNotificationsScreen'),
-        import('./mobile/home/screens/MobileJobsScreen'),
-        import('./mobile/home/screens/MobileBriefsScreen')
-      ]
-    : [];
-
-  return Promise.allSettled([...commonModules, ...mobileModules]);
+  return Promise.allSettled(priorityModules);
 };
 
 const shouldAvoidAggressiveRouteWarmup = () => {
@@ -463,9 +470,13 @@ const shouldAvoidAggressiveRouteWarmup = () => {
   const connection = (navigator as Navigator & {
     connection?: { saveData?: boolean; effectiveType?: string };
   }).connection;
-  if (!connection) return false;
-  if (connection.saveData) return true;
-  return ['slow-2g', '2g'].includes(String(connection.effectiveType || '').toLowerCase());
+  if (connection?.saveData) return true;
+  if (['slow-2g', '2g', '3g'].includes(String(connection?.effectiveType || '').toLowerCase())) return true;
+
+  const deviceMemory = Number((navigator as Navigator & { deviceMemory?: number }).deviceMemory || 0);
+  if (deviceMemory > 0 && deviceMemory <= 2) return true;
+  const hardwareConcurrency = Number(navigator.hardwareConcurrency || 0);
+  return hardwareConcurrency > 0 && hardwareConcurrency <= 2;
 };
 
 // Error Boundary Component
@@ -511,7 +522,7 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBo
           <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-sm">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50">
               <img
-                src="/logo.png"
+                src="/logo-64.png"
                 alt=""
                 width={44}
                 height={44}
@@ -548,6 +559,53 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBo
     return this.props.children as React.ReactElement;
   }
 }
+
+/** Optional home enhancements must never make the signed-in shell unavailable. */
+class OptionalFeatureBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBoundaryState> {
+  public props: React.PropsWithChildren<{}>;
+  public state: ErrorBoundaryState = { hasError: false };
+
+  constructor(props: React.PropsWithChildren<{}>) {
+    super(props);
+    this.props = props;
+  }
+
+  static getDerivedStateFromError(): ErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: unknown) {
+    trackRuntimeEvent(
+      'mobile_optional_feature_error',
+      {
+        message: (error as { message?: string } | null)?.message || 'optional_feature_error',
+        componentStack: (info as { componentStack?: string } | null)?.componentStack || ''
+      },
+      { dedupeMs: 15_000 }
+    );
+    console.error('Optional home feature failed:', error, info);
+  }
+
+  render() {
+    return this.state.hasError ? null : this.props.children;
+  }
+}
+
+const MemberHomeDeveloperWidgetSlot = () => (
+  <OptionalFeatureBoundary>
+    <Suspense fallback={null}>
+      <MemberHomeDeveloperWidget />
+    </Suspense>
+  </OptionalFeatureBoundary>
+);
+
+const HiringRecommendationSlotBoundary = () => (
+  <OptionalFeatureBoundary>
+    <Suspense fallback={null}>
+      <HiringRecommendationSlot />
+    </Suspense>
+  </OptionalFeatureBoundary>
+);
 
 class SignedInHomepageBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBoundaryState> {
   public props: React.PropsWithChildren<{}>;
@@ -586,7 +644,7 @@ class SignedInHomepageBoundary extends React.Component<React.PropsWithChildren<{
           <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-sm">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50">
               <img
-                src="/logo.png"
+                src="/logo-64.png"
                 alt="Scrolith logo"
                 width={44}
                 height={44}
@@ -622,7 +680,7 @@ const RouteLoadingFallback = () => (
       <div className="flex flex-col items-center gap-3 text-center">
         <div className="flex h-20 w-20 items-center justify-center rounded-[1.75rem] border border-slate-200 bg-slate-50 shadow-sm">
           <img
-            src="/logo.png"
+            src="/logo-64.png"
             alt="Scrolith logo"
             width={56}
             height={56}
@@ -728,7 +786,10 @@ const DEFAULT_SUPPORT_WIDGET_HIDDEN_ROUTES = [
   '/dashboard',
   '/developer',
   '/community',
-  '/create-gig'
+  '/create-gig',
+  '/create-job',
+  '/marketplace/create',
+  '/post/create'
 ];
 
 const MOBILE_STANDALONE_ROUTE_RULES = [
@@ -756,7 +817,9 @@ const MOBILE_STANDALONE_ROUTE_RULES = [
   '/cart',
   '/support',
   '/contact',
-  '/affiliate-program'
+  '/affiliate-program',
+  '/opportunities',
+  '/match*'
 ];
 
 // Inner App component to use hooks
@@ -810,6 +873,38 @@ const AppContent = () => {
       cancelled = true;
     };
   }, []);
+
+  // Next-gen native / compact-touch chrome: safe-area + theme only (never lock scroll).
+  useEffect(() => {
+    const dispose = applyNativeChrome({
+      isNative,
+      isCompactTouch: isNative || isCompactTouchRuntime() || shouldUseMobileShellViewport(),
+      brandThemeColor: '#0B5FFF'
+    });
+    // Re-assert document scroll on route changes (modals/sheets can leave overflow locks).
+    ensureDocumentScrollEnabled();
+    return () => {
+      dispose?.();
+    };
+  }, [isNative]);
+
+  useEffect(() => {
+    ensureDocumentScrollEnabled();
+  }, [location.pathname]);
+
+  // Keep the optional Android navigation pilot scoped to the member home.
+  // Other routes own their own headers and must never receive a second tab bar.
+  useEffect(() => {
+    const bridge = getScrolithNative();
+    if (!bridge?.postEvent) return;
+    try {
+      bridge.postEvent('route_changed', JSON.stringify({
+        path: `${location.pathname}${location.search}${location.hash}`
+      }));
+    } catch {
+      // The optional native shell must never affect web navigation.
+    }
+  }, [location.hash, location.pathname, location.search]);
 
   useEffect(() => {
     if (!canonicalRedirectUrl || typeof window === 'undefined') return;
@@ -885,8 +980,9 @@ const AppContent = () => {
 
     if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
       idleId = (window as any).requestIdleCallback(warmRoutes, { timeout: 2400 });
-    } else {
-      timeoutId = window.setTimeout(warmRoutes, 1200);
+    } else if (typeof window !== 'undefined') {
+      const browserWindow = window as Window;
+      timeoutId = browserWindow.setTimeout(warmRoutes, 1200);
     }
 
     return () => {
@@ -913,7 +1009,8 @@ const AppContent = () => {
     if (!normalized) return;
     const linkedKey = `affiliate.ref.linked.${user.id}.${normalized}`;
     if (sessionStorage.getItem(linkedKey) === '1') return;
-    MarketingService.linkReferralCode(normalized)
+    import('./services/marketing')
+      .then(({ MarketingService }) => MarketingService.linkReferralCode(normalized))
       .then(() => {
         sessionStorage.setItem(linkedKey, '1');
       })
@@ -1264,6 +1361,12 @@ const AppContent = () => {
   const isGigDetailRoute = /^\/gigs\/[^/]+/.test(location.pathname);
   const activeTab = new URLSearchParams(location.search).get('tab')?.toLowerCase();
   const isMessagesTabRoute = activeTab === 'messages';
+  const isCreationRoute = matchesAnyRouteRule(location.pathname, [
+    '/post/create',
+    '/create-job',
+    '/create-gig',
+    '/marketplace/create'
+  ]);
   const uiVisibility = ((settings as any)?.uiVisibility || (settings as any)?.ui_visibility || {}) as Record<string, any>;
   const footerHiddenRoutes = parseRouteRules(
     uiVisibility.footerHiddenRoutes ??
@@ -1394,6 +1497,7 @@ const AppContent = () => {
     isMessagesTabRoute ||
     isGigDetailRoute ||
     isScrollRoute ||
+    isCreationRoute ||
     isSupportWidgetSuppressedByRule;
   const shouldHideFooter =
     shouldRenderForcedMobileHome ||
@@ -1421,6 +1525,8 @@ const AppContent = () => {
   ) : (
     <SignedInHomepageBoundary>
       {shouldUseMobileMemberHome ? <MobileHome /> : <MemberHomeSection />}
+      <MemberHomeDeveloperWidgetSlot />
+      <HiringRecommendationSlotBoundary />
     </SignedInHomepageBoundary>
   );
   const unmatchedRouteElement =
@@ -1455,7 +1561,11 @@ const AppContent = () => {
         !isMobileShellRoute &&
         !isScrollRoute &&
         !isFollowOnboardingRoute &&
-        !isMobileStandaloneRoute && <Navbar />}
+        !isMobileStandaloneRoute && (
+          <Suspense fallback={null}>
+            <Navbar />
+          </Suspense>
+        )}
       {isAuthenticated &&
         user &&
         !isAdminRoute &&
@@ -1502,6 +1612,8 @@ const AppContent = () => {
                   <ProtectedRoute>
                     <SignedInHomepageBoundary>
                       <MobileHome />
+                      <MemberHomeDeveloperWidgetSlot />
+                      <HiringRecommendationSlotBoundary />
                     </SignedInHomepageBoundary>
                   </ProtectedRoute>
                 }
@@ -1513,6 +1625,7 @@ const AppContent = () => {
                 <Route path="notifications" element={<MobileNotificationsScreen />} />
                 <Route path="jobs" element={<MobileJobsScreen />} />
                 <Route path="briefs" element={<MobileBriefsScreen />} />
+                <Route path="opportunities" element={<OpportunityActionCenter />} />
                 <Route path="marketplace" element={<MarketplacePage />} />
                 <Route path="marketplace/create" element={<MarketplacePage />} />
                 <Route path="marketplace/sell" element={<MarketplacePage />} />
@@ -1637,6 +1750,22 @@ const AppContent = () => {
                    </ProtectedRoute>
                  }
                />
+               <Route
+                 path="/opportunities"
+                 element={
+                   <ProtectedRoute>
+                     {renderResponsiveMobilePage('Opportunity Action Center', <OpportunityActionCenter />)}
+                   </ProtectedRoute>
+                 }
+               />
+               <Route
+                 path="/match"
+                 element={
+                   <ProtectedRoute>
+                     {renderResponsiveMobilePage('Scrolith Match', <ScrolithMatch />)}
+                   </ProtectedRoute>
+                 }
+               />
                <Route path="/support" element={renderResponsiveMobilePage('Support', <Support />)} />
                <Route
                  path="/contact"
@@ -1651,9 +1780,17 @@ const AppContent = () => {
                <Route path="/affiliate-program" element={renderResponsiveMobilePage('Referral', <AffiliateProgram />)} />
               
               {/* Community Platform Routes (auth required) */}
-               <Route
-                 path="/post/:postId"
-                 element={
+              <Route
+                path="/post/create"
+                element={
+                  <ProtectedRoute>
+                    {renderResponsiveMobilePage('Create post', <MobilePostScreen />)}
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/post/:postId"
+                element={
                    <ProtectedRoute>
                      {renderResponsiveMobilePage('Post', <PostDetailView />)}
                    </ProtectedRoute>
@@ -1705,14 +1842,14 @@ const AppContent = () => {
                   </ProtectedRoute>
                 }
               />
-               <Route
-                 path="/scroll"
-                 element={
-                   <ProtectedRoute>
-                     {renderResponsiveMobilePage('Scroll', <ScrollFeed />, false)}
-                   </ProtectedRoute>
-                 }
-               />
+              <Route
+                path="/scroll"
+                element={
+                  <ProtectedRoute>
+                    <ScrollFeed />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/live"
                 element={
@@ -1889,7 +2026,7 @@ const AppContent = () => {
                <Route 
                  path="/create-gig" 
                  element={
-                     <ProtectedRoute allowedRoles={[UserRole.FREELANCER]}>
+                    <ProtectedRoute allowedRoles={[UserRole.FREELANCER, UserRole.ADMIN]}>
                        {renderResponsiveMobilePage('Create gig', <CreateGig />)}
                      </ProtectedRoute>
                  } 
@@ -1907,7 +2044,7 @@ const AppContent = () => {
                <Route 
                  path="/create-job" 
                  element={
-                     <ProtectedRoute allowedRoles={[UserRole.EMPLOYER]}>
+                    <ProtectedRoute allowedRoles={[UserRole.EMPLOYER, UserRole.ADMIN]}>
                        {renderResponsiveMobilePage('Create job', <CreateJob />)}
                      </ProtectedRoute>
                  } 
@@ -2185,6 +2322,7 @@ function App() {
                             <AuthenticatedRuntimeBoundary>
                               <GlobalPreloader />
                               <AppContent />
+                              <AuthenticatedLoginApprovalOverlay />
                             </AuthenticatedRuntimeBoundary>
                           </LiveFeatureProvider>
                         </CartProvider>

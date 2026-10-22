@@ -741,6 +741,7 @@ const FollowOnboarding = () => {
               <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
                 {content.hero.description}
               </p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">Build your first Scrolith feed</p>
               {contentUnavailable ? <p className="mt-2 text-xs text-amber-700" role="status">Showing the standard onboarding presentation; saved content could not be refreshed.</p> : null}
               {content.hero.imageUrl ? <img src={resolveAssetUrl(content.hero.imageUrl)} alt="" className="mt-4 max-h-56 w-full rounded-2xl object-cover" loading="lazy" /> : null}
               {content.featureCards.some((card) => card.enabled) ? (
@@ -839,6 +840,7 @@ const FollowOnboarding = () => {
                   onClick={() => setWhyOpen((v) => !v)}
                   className="inline-flex min-h-[44px] w-full items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-semibold text-slate-800 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
                   aria-expanded={whyOpen}
+                  aria-label="Why we ask this"
                 >
                   {content.guidance.title}
                   <ChevronDown

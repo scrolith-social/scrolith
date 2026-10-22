@@ -18,6 +18,7 @@ export type ComposerDraftSnapshot = {
   graphicWarning?: boolean;
   isAIEnhanced?: boolean;
   aiInsightPreference?: string;
+  textBackgroundId?: string;
   authorScopeId?: string;
 };
 
@@ -71,6 +72,7 @@ export const saveComposerDraft = (key: string, draft: Omit<ComposerDraftSnapshot
       graphicWarning: Boolean(draft.graphicWarning),
       isAIEnhanced: Boolean(draft.isAIEnhanced),
       aiInsightPreference: draft.aiInsightPreference,
+      textBackgroundId: draft.textBackgroundId,
       authorScopeId: draft.authorScopeId
     };
     window.sessionStorage.setItem(key, JSON.stringify(payload));

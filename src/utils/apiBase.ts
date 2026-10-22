@@ -33,7 +33,7 @@ const parseBool = (value: unknown, fallback = false) => {
  *
  * try/catch keeps node:test runners (no import.meta.env) from crashing.
  */
-const vite = {
+export const vite = {
   get PROD() {
     try {
       return Boolean(import.meta.env.PROD);
@@ -114,6 +114,13 @@ const vite = {
   get VITE_FORCE_MOBILE_API_OVERRIDE() {
     try {
       return import.meta.env.VITE_FORCE_MOBILE_API_OVERRIDE as string | undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  get VITE_API_TIMEOUT_MS() {
+    try {
+      return import.meta.env.VITE_API_TIMEOUT_MS as string | undefined;
     } catch {
       return undefined;
     }

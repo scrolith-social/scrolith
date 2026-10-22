@@ -1,5 +1,5 @@
 /**
- * Scroll feed — Mute/Unmute without overlapping author + Scroll under Follow.
+ * Scroll feed — stable touch chrome without overlapping the author identity.
  * Run: node --import tsx --test tests/unit/scrollMuteBrandLayout.test.ts
  */
 import test from 'node:test';
@@ -13,14 +13,33 @@ const scrollCard = readFileSync(join(here, '../../src/features/scroll/ScrollCard
 const scrollFeed = readFileSync(join(here, '../../src/features/scroll/ScrollFeed.tsx'), 'utf8');
 
 test('Mute control is in feed header next to Create (not centered over author)', () => {
-  assert.match(scrollFeed, /data-testid="scroll-mute-control"/);
-  assert.match(scrollFeed, /Unmute/);
-  assert.match(scrollFeed, /Mute/);
-  assert.match(scrollFeed, /ml-auto flex shrink-0 items-center gap-2/);
+  assert.equal(scrollFeed.includes('scroll-mute-control'), true);
+  assert.equal(scrollFeed.includes('gap-1 sm:gap-2'), true);
   // Create follows mute in the same right cluster
   const muteIdx = scrollFeed.indexOf('data-testid="scroll-mute-control"');
-  const createIdx = scrollFeed.indexOf('Create');
+  const createIdx = scrollFeed.indexOf('<span className="hidden sm:inline">Create</span>');
   assert.ok(muteIdx > 0 && createIdx > muteIdx);
+});
+
+test('mobile Scroll header uses icon-only controls while desktop labels remain available', () => {
+  assert.match(scrollFeed, /data-testid="scroll-search-trigger"/);
+  assert.match(scrollFeed, /\[&>span\]:hidden sm:h-11 sm:w-auto sm:px-3 sm:\[&>span\]:inline/);
+  assert.match(scrollFeed, /<span>Search<\/span>/);
+  assert.match(scrollFeed, /hidden whitespace-nowrap sm:inline/);
+  assert.match(scrollFeed, /<span className="hidden sm:inline">Create<\/span>/);
+});
+
+test('touch Scroll keeps the engagement rail visible after overlay controls recede', () => {
+  assert.match(scrollCard, /const actionRailVisible = overlayControlsVisible \|\| touchOverlayMode/);
+  assert.match(scrollCard, /actionRailVisible \? 'translate-x-0 opacity-100'/);
+});
+
+test('touch Scroll keeps Follow and Remix/Duet controls visible after chrome recedes', () => {
+  assert.match(scrollCard, /const persistentTouchControlsVisible = overlayControlsVisible \|\| touchOverlayMode/);
+  assert.match(scrollCard, /persistentTouchControlsVisible\r?\n\s+\? 'max-h-10 opacity-100'/);
+  assert.match(scrollCard, /!persistentTouchControlsVisible\r?\n\s+\? 'translate-y-4 opacity-0 pointer-events-none'/);
+  assert.match(scrollCard, /void onRemix\(scroll, 'remix'\)/);
+  assert.match(scrollCard, /void onRemix\(scroll, 'duet'\)/);
 });
 
 test('ScrollCard does not place absolute centered mute over the name', () => {
@@ -31,9 +50,11 @@ test('ScrollCard does not place absolute centered mute over the name', () => {
   assert.match(scrollCard, /truncate text-sm font-semibold/);
 });
 
-test('Scroll brand label sits under FollowButton', () => {
+test('Scroll brand label sits beside the username with the custom mark', () => {
   assert.match(scrollCard, /data-testid="scroll-brand-label"/);
-  const followIdx = scrollCard.indexOf('<FollowButton');
+  assert.match(scrollCard, /src="\/scroll-mark\.svg"/);
+  const usernameIdx = scrollCard.indexOf('scroll.author?.username');
   const brandIdx = scrollCard.indexOf('data-testid="scroll-brand-label"');
-  assert.ok(followIdx > 0 && brandIdx > followIdx, 'Scroll brand must appear after FollowButton in source');
+  assert.ok(usernameIdx > 0 && brandIdx > usernameIdx, 'Scroll brand must appear after the username in source');
+  assert.match(scrollCard, /<FollowButton[\s\S]*className="h-7/);
 });

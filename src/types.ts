@@ -67,7 +67,20 @@ export type SortOrder = 'asc' | 'desc';
 export type AnomalySeverity = 'info' | 'warning' | 'critical';
 
 export type AIModule = 'Support' | 'Payments' | 'Jobs' | 'Gigs' | 'KYC' | 'General';
-export type PaymentProviderId = 'stripe' | 'paypal' | 'paystack' | 'flutterwave' | 'payoneer' | 'paymongo' | 'monnify' | 'opay' | 'xendit' | 'dragonpay' | 'wallet' | 'balance';
+export type PaymentProviderId =
+  | 'stripe'
+  | 'paypal'
+  | 'paystack'
+  | 'flutterwave'
+  | 'payoneer'
+  | 'paymongo'
+  | 'monnify'
+  | 'opay'
+  | 'xendit'
+  | 'dragonpay'
+  | 'antom'
+  | 'wallet'
+  | 'balance';
 export type ChannelType = 'public' | 'private' | 'club' | 'event';
 export type ChannelVisibility = 'public' | 'private';
 export type HomepageSectionType =
@@ -192,6 +205,12 @@ export interface User {
   followersCount?: number; // camelCase
   followingCount?: number; // camelCase
   profilePhotoFileId?: string; // camelCase
+  callCapabilities?: {
+    videoCallsEnabled?: boolean;
+    videoCallsUpdatedAt?: string | null;
+    videoCallsUpdatedById?: string | null;
+    videoCallsAdminReason?: string | null;
+  };
 
   // Admin meta
   meta?: {
@@ -265,6 +284,8 @@ export interface UserProfile extends StructuredLocationFields {
   introVideoUrl?: string;
   cover_photo_url?: string;
   coverPhotoUrl?: string;
+  cover_photo_file_id?: string;
+  coverPhotoFileId?: string;
   gender?: string;
   date_of_birth?: string | null;
   dateOfBirth?: string | null;
@@ -282,6 +303,32 @@ export interface UserProfile extends StructuredLocationFields {
   avatarUrl?: string;
   professional_identity?: ProfessionalIdentitySummary | null;
   professionalIdentity?: ProfessionalIdentitySummary | null;
+  availability?: ProfessionalAvailability | null;
+  professionalAvailability?: ProfessionalAvailability | null;
+  hiring?: ClientHiringStatus | null;
+  clientHiringStatus?: ClientHiringStatus | null;
+}
+
+export interface ProfessionalAvailability {
+  status: 'ACTIVE' | 'PAUSED' | 'INACTIVE';
+  availabilityTypes: string[];
+  services: string[];
+  workPreference: 'REMOTE' | 'ONSITE' | 'HYBRID' | 'FLEXIBLE';
+  timing: 'AVAILABLE_NOW' | 'WITHIN_ONE_WEEK' | 'WITHIN_ONE_MONTH' | 'FLEXIBLE';
+  availableFrom?: string | null;
+  expiresAt?: string | null;
+  visibility: 'PUBLIC' | 'HIDDEN';
+  isActive: boolean;
+}
+
+export interface ClientHiringStatus {
+  status: 'ACTIVE' | 'PAUSED' | 'INACTIVE';
+  hiringTypes: string[];
+  focusAreas: string[];
+  timing: 'AVAILABLE_NOW' | 'WITHIN_ONE_WEEK' | 'WITHIN_ONE_MONTH' | 'FLEXIBLE';
+  visibility: 'PUBLIC' | 'HIDDEN';
+  expiresAt?: string | null;
+  isActive: boolean;
 }
 
 export interface ProfessionalIdentityClub {
@@ -399,6 +446,11 @@ export interface Experience {
   id: string;
   title: string;
   company: string;
+  companyPageId?: string;
+  companyPageSlug?: string;
+  companyPageHandle?: string;
+  companyPageUrl?: string;
+  companyPageMatched?: boolean;
   start_date: string;
   end_date: string;
   current: boolean;
@@ -582,6 +634,10 @@ export interface Job {
   isRecommended?: boolean; // camelCase
   adminStatus?: 'pending' | 'approved' | 'rejected'; // camelCase
   adminReason?: string;
+  proposalRequirements?: {
+    amount?: boolean;
+    timeline?: boolean;
+  };
   meta?: any;
 }
 
@@ -1409,6 +1465,8 @@ export interface Conversation {
     last_seen_at?: string;
     lastSeenAt?: string;
     role?: string;
+    profilePhotoFileId?: string;
+    profile_photo_file_id?: string;
   })[];
   last_message?: string;
   lastMessage?: string;
@@ -1491,6 +1549,7 @@ export interface VoiceCall {
 export interface MessengerVoiceConfig {
   enabledVoiceCalls: boolean;
   enabledConferenceCalls: boolean;
+  enabledVideoCalls: boolean;
   enabledVoiceNotes: boolean;
   maxParticipants: number;
   maxVoiceNoteDurationSeconds: number;

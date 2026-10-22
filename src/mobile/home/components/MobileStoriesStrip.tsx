@@ -49,6 +49,9 @@ import { buildPublicAppUrl } from '../../../utils/siteUrl';
 import StoryUploadStatusCard from '../../../components/stories/StoryUploadStatusCard';
 import StoryReplySheet from '../../../components/stories/StoryReplySheet';
 import StoryAuthorAvatar from '../../../components/stories/StoryAuthorAvatar';
+import CaptionEnhancementToolbar from '../../../components/composer/CaptionEnhancementToolbar';
+import MentionHashtagTextarea from '../../../community/components/MentionHashtagTextarea';
+import RichCaptionText from '../../../community/components/RichCaptionText';
 import {
   MOBILE_MODAL_CARD_CLASS,
   MOBILE_PAGE_CONTAINER_CLASS,
@@ -66,8 +69,8 @@ const STORY_AUTO_ADVANCE_MAX_MS = 30000;
 const RAIL_TAP_MAX_TRAVEL = 72;
 const RAIL_ACTION_DEDUPE_MS = 260;
 const STORY_RAIL_CARD_CLASS =
-  'relative h-[154px] w-[92px] shrink-0 overflow-hidden rounded-2xl sm:h-[176px] sm:w-[108px] md:h-[188px] md:w-[120px]';
-const STORY_RAIL_MEDIA_SIZES = '(max-width: 640px) 92px, (max-width: 768px) 108px, 120px';
+  'relative h-[148px] w-[88px] shrink-0 overflow-hidden rounded-xl sm:h-[168px] sm:w-[104px] md:h-[184px] md:w-[116px]';
+const STORY_RAIL_MEDIA_SIZES = '(max-width: 640px) 88px, (max-width: 768px) 104px, 116px';
 
 const normalizeVisibility = (value: any): StoryVisibility => {
   const raw = String(value || '').trim().toLowerCase();
@@ -101,6 +104,7 @@ const resolveStoryMediaUrl = (story: any) => {
   return {
     isVideo: media.kind === 'video',
     url: media.src || null,
+    fallbackUrl: media.fallbackSrc || null,
     thumbnailUrl: media.poster || null
   };
 };
@@ -294,6 +298,7 @@ const resolveScrollMedia = (scroll: ScrollVideo) => {
   const media = resolveInlineMedia(scroll?.media || scroll, { typeHint: 'video' });
   return {
     url: media.src || '',
+    fallbackUrl: media.fallbackSrc || '',
     poster: media.poster || undefined
   };
 };
@@ -1532,6 +1537,7 @@ export default function MobileStoriesStrip({
                         media.isVideo ? (
                           <InlineAutoplayVideo
                             src={media.url}
+                            fallbackSrc={media.fallbackUrl}
                             poster={media.thumbnailUrl}
                             className="pointer-events-none h-full w-full object-cover"
                             containerClassName="pointer-events-none h-full w-full"
@@ -1579,6 +1585,9 @@ export default function MobileStoriesStrip({
                         <div className="pointer-events-none absolute left-2 top-2 inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border-2 border-blue-300/90 bg-slate-700 text-[11px] font-semibold text-white shadow">
                           <StoryAuthorAvatar
                             src={avatar}
+                            user={story?.author || story}
+                            availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                            weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                             name={name}
                             initial={fallbackLetter}
                             className="inline-flex h-full w-full items-center justify-center bg-slate-700 text-[11px] font-semibold text-white"
@@ -1680,6 +1689,7 @@ export default function MobileStoriesStrip({
                       {media.url ? (
                         <InlineAutoplayVideo
                           src={media.url}
+                          fallbackSrc={media.fallbackUrl}
                           poster={media.poster}
                           className="pointer-events-none h-full w-full object-cover"
                           containerClassName="pointer-events-none h-full w-full"
@@ -2044,14 +2054,22 @@ export default function MobileStoriesStrip({
                       }
                     />
                   ) : null}
-                  <textarea
+                  <MentionHashtagTextarea
                     value={draftContent}
-                    onChange={(e) => setDraftContent(e.target.value)}
-                  placeholder="Add a caption..."
-                  className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-slate-400"
-                  rows={3}
-                  disabled={publishing}
-                />
+                    onChange={setDraftContent}
+                    placeholder="Optional caption. Add @mentions, #tags, emojis, or a polished highlight..."
+                    className="min-h-[92px] w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-slate-400"
+                    disabled={publishing}
+                  />
+                  <div className="mt-3">
+                    <CaptionEnhancementToolbar value={draftContent} onChange={setDraftContent} disabled={publishing} />
+                  </div>
+                  {draftContent.trim() ? (
+                    <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs leading-5 text-white">
+                      <span className="font-semibold text-cyan-100">Caption preview:</span>{' '}
+                      <RichCaptionText text={draftContent.trim()} preserveWhitespace={false} />
+                    </div>
+                  ) : null}
               </div>
             )}
 
@@ -2338,6 +2356,9 @@ function StoryViewer({
                 <button type="button" onClick={openAuthorProfile} className="flex min-w-0 items-center gap-3 text-left">
                   <StoryAuthorAvatar
                     src={avatar}
+                    user={story?.author || story}
+                    availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                    weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                     name={name}
                     initial={name[0] || 'S'}
                     className="inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/20 bg-white/10 text-xs font-semibold text-white"
@@ -2354,6 +2375,9 @@ function StoryViewer({
                 <>
                   <StoryAuthorAvatar
                     src={avatar}
+                    user={story?.author || story}
+                    availableForHire={Boolean(story?.author?.availableForHire ?? story?.availableForHire)}
+                    weAreHiring={Boolean(story?.author?.weAreHiring ?? story?.weAreHiring)}
                     name={name}
                     initial={name[0] || 'S'}
                     className="inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/20 bg-white/10 text-xs font-semibold text-white"
@@ -2524,6 +2548,7 @@ function StoryViewer({
               <InlineAutoplayVideo
                 key={String(story?.id || media.url || '')}
                 src={media.url}
+                fallbackSrc={media.fallbackUrl}
                 poster={media.thumbnailUrl}
                 className="h-full w-full object-cover"
                 containerClassName="h-full w-full"

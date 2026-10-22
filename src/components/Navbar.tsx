@@ -38,7 +38,13 @@ import { CMSService } from "../services/cms";
 import { HeaderConfig, ActivityConfig, UserRole, HeroSearchConfig } from "../types";
 import SearchInput from "./SearchInput";
 import EnterpriseAvatar from "./common/EnterpriseAvatar";
-import { getNotificationActionUrl, getNotificationBucket, isExternalNotificationUrl } from "../utils/notificationRouting";
+import {
+  getNotificationActionUrl,
+  getNotificationBucket,
+  isExternalNotificationUrl,
+  isLoginApprovalNotification,
+  openLoginApprovalNotification
+} from "../utils/notificationRouting";
 import { resolveOptimizedStaticImageUrl, resolveResponsiveAssetUrl } from "../utils/assetUrl";
 import { HeaderMessagesPopover } from "./messaging";
 import { formatMessagingBadgeCount } from "../services/messagingSurfaces";
@@ -49,8 +55,19 @@ type LucideIconComponent = React.ComponentType<{ size?: number; className?: stri
 
 const HEADER_SEARCH_PLACEHOLDER =
   "Search people, jobs, gigs, posts, pages, communities, or marketplace";
+const BRAND_LOGO_FALLBACK = "/logo-64.png";
+const NAVBAR_CONFIG_POLL_INTERVAL_MS = 60_000;
 
 const formatBadgeCount = (count: number) => formatMessagingBadgeCount(count);
+
+const handleBrandLogoError = (event: React.SyntheticEvent<HTMLImageElement>) => {
+  const image = event.currentTarget;
+  if (image.src.endsWith(BRAND_LOGO_FALLBACK)) {
+    image.style.display = "none";
+    return;
+  }
+  image.src = BRAND_LOGO_FALLBACK;
+};
 
 const resolveNavIconKey = (item: { label?: string; url?: string; icon?: string }) => {
   const iconHint = String(item?.icon || "").toLowerCase().trim();
@@ -214,6 +231,7 @@ const Navbar = () => {
   const mountedRef = useRef(true);
   const [notificationScrollTop, setNotificationScrollTop] = useState(0);
   const [notificationViewportHeight, setNotificationViewportHeight] = useState(0);
+  const [compactPopoverTop, setCompactPopoverTop] = useState<number | null>(null);
 
   const _asRecord = (v: unknown) => (v && typeof v === 'object' ? (v as Record<string, unknown>) : null);
   const hc = _asRecord(headerConfig);
@@ -360,7 +378,7 @@ const Navbar = () => {
     if (socket) return;
     const id = window.setInterval(() => {
       refreshConfigs();
-    }, 5000);
+    }, NAVBAR_CONFIG_POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [socket, refreshConfigs]);
 
@@ -461,6 +479,33 @@ const Navbar = () => {
     return () => media.removeListener(sync);
   }, []);
 
+  const syncCompactNotificationPosition = useCallback(() => {
+    if (isDesktopNav || !showNotifications || !notifRef.current) return;
+    const triggerBounds = notifRef.current.getBoundingClientRect();
+    setCompactPopoverTop(Math.max(8, Math.ceil(triggerBounds.bottom + 8)));
+  }, [isDesktopNav, showNotifications]);
+
+  useEffect(() => {
+    if (!showNotifications || isDesktopNav) {
+      setCompactPopoverTop(null);
+      return;
+    }
+
+    syncCompactNotificationPosition();
+    const handleViewportChange = () => syncCompactNotificationPosition();
+    window.addEventListener("resize", handleViewportChange, { passive: true });
+    window.addEventListener("scroll", handleViewportChange, { passive: true, capture: true });
+    window.visualViewport?.addEventListener("resize", handleViewportChange, { passive: true });
+    window.visualViewport?.addEventListener("scroll", handleViewportChange, { passive: true });
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+      window.visualViewport?.removeEventListener("resize", handleViewportChange);
+      window.visualViewport?.removeEventListener("scroll", handleViewportChange);
+    };
+  }, [showNotifications, isDesktopNav, syncCompactNotificationPosition]);
+
   const handleLogout = () => {
     logout();
   };
@@ -478,9 +523,13 @@ const Navbar = () => {
     return undefined;
   };
 
-  const handleNotificationClick = (id: string, actionUrl?: string) => {
+  const handleNotificationClick = (id: string, actionUrl?: string, notification?: any) => {
     markAsRead(id);
     setShowNotifications(false);
+    if (notification && isLoginApprovalNotification(notification)) {
+      openLoginApprovalNotification(notification);
+      return;
+    }
     if (actionUrl) {
       if (isExternalNotificationUrl(actionUrl)) {
         window.location.href = actionUrl;
@@ -914,7 +963,7 @@ const Navbar = () => {
     (headerConfig as any)?.logo_url ||
     settings?.logoUrl ||
     settings?.logo_url ||
-    '/logo.png'
+    '/logo-64.png'
   );
   const brandLogoSrc = resolveOptimizedStaticImageUrl(
     resolveResponsiveAssetUrl(
@@ -934,7 +983,13 @@ const Navbar = () => {
 
   const visibleActivityIcons = useMemo(() => {
     if (!isAuthenticated || !activityConfig || !Array.isArray(ac?.icons)) return [];
-    return (ac.icons as any[])
+    const rawIcons = ac.icons as any[];
+    const configuredActionTypes = new Set(
+      rawIcons
+        .map((icon: any) => String(icon.actionType || icon.type || "").toLowerCase())
+        .filter(Boolean)
+    );
+    const visibleIcons = rawIcons
       .filter((icon: any) => {
         if (!icon.isEnabled) return false;
         const roles = normalizeRoleList(icon.roles);
@@ -944,6 +999,17 @@ const Navbar = () => {
       })
       .filter((icon: any) => isActionEnabled(icon.actionType || icon.type))
       .sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+    [
+      { id: "header-action-messages", type: "messages", actionType: "messages", label: "Messages", icon: "messages", displayType: "messages", sortOrder: 60 },
+      { id: "header-action-notifications", type: "notifications", actionType: "notifications", label: "Notifications", icon: "notifications", displayType: "notifications", sortOrder: 70 },
+    ].forEach((fallbackIcon) => {
+      if (configuredActionTypes.has(fallbackIcon.actionType)) return;
+      if (!isActionEnabled(fallbackIcon.actionType)) return;
+      visibleIcons.push(fallbackIcon);
+    });
+
+    return visibleIcons.sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0));
   }, [isAuthenticated, activityConfig, ac, normalizedUserRole, headerActions]);
 
   const centerActivityTypes = useMemo(
@@ -1157,7 +1223,18 @@ const Navbar = () => {
 
   const renderNotificationsDropdown = () =>
     showNotifications ? (
-      <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 animate-fade-in-up">
+      <div
+        className={[
+          "scrolith-header-popover absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 animate-fade-in-up",
+          !isDesktopNav ? "scrolith-header-popover--compact" : ""
+        ].join(" ")}
+        style={
+          !isDesktopNav && compactPopoverTop !== null
+            ? ({ '--scrolith-header-popover-top': `${compactPopoverTop}px` } as React.CSSProperties)
+            : undefined
+        }
+        data-testid="header-notifications-popover"
+      >
         <div className="px-4 py-3 border-b border-gray-50 bg-gray-50">
           <div className="flex justify-between items-center">
             <h3 className="font-bold text-sm text-gray-700">Notifications</h3>
@@ -1224,7 +1301,7 @@ const Navbar = () => {
                 return (
                   <div
                     key={notif.id}
-                    onClick={() => handleNotificationClick(notif.id, getNotificationActionUrl(notif))}
+                    onClick={() => handleNotificationClick(notif.id, getNotificationActionUrl(notif), notif)}
                     className={`p-4 border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors relative ${
                       !notif.isRead ? "bg-blue-50/30" : ""
                     }`}
@@ -1290,42 +1367,16 @@ const Navbar = () => {
 
   const messagesPopoverId = "scrolith-header-messages-popover";
 
-  const renderMessagesDropdown = () => {
-    // Compact non-desktop: keep a lightweight sheet that routes to /messages
-    if (!isDesktopNav) {
-      return showMessagesDropdown ? (
-        <div className="absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg animate-fade-in-up">
-          <div className="flex items-center justify-between border-b border-gray-50 bg-gray-50 px-4 py-3">
-            <h3 className="text-sm font-bold text-gray-700">Messages</h3>
-            {messagesUnreadCount > 0 ? (
-              <span className="text-xs font-semibold text-blue-600">
-                {formatBadgeCount(messagesUnreadCount)} unread
-              </span>
-            ) : null}
-          </div>
-          <div className="p-4 text-sm text-gray-600">
-            <p className="mb-3">Open your inbox to view conversations.</p>
-            <Link
-              to="/messages"
-              className="inline-flex items-center rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              onClick={() => setShowMessagesDropdown(false)}
-            >
-              Go to Messages
-            </Link>
-          </div>
-        </div>
-      ) : null;
-    }
-
-    return (
-      <HeaderMessagesPopover
-        open={showMessagesDropdown}
-        onClose={() => setShowMessagesDropdown(false)}
-        triggerRef={msgRef}
-        id={messagesPopoverId}
-      />
-    );
-  };
+  const renderMessagesDropdown = () => (
+    // Desktop + web mobile: full conversation list. Selecting a name/row soft-opens
+    // chat (dock on desktop, SPA soft navigate on mobile) — no platform hard reload.
+    <HeaderMessagesPopover
+      open={showMessagesDropdown}
+      onClose={() => setShowMessagesDropdown(false)}
+      triggerRef={msgRef}
+      id={messagesPopoverId}
+    />
+  );
 
   const handleActivityIconClick = (icon: any) => {
     const actionType = icon.actionType || icon.type;
@@ -1562,7 +1613,7 @@ const Navbar = () => {
   const createMenuItems = useMemo(() => {
     // Only surface create actions already available on the platform via existing routes.
     const items: Array<{ id: string; label: string; url: string; roles?: string[] }> = [
-      { id: "create-post", label: "Post", url: "/member-home" },
+      { id: "create-post", label: "Post", url: "/post/create" },
       { id: "create-job", label: "Job", url: "/create-job", roles: ["employer", "admin"] },
       { id: "create-gig", label: "Gig", url: "/create-gig", roles: ["freelancer", "admin"] },
       { id: "create-marketplace", label: "Marketplace listing", url: "/marketplace/create" }
@@ -1589,6 +1640,7 @@ const Navbar = () => {
             closeAllHeaderPopovers();
             setShowCreateMenu(next);
           }}
+          data-testid="header-create-button"
         >
           <Plus className="h-4 w-4" />
           <span className="hidden 2xl:inline">Create</span>
@@ -1605,6 +1657,7 @@ const Navbar = () => {
                 type="button"
                 role="menuitem"
                 className="block w-full px-4 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-blue-700 focus:outline-none focus-visible:bg-blue-50"
+                data-testid={`header-${item.id}`}
                 onClick={() => {
                   setShowCreateMenu(false);
                   navigate(item.url);
@@ -1739,6 +1792,7 @@ const Navbar = () => {
                       height={32}
                       decoding="async"
                       className="h-8 w-auto max-w-[7.5rem] object-contain xl:max-w-[9.5rem]"
+                      onError={handleBrandLogoError}
                     />
                   ) : (
                     <div
@@ -1868,6 +1922,7 @@ const Navbar = () => {
                       height={32}
                       decoding="async"
                       className="h-7 w-auto max-w-[7.5rem] object-contain sm:h-8 sm:max-w-[10rem]"
+                      onError={handleBrandLogoError}
                     />
                   ) : (
                     <div className="h-8 w-8 flex-shrink-0 rounded-lg bg-gray-200" aria-hidden="true" />
