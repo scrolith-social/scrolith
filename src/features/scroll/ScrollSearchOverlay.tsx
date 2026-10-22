@@ -133,8 +133,9 @@ const ScrollSearchOverlay: React.FC<ScrollSearchOverlayProps> = ({ open, onClose
       return;
     }
     if (event.key !== 'Tab' || !dialogRef.current) return;
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button, input, [tabindex]:not([tabindex="-1"])'))
-      .filter((element) => !element.hasAttribute('disabled'));
+    const focusable = Array.from(
+      dialogRef.current.querySelectorAll('button, input, [tabindex]:not([tabindex="-1"])')
+    ).filter((element): element is HTMLElement => element instanceof HTMLElement && !element.hasAttribute('disabled'));
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];

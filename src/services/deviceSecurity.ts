@@ -38,6 +38,13 @@ const writeStorage = async (key: string, value: string) => {
   try { localStorage.setItem(key, value); } catch {}
 };
 
+const removeStorage = async (key: string) => {
+  if (isNativeRuntime()) {
+    try { await Preferences.remove({ key }); } catch {}
+  }
+  try { localStorage.removeItem(key); } catch {}
+};
+
 const randomId = () => {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `sd_${crypto.randomUUID()}`;

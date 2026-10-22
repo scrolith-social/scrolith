@@ -7,7 +7,7 @@ import {
   MEMBER_HOME_DEVELOPER_WIDGET_DISMISSED_KEY,
   MEMBER_HOME_DEVELOPER_WIDGET_SHOWN_AT_KEY,
   MEMBER_HOME_DEVELOPER_WIDGET_TTL_MS
-} from '../../src/components/member-home/memberHomeDeveloperWidget';
+} from '../../src/components/member-home/memberHomeDeveloperWidgetModel';
 
 const createStorage = () => {
   const values = new Map<string, string>();

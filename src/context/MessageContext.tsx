@@ -1122,6 +1122,7 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
     ): Promise<Message | null> => {
       const id = safeId(conversationId);
       if (!id || !user?.id) return null;
+      const clientSendId = buildClientSendId(id, Date.now());
       if (!voiceRuntimeConfig.enabledVoiceNotes || voiceRuntimeConfig.blockedForCurrentUser) {
         throw new Error('Voice notes are disabled for this account.');
       }

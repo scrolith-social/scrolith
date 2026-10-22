@@ -559,7 +559,6 @@ const InlineAutoplayVideo: React.FC<InlineAutoplayVideoProps> = ({
         preload={effectivePreload}
         disablePictureInPicture
         disableRemotePlayback
-        // @ts-expect-error webkit-playsinline keeps older Android WebViews in inline mode.
         webkit-playsinline="true"
         onContextMenu={(event) => event.preventDefault()}
         onDoubleClick={(event) => {

@@ -346,6 +346,12 @@ type FeedPost = {
     avatarUrl?: string;
     type?: string;
     businessSlug?: string | null;
+    availability?: any;
+    professionalAvailability?: any;
+    hiring?: any;
+    clientHiringStatus?: any;
+    availableForHire?: boolean;
+    weAreHiring?: boolean;
     isVerified?: boolean;
     isPro?: boolean;
   };

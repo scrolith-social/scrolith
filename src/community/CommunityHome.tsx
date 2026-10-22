@@ -38,6 +38,7 @@ import EnterpriseStoryViewer from '../features/stories/components/StoryViewer';
 import LiveFeaturedRail from '../features/live/components/LiveFeaturedRail';
 import ExpandablePreviewText from '../components/common/ExpandablePreviewText';
 import StaticPreviewText from '../components/common/StaticPreviewText';
+import EnterpriseAvatar from '../components/common/EnterpriseAvatar';
 import ContentOfferTags from '../components/commerce/ContentOfferTags';
 import PostHeader from './components/PostHeader';
 import PostEngagementBar from './components/PostEngagementBar';

@@ -562,7 +562,13 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBo
 
 /** Optional home enhancements must never make the signed-in shell unavailable. */
 class OptionalFeatureBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBoundaryState> {
+  public props: React.PropsWithChildren<{}>;
   public state: ErrorBoundaryState = { hasError: false };
+
+  constructor(props: React.PropsWithChildren<{}>) {
+    super(props);
+    this.props = props;
+  }
 
   static getDerivedStateFromError(): ErrorBoundaryState {
     return { hasError: true };

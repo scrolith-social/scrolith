@@ -284,6 +284,8 @@ export interface UserProfile extends StructuredLocationFields {
   introVideoUrl?: string;
   cover_photo_url?: string;
   coverPhotoUrl?: string;
+  cover_photo_file_id?: string;
+  coverPhotoFileId?: string;
   gender?: string;
   date_of_birth?: string | null;
   dateOfBirth?: string | null;
@@ -1463,6 +1465,8 @@ export interface Conversation {
     last_seen_at?: string;
     lastSeenAt?: string;
     role?: string;
+    profilePhotoFileId?: string;
+    profile_photo_file_id?: string;
   })[];
   last_message?: string;
   lastMessage?: string;

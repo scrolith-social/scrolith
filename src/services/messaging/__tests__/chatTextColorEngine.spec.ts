@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import {
   appearanceToBackgroundStyle,
   buildChatPalette,
@@ -10,60 +11,60 @@ import {
 
 describe('chatTextColorEngine', () => {
   it('parses hex and rgb colors', () => {
-    expect(parseCssColor('#fff')).toEqual({ r: 255, g: 255, b: 255, a: 1 });
-    expect(parseCssColor('#0f172a')?.r).toBe(15);
-    expect(parseCssColor('rgb(10, 20, 30)')).toMatchObject({ r: 10, g: 20, b: 30 });
+    assert.deepEqual(parseCssColor('#fff'), { r: 255, g: 255, b: 255, a: 1 });
+    assert.equal(parseCssColor('#0f172a')?.r, 15);
+    assert.deepEqual(parseCssColor('rgb(10, 20, 30)'), { r: 10, g: 20, b: 30, a: 1 });
   });
 
   it('computes relative luminance and contrast', () => {
     const white = relativeLuminance(255, 255, 255);
     const black = relativeLuminance(0, 0, 0);
-    expect(white).toBeGreaterThan(0.9);
-    expect(black).toBeLessThan(0.05);
-    expect(contrastRatio(white, black)).toBeGreaterThan(20);
+    assert.ok(white > 0.9);
+    assert.ok(black < 0.05);
+    assert.ok(contrastRatio(white, black) > 20);
   });
 
   it('estimates dark solid backgrounds as dark', () => {
-    expect(estimateBackgroundLuminance({ kind: 'solid', color: '#0f172a' })).toBeLessThan(0.2);
-    expect(estimateBackgroundLuminance({ kind: 'none' })).toBeGreaterThan(0.9);
+    assert.ok(estimateBackgroundLuminance({ kind: 'solid', color: '#0f172a' }) < 0.2);
+    assert.ok(estimateBackgroundLuminance({ kind: 'none' }) > 0.9);
   });
 
   it('builds light palette for light backgrounds with WCAG-oriented contrast', () => {
     const palette = buildChatPalette({ kind: 'solid', color: '#ffffff' });
-    expect(palette.mode).toBe('light');
-    expect(palette.text).toMatch(/^#0f172a$/i);
+    assert.equal(palette.mode, 'light');
+    assert.match(palette.text, /^#0f172a$/i);
     const bgL = relativeLuminance(255, 255, 255);
     const text = parseCssColor(palette.text)!;
     const textL = relativeLuminance(text.r, text.g, text.b);
-    expect(contrastRatio(bgL, textL)).toBeGreaterThanOrEqual(4.5);
+    assert.ok(contrastRatio(bgL, textL) >= 4.5);
   });
 
   it('builds dark palette for dark backgrounds', () => {
     const palette = buildChatPalette({ kind: 'solid', color: '#0f172a' });
-    expect(palette.mode).toBe('dark');
-    expect(palette.bubbleIncomingText).toMatch(/#f/i);
-    expect(palette.pinBannerText).toBeTruthy();
+    assert.equal(palette.mode, 'dark');
+    assert.match(palette.bubbleIncomingText, /#f/i);
+    assert.ok(palette.pinBannerText);
   });
 
   it('defaults photo/wallpaper to dark-safe text', () => {
     const palette = buildChatPalette({ kind: 'photo', imageUrl: 'https://example.com/a.jpg' });
-    expect(palette.mode).toBe('dark');
+    assert.equal(palette.mode, 'dark');
   });
 
   it('maps appearance to background styles', () => {
-    expect(appearanceToBackgroundStyle({ kind: 'solid', color: '#abc' }).backgroundColor).toBe('#abc');
+    assert.equal(appearanceToBackgroundStyle({ kind: 'solid', color: '#abc' }).backgroundColor, '#abc');
     const gradient = appearanceToBackgroundStyle({
       kind: 'gradient',
       color: '#111',
       colorEnd: '#222'
     });
-    expect(String(gradient.backgroundImage || '')).toContain('linear-gradient');
+    assert.match(String(gradient.backgroundImage || ''), /linear-gradient/);
     const photo = appearanceToBackgroundStyle({
       kind: 'photo',
       imageUrl: 'https://cdn.example.com/x.jpg',
       blurPx: 8
     });
-    expect(String(photo.backgroundImage || '')).toContain('url(');
-    expect(String(photo.filter || '')).toContain('blur(8px)');
+    assert.match(String(photo.backgroundImage || ''), /url\(/);
+    assert.match(String(photo.filter || ''), /blur\(8px\)/);
   });
 });

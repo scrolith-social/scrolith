@@ -6,7 +6,7 @@ import {
   getMemberHomeDeveloperWidgetVisibility,
   isMemberHomeDeveloperWidgetPath,
   MEMBER_HOME_DEVELOPER_WIDGET_DISMISSED_KEY
-} from './memberHomeDeveloperWidget';
+} from './memberHomeDeveloperWidgetModel';
 
 const MemberHomeDeveloperWidget = () => {
   const location = useLocation();

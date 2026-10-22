@@ -168,7 +168,10 @@ const EditProfile: React.FC<EditProfileProps> = ({ isEmbedded = false, activeRol
         };
     }, [companyLookupExperienceId, companyLookupQuery]);
 
-    const notifyProfileUpdate = (updatedProfile?: UserProfile | null, updatedUser?: { name?: string; avatar?: string; username?: string }) => {
+    const notifyProfileUpdate = (
+        updatedProfile?: UserProfile | null,
+        updatedUser?: { name?: string; avatar?: string; username?: string; profilePhotoFileId?: string }
+    ) => {
         if (typeof window === 'undefined') return;
         window.dispatchEvent(new CustomEvent('profile:updated', { detail: { profile: updatedProfile, user: updatedUser } }));
     };
