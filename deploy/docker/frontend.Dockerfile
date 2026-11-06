@@ -5,8 +5,10 @@ WORKDIR /workspace/geezle
 
 COPY geezle/package*.json ./
 ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
 ENV CYPRESS_INSTALL_BINARY=0
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm install --global npm@11.6.1 --no-audit --no-fund \
   && npm install --global tar@7.5.19 --no-audit --no-fund \
   && NPM_TAR_ROOT="$(npm root -g)/tar" \
@@ -15,7 +17,7 @@ RUN npm install --global npm@11.6.1 --no-audit --no-fund \
   && mkdir -p "$(npm root -g)/npm/node_modules/tar" \
   && cp -a "$(npm root -g)/tar/." "$(npm root -g)/npm/node_modules/tar/" \
   && test "$(NPM_TAR_ROOT="$(npm root -g)/npm/node_modules/tar" node -p 'require(process.env.NPM_TAR_ROOT+"/package.json").version')" = "7.5.19" \
-  && npm ci --include=dev --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 || npm install --include=dev --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
+  && npm ci --include=dev --no-audit --no-fund --replace-registry-host=always --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 
 COPY geezle/ ./
 
@@ -25,7 +27,7 @@ ARG VITE_PUBLIC_APP_DOMAIN=scrolith.com
 ARG VITE_MESSAGES_TRACE_DEBUG=false
 ARG VITE_INSTANT_GRAPH_ENABLED=false
 
-RUN npm run build
+RUN npm run build -- --base=/
 
 # Nginx 1.29.1 Alpine; amd64 immutable runtime digest.
 FROM nginx:1.29.1-alpine@sha256:60e48a050b6408d0c5dd59b98b6e36bf0937a0bbe99304e3e9c0e63b7563443a AS runtime
@@ -38,7 +40,7 @@ RUN mkdir -p /var/cache/nginx /var/log/nginx /var/lib/nginx /run \
 
 USER nginx
 
-EXPOSE 80
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["wget", "--spider", "--quiet", "http://127.0.0.1:8080/"]

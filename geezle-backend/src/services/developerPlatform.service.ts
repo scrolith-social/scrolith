@@ -68,9 +68,17 @@ export const maskEmail = (email: string) => {
   return `${local.slice(0, 2)}***@${domain}`;
 };
 
+const getDeveloperPlatformHashPepper = (): string => {
+  const pepper = String(process.env.DEV_PLATFORM_HASH_PEPPER || '').trim();
+  if (Buffer.byteLength(pepper, 'utf8') < 32) {
+    throw new Error('Developer Platform key hashing is not configured.');
+  }
+  return pepper;
+};
+
 export const hashSensitiveValue = (value: string) =>
   createHash('sha256')
-    .update(`${String(value || '')}:${process.env.DEV_PLATFORM_HASH_PEPPER || 'dev-platform-pepper'}`)
+    .update(`${String(value || '')}:${getDeveloperPlatformHashPepper()}`)
     .digest('hex');
 
 export const generateOpaqueToken = (prefix: string, bytes = 32) =>

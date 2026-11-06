@@ -2,7 +2,9 @@
 FROM node:22.23.2-alpine3.24@sha256:b64da1de5a51067ab8e75f0bc8dbd0905d8894baa22261f439a4572f41291e50 AS builder
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
-RUN npm ci --include=dev && npm cache clean --force
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
+RUN npm ci --include=dev --no-audit --no-fund --replace-registry-host=always && npm cache clean --force
 COPY geezle-backend/src ./src
 COPY geezle-backend/prisma ./prisma
 COPY geezle-backend/prisma.config.ts ./
@@ -14,10 +16,19 @@ RUN DATABASE_URL=postgresql://prisma-build:prisma-build@127.0.0.1:5432/prisma_bu
 RUN npm run build:prod
 RUN find dist -type f -name '*.map' -delete
 
+FROM builder AS migrator
+ENV NODE_ENV=production
+RUN addgroup -S migrator \
+  && adduser -S -G migrator migrator
+USER migrator
+CMD ["./node_modules/.bin/prisma", "migrate", "deploy"]
+
 FROM node:22.23.2-alpine3.24@sha256:b64da1de5a51067ab8e75f0bc8dbd0905d8894baa22261f439a4572f41291e50 AS runtime
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
-RUN npm ci --omit=dev \
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
+RUN npm ci --omit=dev --no-audit --no-fund --replace-registry-host=always \
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
     node_modules/prisma node_modules/@prisma/dev node_modules/@prisma/config \
     node_modules/@prisma/studio-core node_modules/@visx node_modules/mysql2 \
@@ -30,7 +41,7 @@ RUN addgroup -S appgroup \
   && chown appuser:appgroup uploads
 ENV NODE_ENV=production
 USER appuser
-EXPOSE 8080
+EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||5000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "dist/server.js"]
