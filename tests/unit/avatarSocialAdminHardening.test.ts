@@ -25,6 +25,10 @@ const adminMw = readFileSync(
   resolveTestDependencyFile(backendRoot, 'src/middleware/admin.middleware.ts', 'admin middleware'),
   'utf8'
 );
+const adminRolePolicy = readFileSync(
+  resolveTestDependencyFile(backendRoot, 'src/utils/security/isProductionRuntime.ts', 'admin role policy'),
+  'utf8'
+);
 const msgCtrl = readFileSync(
   resolveTestDependencyFile(backendRoot, 'src/controllers/messages.controller.ts', 'messages controller'),
   'utf8'
@@ -59,9 +63,10 @@ test('Messaging participant normalization keeps profilePhotoFileId', () => {
 });
 
 test('Admin middleware accepts SUPER_ADMIN and staff Owner', () => {
-  assert.match(adminMw, /super_admin/);
-  assert.match(adminMw, /includes\('admin'\)/);
-  assert.match(adminMw, /roleName === 'owner'/);
+  assert.match(adminMw, /isAuthoritativeAdminRole\(user\.role\)/);
+  assert.match(adminMw, /isAuthoritativeAdminRole\(staff\.role\?\.name\)/);
+  assert.match(adminRolePolicy, /'super_admin'/);
+  assert.match(adminRolePolicy, /'owner'/);
 });
 
 test('Messaging backend selects profilePhotoFileId', () => {
