@@ -438,8 +438,8 @@ try {
     SCROLITH_MONEY_MOVEMENT_ENABLED: 'false',
     STRIPE_WEBHOOK_SECRET: `whsec_local_synthetic_${randomBytes(24).toString('hex')}`
   };
-  delete httpTestEnv.ALLOW_DEV_AUTH_BYPASS;
-  delete httpTestEnv.ALLOW_DEV_ADMIN_BYPASS;
+  httpTestEnv.ALLOW_DEV_AUTH_BYPASS = 'false';
+  httpTestEnv.ALLOW_DEV_ADMIN_BYPASS = 'false';
   runNode(
     [
       resolve(repoRoot, 'node_modules', 'jest', 'bin', 'jest.js'),
