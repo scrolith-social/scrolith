@@ -1,3 +1,5 @@
+import { isProductionRuntime } from '../utils/security/isProductionRuntime';
+
 const truthy = (value: unknown) => ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 
 export const runtimePolicy = {
@@ -32,4 +34,17 @@ export const assertSafeTestDatabaseUrl = (databaseUrl = process.env.DATABASE_URL
     throw new Error('Refusing to reset or prepare a non-isolated test database.');
   }
   return value;
+};
+
+/**
+ * The production server entry point normally never binds a port in test mode.
+ * Browser integration CI may opt in only with an isolated loopback test DB.
+ */
+export const shouldListenForTestServer = (): boolean => {
+  if (!runtimePolicy.isTest || process.env.SCROLITH_TEST_SERVER_LISTEN !== 'true') return false;
+  if (isProductionRuntime()) {
+    throw new Error('Refusing to start the test HTTP server in a production or managed runtime.');
+  }
+  assertSafeTestDatabaseUrl();
+  return true;
 };

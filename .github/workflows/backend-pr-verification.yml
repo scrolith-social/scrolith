@@ -159,6 +159,7 @@ jobs:
           REDIS_TEST_MODE: local
           REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
           ALLOW_DEV_AUTH_BYPASS: 'false'
+          SCROLITH_TEST_SERVER_LISTEN: 'true'
           PORT: '5000'
           FRONTEND_ORIGIN: http://127.0.0.1:5173
           FRONTEND_URL: http://127.0.0.1:5173

@@ -12,7 +12,7 @@ import fs from 'fs';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import validateEnv from './utils/validateEnv';
 import { resolveDirectMediaUrl, resolveFileBaseUrl } from './utils/mediaUrl';
-import { runtimePolicy } from './config/runtimePolicy';
+import { runtimePolicy, shouldListenForTestServer } from './config/runtimePolicy';
 import { isMoneyMovementEnabled } from './config/moneyMovement';
 import { getRuntimeStartupPlan } from './config/runtimeStartup';
 import { isScrolithFrontendRevisionOrigin } from './config/cors';
@@ -5119,9 +5119,10 @@ app.use((err: Error, req: Request, res: Response, next: any) => {
   });
 });
 
-// Start server (skip auto-listen during test runs to avoid port conflicts)
+// Test runs require an explicit safe opt-in before the server binds a loopback port.
 const PORT = parseInt(process.env.PORT!) || 5000;
-if (!runtimePolicy.isTest) {
+const allowTestServerListen = shouldListenForTestServer();
+if (!runtimePolicy.isTest || allowTestServerListen) {
   void (async () => {
     let prismaReady = false;
     try {
@@ -5137,7 +5138,8 @@ if (!runtimePolicy.isTest) {
       prismaReady
     });
 
-    server.listen(PORT, async () => {
+    const listenOptions = runtimePolicy.isTest ? { port: PORT, host: '127.0.0.1' } : PORT;
+    server.listen(listenOptions, async () => {
     console.log(`========================================`);
     console.log(`🚀 Scrolith Marketplace Backend Started`);
     console.log(`📍 Port: ${PORT}`);
@@ -5308,7 +5310,7 @@ if (!runtimePolicy.isTest) {
   });
   })();
 } else {
-  console.log('Server auto-start skipped during test runtime.');
+  console.log('Server auto-start skipped during test runtime without explicit safe listen opt-in.');
 }
 
 export default app;
