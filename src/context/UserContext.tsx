@@ -405,8 +405,10 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Push cleanup is best-effort and must not prevent session revocation.
       }
 
-      await AuthService.logout().catch(() => undefined);
-      window.location.assign('/auth/login');
+      const serverRevoked = await AuthService.logout().catch(() => false);
+      window.location.assign(
+        serverRevoked ? '/auth/login' : '/auth/login?logout=revocation-unconfirmed'
+      );
     })();
   };
 

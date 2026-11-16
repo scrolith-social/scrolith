@@ -21,6 +21,45 @@ test.describe('Logout revokes the current authenticated session', () => {
     requireAuthOrSkip(test);
   });
 
+  test('network failure signs out locally and clearly reports that server revocation was not confirmed', async ({ page, request }) => {
+    test.skip(!isLoopback(CERT_BASE_URL), 'Requires an explicitly configured loopback CERT_BASE_URL');
+    test.skip(!CERT_API_BASE || !isLoopback(CERT_API_BASE), 'Requires an explicitly configured loopback CERT_API_BASE');
+
+    const protectedUrl = `${CERT_API_BASE.replace(/\/+$/, '')}/auth/me`;
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
+
+    const originalToken = await page.evaluate(() => {
+      const storedToken = window.localStorage.getItem('token');
+      if (storedToken) return storedToken;
+      const tokenCookie = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith('Scrolith_token='));
+      return tokenCookie ? decodeURIComponent(tokenCookie.slice('Scrolith_token='.length)) : null;
+    });
+    expect(originalToken, 'authenticated browser state must contain a session token').toBeTruthy();
+
+    await page.route('**/api/auth/logout', (route) => route.abort('failed'));
+    await page.getByRole('button', { name: 'Open account menu' }).click();
+    await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
+    await page.waitForURL((url) =>
+      url.pathname === '/auth/login' && url.searchParams.get('logout') === 'revocation-unconfirmed'
+    );
+    await expect(page.getByRole('alert')).toContainText(/server could not confirm session revocation/i);
+    await expect
+      .poll(() => page.evaluate(() => window.localStorage.getItem('token')))
+      .toBeNull();
+
+    // The injected network failure never reached the API, so the server-side
+    // session must remain valid and the UI must disclose that fact.
+    const stillValid = await request.get(protectedUrl, {
+      headers: { Authorization: `Bearer ${originalToken}` },
+      failOnStatusCode: false
+    });
+    expect(stillValid.status()).toBe(200);
+  });
+
   test('sign out revokes the server session and rejects replay of the same token', async ({ page, request }) => {
     test.skip(!isLoopback(CERT_BASE_URL), 'Requires an explicitly configured loopback CERT_BASE_URL');
     test.skip(!CERT_API_BASE || !isLoopback(CERT_API_BASE), 'Requires an explicitly configured loopback CERT_API_BASE');

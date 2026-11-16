@@ -89,6 +89,10 @@ const Login = () => {
     const value = params.get('reset');
     return value === 'success' || value === '1' || value === 'true';
   }, [location.search]);
+  const logoutRevocationUnconfirmed = useMemo(
+    () => new URLSearchParams(location.search).get('logout') === 'revocation-unconfirmed',
+    [location.search]
+  );
 
   const defaultLoginContent = {
     headline: t('auth.login.headline', 'Sign in to Scrolith'),
@@ -349,6 +353,18 @@ const Login = () => {
           <div className="space-y-6">
           <AuthSocialButtons mode="login" config={socialConfig || undefined} />
           <form className="space-y-6" onSubmit={handleSubmit}>
+          {logoutRevocationUnconfirmed && (
+            <div
+              className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950"
+              role="alert"
+              aria-live="assertive"
+            >
+              {t(
+                'auth.login.logout_revocation_unconfirmed',
+                'You are signed out on this device, but the server could not confirm session revocation. This session may remain active elsewhere until it expires.'
+              )}
+            </div>
+          )}
           {resetSuccess && (
             <div className="rounded-xl border border-green-200 bg-green-50 p-4">
               <div className="text-sm text-green-700">

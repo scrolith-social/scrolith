@@ -330,17 +330,21 @@ class AuthService {
     };
   }
 
-  static async logout() {
+  static async logout(): Promise<boolean> {
+    let serverRevoked = false;
     try {
       await api.post('/auth/logout', undefined, {
         timeout: 6000,
         __skipRetry: true
       } as any);
+      serverRevoked = true;
     } catch {
-      // Ignore logout errors
+      // Local sign-out still proceeds, but callers must not claim that the
+      // server revoked the session when the request did not complete.
     } finally {
       await AuthService.clearToken();
     }
+    return serverRevoked;
   }
 
   static async setToken(token: string) {
