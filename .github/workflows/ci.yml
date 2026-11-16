@@ -41,10 +41,9 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       - name: Install locked dependencies
-        run: npm ci --registry=https://registry.npmjs.org
+        run: npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
 
       - name: Production TypeScript check
         run: npm run typecheck:production
@@ -63,7 +62,7 @@ jobs:
 
       - name: API target and feed-state unit tests
         run: >-
-          npx vitest run
+          env -u NODE_AUTH_TOKEN npx vitest run
           src/utils/__tests__/apiBasePolicy.spec.ts
           src/utils/__tests__/assetUrl.environment.spec.ts
           src/utils/__tests__/oauthApiUrl.spec.ts
@@ -71,7 +70,7 @@ jobs:
           src/community/__tests__/storyState.merge.spec.ts
 
       - name: Build inert CI artifact
-        run: npm run build
+        run: env -u NODE_AUTH_TOKEN npm run build
 
       - name: Inspect generated bundle
         run: node scripts/verify-frontend-build-artifact.mjs dist --expected-api-host backend.invalid --forbidden-api-hosts api.scrolith.com
