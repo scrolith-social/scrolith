@@ -113,7 +113,7 @@ BEGIN
     'FoundingPartnerProgram', 'FoundingPartner',
     'FoundingPartnerEnrollmentPayment', 'FoundingPartnerProfitPeriod',
     'FoundingPartnerProfitSource', 'FoundingPartnerDistributionRun',
-    'FoundingPartnerDistribution', 'AuthSession'
+    'FoundingPartnerDistribution', 'AuthSession', 'OAuthExchangeCode'
   ] LOOP
     FOR column_row IN
       SELECT attname
@@ -152,7 +152,8 @@ REVOKE UPDATE ON TABLE
   :"application_schema"."FoundingPartnerProfitSource",
   :"application_schema"."FoundingPartnerDistributionRun",
   :"application_schema"."FoundingPartnerDistribution",
-  :"application_schema"."AuthSession"
+  :"application_schema"."AuthSession",
+  :"application_schema"."OAuthExchangeCode"
 FROM :"runtime_role";
 
 GRANT UPDATE ("status", "description", "metadata", "updatedAt")
@@ -185,12 +186,16 @@ GRANT UPDATE ("amount", "currency", "status")
   ON TABLE :"application_schema"."AdPayment" TO :"runtime_role";
 GRANT UPDATE ("reactionActive", "reversedAt", "reversalCount")
   ON TABLE :"application_schema"."GcoinEarningEvent" TO :"runtime_role";
--- Authentication writes durable sessions, updates only the revocation fields,
--- and removes expired rows after the service retention window.
+-- Authentication writes durable sessions and OAuth exchange codes, updates
+-- only revocation/consumption fields, and removes expired rows after retention.
 GRANT SELECT, INSERT, DELETE
   ON TABLE :"application_schema"."AuthSession" TO :"runtime_role";
 GRANT UPDATE ("revokedAt", "revokeReason")
   ON TABLE :"application_schema"."AuthSession" TO :"runtime_role";
+GRANT SELECT, INSERT, DELETE
+  ON TABLE :"application_schema"."OAuthExchangeCode" TO :"runtime_role";
+GRANT UPDATE ("usedAt")
+  ON TABLE :"application_schema"."OAuthExchangeCode" TO :"runtime_role";
 
 -- Founding Partner field allowlists are derived from the current service and
 -- admin route writes. Economic inputs and identity/idempotency keys remain
@@ -262,6 +267,19 @@ BEGIN
      OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'expiresAt', 'UPDATE')
      OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'createdAt', 'UPDATE') THEN
     RAISE EXCEPTION 'runtime AuthSession privileges do not match the reviewed service operations';
+  END IF;
+  IF has_table_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'UPDATE')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'SELECT')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'INSERT')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'DELETE')
+     OR NOT has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'usedAt', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'id', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'userId', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'codeHash', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'authSessionVersion', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'expiresAt', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."OAuthExchangeCode"', 'createdAt', 'UPDATE') THEN
+    RAISE EXCEPTION 'runtime OAuthExchangeCode privileges do not match the reviewed service operations';
   END IF;
   IF has_table_privilege('scrolith_runtime', 'public._prisma_migrations', 'SELECT')
      OR has_table_privilege('scrolith_runtime', 'public._prisma_migrations', 'INSERT')

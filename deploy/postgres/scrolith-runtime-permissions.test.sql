@@ -60,6 +60,13 @@ INSERT INTO "AuthSession" ("id", "userId", "tokenIdHash", "expiresAt", "createdA
    now() + interval '7 days', now()),
   ('role-review-auth-session-expired', 'role-review-user-a', 'synthetic-auth-session-expired-hash',
    now() - interval '2 days', now() - interval '2 days');
+INSERT INTO "OAuthExchangeCode" (
+  "id", "userId", "codeHash", "authSessionVersion", "expiresAt", "createdAt"
+) VALUES
+  ('role-review-oauth-code-active', 'role-review-user-a', 'synthetic-oauth-code-active-hash',
+   0, now() + interval '1 day', now()),
+  ('role-review-oauth-code-expired', 'role-review-user-a', 'synthetic-oauth-code-expired-hash',
+   0, now() - interval '2 days', now() - interval '2 days');
 INSERT INTO "Wallet" ("id", "userId", "updatedAt") VALUES
   ('role-review-wallet-a', 'role-review-user-a', now());
 INSERT INTO "Order" ("id", "clientId", "freelancerId", "amount", "updatedAt")
@@ -120,6 +127,15 @@ UPDATE "AuthSession"
  WHERE "id" = 'role-review-auth-session-active';
 DELETE FROM "AuthSession"
  WHERE "id" = 'role-review-auth-session-expired'
+   AND "expiresAt" < now() - interval '1 day';
+INSERT INTO "OAuthExchangeCode" (
+  "id", "userId", "codeHash", "authSessionVersion", "expiresAt", "createdAt"
+) VALUES ('role-review-oauth-code-runtime-created', 'role-review-user-b',
+          'synthetic-oauth-code-runtime-hash', 0, now() + interval '1 day', now());
+UPDATE "OAuthExchangeCode" SET "usedAt" = now()
+ WHERE "id" = 'role-review-oauth-code-active';
+DELETE FROM "OAuthExchangeCode"
+ WHERE "id" = 'role-review-oauth-code-expired'
    AND "expiresAt" < now() - interval '1 day';
 
 -- Supported app behavior: account deactivation is a soft UPDATE; wallet and
@@ -247,7 +263,10 @@ BEGIN
       OR (SELECT "updatedBy" FROM "HumanVerificationSettings" WHERE "scope" = 'role_review_hv_existing') <> 'role-review-user-a'
       OR (SELECT "revokeReason" FROM "AuthSession" WHERE "id" = 'role-review-auth-session-active') <> 'synthetic logout'
       OR (SELECT count(*) FROM "AuthSession" WHERE "id" = 'role-review-auth-session-runtime-created') <> 1
-      OR (SELECT count(*) FROM "AuthSession" WHERE "id" = 'role-review-auth-session-expired') <> 0 THEN
+      OR (SELECT count(*) FROM "AuthSession" WHERE "id" = 'role-review-auth-session-expired') <> 0
+      OR (SELECT "usedAt" FROM "OAuthExchangeCode" WHERE "id" = 'role-review-oauth-code-active') IS NULL
+      OR (SELECT count(*) FROM "OAuthExchangeCode" WHERE "id" = 'role-review-oauth-code-runtime-created') <> 1
+      OR (SELECT count(*) FROM "OAuthExchangeCode" WHERE "id" = 'role-review-oauth-code-expired') <> 0 THEN
     RAISE EXCEPTION 'runtime supported writes or settlement idempotency did not match expectations';
   END IF;
 END
@@ -327,6 +346,37 @@ BEGIN
     WHERE "id" = 'role-review-auth-session-active';
   EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
   IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession creation time'; END IF;
+
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "id" = 'tampered-oauth-code-id'
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode identity'; END IF;
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "userId" = 'role-review-user-b'
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode ownership'; END IF;
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "codeHash" = 'tampered-oauth-code-hash'
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode hash'; END IF;
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "authSessionVersion" = 1
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode session version'; END IF;
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "expiresAt" = now() + interval '30 days'
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode expiry'; END IF;
+  denied := false;
+  BEGIN UPDATE "OAuthExchangeCode" SET "createdAt" = now() - interval '30 days'
+    WHERE "id" = 'role-review-oauth-code-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed OAuthExchangeCode creation time'; END IF;
 
   denied := false;
   BEGIN DELETE FROM "PaymentSettlement" WHERE "id" = 'role-review-funding-settlement';
