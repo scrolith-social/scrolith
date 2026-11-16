@@ -60,6 +60,9 @@ jobs:
       - name: Certification target safety tests
         run: node --test scripts/certificationTarget.test.mjs
 
+      - name: Build artifact policy tests
+        run: node --test scripts/verify-frontend-build-artifact.test.mjs
+
       - name: API target and feed-state unit tests
         run: >-
           env -u NODE_AUTH_TOKEN npx vitest run

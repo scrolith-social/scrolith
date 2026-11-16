@@ -47,3 +47,11 @@ test('detects a forbidden production API host in an inert CI bundle', async () =
   assert.deepEqual(result.forbiddenApiHostsFound, ['api.scrolith.com']);
   assert.deepEqual(result.forbiddenApiHostFiles['api.scrolith.com'], ['assets/app.js']);
 });
+
+test('detects a forbidden production API preconnect in the generated HTML shell', async () => {
+  const root = await createFixture('const api = "https://backend.invalid/api";');
+  await writeFile(join(root, 'index.html'), '<link rel="preconnect" href="https://api.scrolith.com">');
+  const result = await inspectFrontendArtifact(root, 'backend.invalid', ['api.scrolith.com']);
+  assert.deepEqual(result.forbiddenApiHostsFound, ['api.scrolith.com']);
+  assert.deepEqual(result.forbiddenApiHostFiles['api.scrolith.com'], ['index.html']);
+});
