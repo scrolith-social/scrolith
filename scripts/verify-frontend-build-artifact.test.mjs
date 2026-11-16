@@ -45,4 +45,5 @@ test('detects a forbidden production API host in an inert CI bundle', async () =
   const root = await createFixture('const api = "https://api.scrolith.com/api";');
   const result = await inspectFrontendArtifact(root, 'backend.invalid', ['api.scrolith.com']);
   assert.deepEqual(result.forbiddenApiHostsFound, ['api.scrolith.com']);
+  assert.deepEqual(result.forbiddenApiHostFiles['api.scrolith.com'], ['assets/app.js']);
 });

@@ -46,6 +46,7 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
   const findings = [];
   const hosts = new Set();
   const forbiddenHostsFound = new Set();
+  const forbiddenHostFiles = new Map();
   let expectedApiHostFound = false;
   for (const file of files) {
     const text = await readFile(file, 'utf8');
@@ -57,7 +58,12 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
       try {
         const hostname = new URL(match[0]).hostname.toLowerCase().replace(/^\[|\]$/g, '');
         hosts.add(hostname);
-        if (forbiddenHosts.has(hostname)) forbiddenHostsFound.add(hostname);
+        if (forbiddenHosts.has(hostname)) {
+          forbiddenHostsFound.add(hostname);
+          const filesForHost = forbiddenHostFiles.get(hostname) || new Set();
+          filesForHost.add(relative(directory, file).replace(/\\/g, '/'));
+          forbiddenHostFiles.set(hostname, filesForHost);
+        }
       } catch {
         // Ignore incomplete URL fragments emitted from templates or source maps.
       }
@@ -69,6 +75,9 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
     expectedApiHostFound,
     findings,
     forbiddenApiHostsFound: [...forbiddenHostsFound].sort(),
+    forbiddenApiHostFiles: Object.fromEntries(
+      [...forbiddenHostFiles].map(([host, filesForHost]) => [host, [...filesForHost].sort()])
+    ),
     hosts: [...hosts].sort()
   };
 }
@@ -101,7 +110,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       }
       process.exitCode = 1;
     } else if (result.forbiddenApiHostsFound.length) {
-      console.error(`Forbidden API hosts found in the bundle: ${result.forbiddenApiHostsFound.join(', ')}`);
+      for (const host of result.forbiddenApiHostsFound) {
+        console.error(`Forbidden API host=${host} bundleFiles=${result.forbiddenApiHostFiles[host].join(', ')}`);
+      }
       process.exitCode = 1;
     } else if (!result.expectedApiHostFound) {
       console.error(`Expected API host is absent from the bundle: ${expectedApiHost}`);
