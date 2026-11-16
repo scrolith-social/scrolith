@@ -7,6 +7,7 @@ const templatePath = resolve(scriptDirectory, '../nginx.staging.conf.template');
 const ORIGIN_PLACEHOLDER = '__SCROLITH_STAGING_API_ORIGIN__';
 const WEBSOCKET_ORIGIN_PLACEHOLDER = '__SCROLITH_STAGING_API_WEBSOCKET_ORIGIN__';
 const MAP_TILE_ORIGIN = 'https://tile.openstreetmap.org';
+const STAGING_API_HOST = /^ca-scrolith-staging-api---[a-z0-9-]+\.yellowmushroom-b8714740\.southeastasia\.azurecontainerapps\.io$/;
 
 export function validateStagingApiOrigin(value) {
   if (typeof value !== 'string' || !value || value.trim() !== value) {
@@ -28,8 +29,7 @@ export function validateStagingApiOrigin(value) {
     parsed.search ||
     parsed.hash ||
     parsed.pathname !== '/' ||
-    !parsed.hostname.includes('--') ||
-    !parsed.hostname.endsWith('.azurecontainerapps.io')
+    !STAGING_API_HOST.test(parsed.hostname.toLowerCase())
   ) {
     throw new Error('Staging API origin must be an HTTPS revision-specific Container Apps origin.');
   }

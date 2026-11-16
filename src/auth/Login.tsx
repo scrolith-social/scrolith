@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '../context/UserContext';
 import { AuthPagesConfig } from '../types';
@@ -76,6 +76,11 @@ const Login = () => {
   const [twoFACode, setTwoFACode] = useState('');
   const [hvToken, setHvToken] = useState<string | null>(null);
   const [hvRequired, setHvRequired] = useState(false);
+  const [loginApproval, setLoginApproval] = useState<{
+    id: string;
+    approvalToken: string;
+    expiresAt?: string | null;
+  } | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -130,7 +135,7 @@ const Login = () => {
   };
   const socialConfig = authConfig?.social_auth ?? (authConfig as any)?.socialAuth;
 
-  const completePostLogin = () => {
+  const completePostLogin = useCallback(() => {
     if (shouldUseMobilePostLoginRoute() && !isStoredAdminUser()) {
       const target = resolveAuthenticatedEntryPath(null);
       try {
@@ -146,11 +151,71 @@ const Login = () => {
         }
       }, 1_500);
     }
-  };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (!loginApproval?.id || !loginApproval.approvalToken) return undefined;
+    let stopped = false;
+    let inFlight = false;
+    let exchanging = false;
+
+    const pollApproval = async () => {
+      if (inFlight || exchanging) return;
+      inFlight = true;
+      try {
+        const { DeviceSecurityService } = await import('../services/deviceSecurity');
+        const status = await DeviceSecurityService.getApprovalStatus(loginApproval.id, loginApproval.approvalToken);
+        if (stopped) return;
+        const current = String(status?.status || '').toUpperCase();
+        if (!current || current === 'PENDING') return;
+        if (current !== 'APPROVED') {
+          setLoginApproval(null);
+          setError(current === 'REJECTED'
+            ? 'This login was rejected from your trusted session.'
+            : 'This login approval expired. Please sign in again.');
+          return;
+        }
+
+        exchanging = true;
+        const { AuthService } = await import('../services/authService');
+        const exchanged = await AuthService.exchangeApprovedLogin(loginApproval.id, loginApproval.approvalToken);
+        if (stopped) return;
+        if (!exchanged.success || !exchanged.user) {
+          setLoginApproval(null);
+          setError(exchanged.error || 'Unable to complete approved login.');
+          return;
+        }
+
+        window.dispatchEvent(new Event('scrolith:auth-changed'));
+        const role = String(exchanged.user.role || '').toLowerCase();
+        if (role.includes('admin')) {
+          window.location.assign('/admin/dashboard');
+          return;
+        }
+        completePostLogin();
+        window.location.assign(resolveAuthenticatedEntryPath(exchanged.user as any));
+      } catch (approvalError: any) {
+        if (!stopped) {
+          setLoginApproval(null);
+          setError(approvalError?.response?.data?.error || approvalError?.message || 'Unable to check login approval.');
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void pollApproval();
+    const timer = window.setInterval(() => void pollApproval(), 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [completePostLogin, loginApproval]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (loginApproval) return;
     setLoading(true);
 
     try {
@@ -188,6 +253,15 @@ const Login = () => {
         password,
         humanVerificationToken: hvToken || undefined
       });
+      if ((raw as any).requiresLoginApproval && (raw as any).loginApproval?.id && (raw as any).loginApproval?.approvalToken) {
+        setLoginApproval({
+          id: String((raw as any).loginApproval.id),
+          approvalToken: String((raw as any).loginApproval.approvalToken),
+          expiresAt: (raw as any).loginApproval.expiresAt ? String((raw as any).loginApproval.expiresAt) : null
+        });
+        setError('');
+        return;
+      }
       if ((raw as any).requires2FA && (raw as any).challengeToken) {
         setTwoFAChallenge(String((raw as any).challengeToken));
         setTwoFACode('');
@@ -289,6 +363,25 @@ const Login = () => {
             {error || t('auth.login.error_region', 'Login status messages will appear here.')}
           </div>
           <div className="space-y-4">
+            {loginApproval ? (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900" role="status" aria-live="polite">
+                <p className="font-semibold text-blue-950">Waiting for trusted-device approval</p>
+                <p className="mt-1 leading-6">Open Scrolith on a device that is already signed in, go to Settings &gt; Security, then approve this login.</p>
+                {loginApproval.expiresAt ? (
+                  <p className="mt-1 text-xs font-medium text-blue-800">
+                    Expires at {new Date(loginApproval.expiresAt).toLocaleString()}
+                  </p>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setLoginApproval(null)}
+                  className="mt-3 rounded-lg border border-blue-200 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Stop waiting
+                </button>
+              </div>
+            ) : null}
             {twoFAChallenge ? (
               <div className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
                 <div className="flex items-start gap-2">
@@ -394,7 +487,7 @@ const Login = () => {
           <div>
             <button
               type="submit"
-              disabled={loading || (hvRequired && !hvToken && !twoFAChallenge)}
+              disabled={loading || Boolean(loginApproval) || (hvRequired && !hvToken && !twoFAChallenge)}
               className="flex w-full items-center justify-center rounded-xl border border-transparent bg-slate-950 px-4 py-3.5 text-sm font-bold text-white shadow-lg shadow-slate-950/15 transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
             >
               {loading ? t('auth.login.loading', 'Signing in...') : loginContent.submit_label}

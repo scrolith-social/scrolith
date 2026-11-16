@@ -7,30 +7,30 @@
  * Usage:
  *   set CERT_EMAIL=...
  *   set CERT_PASSWORD=...
- *   set CERT_BASE_URL=https://p2115---scrolith-frontend-25ysnpjdda-as.a.run.app
+ *   set CERT_BASE_URL=http://127.0.0.1:5173
+ *   set CERT_API_BASE=http://127.0.0.1:5000/api
  *   node scripts/phase2116-generate-storage-state.mjs
  */
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { requireLoopbackTestUrl } from './certificationTarget.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
-const baseURL = (
-  process.env.CERT_BASE_URL ||
-  process.env.P2115_BASE_URL ||
-  'https://p2115---scrolith-frontend-25ysnpjdda-as.a.run.app'
-).replace(/\/$/, '');
-const apiBase = (process.env.CERT_API_BASE || process.env.VITE_API_URL || 'https://api.scrolith.com/api').replace(
-  /\/$/,
-  ''
-);
+const baseURL = requireLoopbackTestUrl(process.env.CERT_BASE_URL, 'CERT_BASE_URL').replace(/\/$/, '');
+const apiBase = requireLoopbackTestUrl(process.env.CERT_API_BASE, 'CERT_API_BASE').replace(/\/$/, '');
 const email = process.env.CERT_EMAIL || process.env.SCROLITH_CERT_EMAIL || '';
 const password = process.env.CERT_PASSWORD || process.env.SCROLITH_CERT_PASSWORD || '';
-const out =
-  process.env.CERT_STORAGE_STATE || join(root, 'tests/certification/fixtures/storage-state.json');
-const outLegacy = join(root, 'tests/storageState.json');
+const out = resolve(
+  process.env.CERT_STORAGE_STATE || join(tmpdir(), 'scrolith-certification', 'storage-state.json')
+);
+const relativeOutput = relative(root, out);
+if (relativeOutput === '' || (!isAbsolute(relativeOutput) && relativeOutput !== '..' && !relativeOutput.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))) {
+  throw new Error('CERT_STORAGE_STATE must resolve outside the source repository.');
+}
 
 if (!email || !password) {
   console.error('CERT_EMAIL and CERT_PASSWORD are required');
@@ -38,7 +38,6 @@ if (!email || !password) {
 }
 
 mkdirSync(dirname(out), { recursive: true });
-mkdirSync(dirname(outLegacy), { recursive: true });
 
 const loginViaApi = async () => {
   const res = await fetch(`${apiBase}/auth/login`, {
@@ -54,15 +53,15 @@ const loginViaApi = async () => {
     body = { raw: text };
   }
   if (!res.ok) {
-    throw new Error(`API login failed HTTP ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`API login failed with HTTP status ${res.status}.`);
   }
   const token = body.token || body.accessToken || body?.data?.token || body?.data?.accessToken;
-  if (!token) throw new Error(`API login ok but no token in response: ${text.slice(0, 300)}`);
+  if (!token) throw new Error('API login succeeded without returning an access token.');
   return { token, user: body.user || body.data?.user || { email }, forcePasswordReset: body.forcePasswordReset };
 };
 
-const { token, user, forcePasswordReset } = await loginViaApi();
-console.log(`API login OK as ${user?.email || email} forcePasswordReset=${Boolean(forcePasswordReset)}`);
+const { token, user } = await loginViaApi();
+console.log('Synthetic local API login succeeded.');
 
 const browser = await chromium.launch({ headless: process.env.CERT_HEADED === '1' ? false : true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -111,26 +110,11 @@ try {
 
   console.log('Browser API probe /auth/me:', JSON.stringify(probe));
 
-  const url = page.url();
-  const bodySnippet = await page.locator('body').innerText().catch(() => '');
-  console.log('Landed URL:', url);
-  console.log('Body snippet:', bodySnippet.slice(0, 200).replace(/\s+/g, ' '));
-
-  await context.storageState({ path: out });
-  await context.storageState({ path: outLegacy });
-  console.log(`Saved storage state → ${out}`);
-  console.log(`Also saved → ${outLegacy}`);
-
   if (!probe.corsOk || !probe.ok) {
-    console.warn(
-      'WARNING: Authenticated browser API calls failed (likely CORS on CERT_BASE_URL). E2E against this origin will fail until CORS allows the origin or CERT_BASE_URL is scrolith.com with matching revision traffic.'
-    );
-    writeFileSync(
-      join(root, 'playwright-results/phase2116/storage-state-probe.json'),
-      JSON.stringify({ baseURL, apiBase, probe, forcePasswordReset, at: new Date().toISOString() }, null, 2)
-    );
-    // Still exit 0 if storage was written — gate will fail E2E honestly
+    throw new Error(`Local authenticated API probe failed with status ${probe.status}; storage state was not written.`);
   }
+  await context.storageState({ path: out });
+  console.log('Verified local authentication state saved outside the source repository.');
 } catch (error) {
   console.error('Failed to generate storage state:', error?.message || error);
   process.exit(1);

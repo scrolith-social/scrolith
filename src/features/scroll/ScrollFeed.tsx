@@ -131,7 +131,8 @@ const clampInteger = (value: unknown, fallback: number, min: number, max: number
 
 const normalizeScrollAdPolicy = (raw?: Partial<ScrollAdsRuntimePolicy> | null): ScrollAdsRuntimePolicy => {
   const source = raw && typeof raw === 'object' ? raw : {};
-  const placementPacing = source.placementPacing && typeof source.placementPacing === 'object' ? source.placementPacing : {};
+  const placementPacing: Partial<ScrollAdsRuntimePolicy['placementPacing']> =
+    source.placementPacing && typeof source.placementPacing === 'object' ? source.placementPacing : {};
   return {
     enabled: source.enabled !== false,
     fallbackToCommunityFeed: source.fallbackToCommunityFeed !== false,
@@ -614,7 +615,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
   const patchPostBridgeState = useCallback(
     (
       postId: string,
-      update: Partial<ScrollVideo> & { metrics?: Partial<ScrollVideo['metrics']> }
+      update: Omit<Partial<ScrollVideo>, 'metrics'> & { metrics?: Partial<ScrollVideo['metrics']> }
     ) => {
       const normalizedPostId = String(postId || '').trim();
       if (!normalizedPostId) return;
@@ -1574,7 +1575,10 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
       const targetType = String(detail?.targetType || '').toUpperCase();
       const scrollId = String(detail?.targetId || '').trim();
       const counts = detail?.counts && typeof detail.counts === 'object' ? detail.counts : {};
-      const likes = Object.values(counts).reduce((total: number, value: any) => total + Math.max(0, Number(value || 0)), 0);
+      const likes = Object.values(counts).reduce<number>(
+        (total, value) => total + Math.max(0, Number(value || 0)),
+        0
+      );
       if (targetType === 'SCROLL') {
         if (!scrollId) return;
         patchMetrics(scrollId, { likes });
@@ -1804,7 +1808,7 @@ const ScrollFeed: React.FC<ScrollFeedProps> = ({
       }
       const raw = window.prompt('Report reason');
       const validated = validateScrollReportReason(raw);
-      if (!validated.ok) {
+      if (validated.ok === false) {
         if (raw != null) showNotification('error', 'Scroll', validated.error);
         return;
       }

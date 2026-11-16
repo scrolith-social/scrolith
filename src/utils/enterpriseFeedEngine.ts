@@ -87,7 +87,7 @@ export const resolveAdaptivePageSize = (input: AdaptivePageSizeInput): number =>
   // Continuous feed (Facebook-style): larger pages, still network-aware. No hard
   // stop on total items — callers paginate until the API reports terminal.
   const base = Math.max(8, Math.min(48, Math.trunc(Number(input.basePageSize) || 20)));
-  if (input.dataSaver) return Math.max(6, Math.min(base, 12));
+  if (input.dataSaver) return Math.max(6, Math.min(base, 8));
   switch (input.networkClass) {
     case 'offline':
       return Math.max(6, Math.min(base, 10));

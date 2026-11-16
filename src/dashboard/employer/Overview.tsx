@@ -483,7 +483,6 @@ export default function EmployerOverview() {
     const available = Number(
       walletSnapshot?.availableBalance ??
         walletSnapshot?.available_balance ??
-        overview?.walletBalance ??
         0
     );
     const escrow = Number(
@@ -509,7 +508,7 @@ export default function EmployerOverview() {
         label: 'Shortlisted',
         value: proposalStats.shortlisted,
         href: '/client/dashboard?tab=proposals-offers',
-        tone: 'blue'
+        tone: 'indigo'
       },
       {
         id: 'chip-escrow',

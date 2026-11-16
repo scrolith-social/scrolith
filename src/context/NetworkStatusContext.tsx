@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { PluginListenerHandle } from '@capacitor/core';
+import type { AppDistributionEvent } from '../services/appDistribution';
 import {
   isRecentlyRestoredOnline,
   shouldAttemptRealtimeConnections
@@ -33,7 +34,7 @@ const detectNativePlatform = () => {
   return typeof window !== 'undefined' && Boolean((window as any).Capacitor);
 };
 
-const trackRuntimeEvent = (eventName: string, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+const trackRuntimeEvent = (eventName: AppDistributionEvent, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
   void import('../mobile/mobileTelemetry')
     .then(({ trackMobileRuntimeEvent }) => trackMobileRuntimeEvent(eventName, payload, options))
     .catch(() => {});

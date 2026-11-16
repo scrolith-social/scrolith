@@ -58,7 +58,7 @@ const MAX_ONBOARDING_TOTAL = FOLLOW_ONBOARDING_MAX_TOTAL;
 
 /** Official Scrolith icon used in the compact onboarding header. */
 const SCROLITH_ICON_LOGO_URL =
-  'https://api.scrolith.com/api/files/content/78b68af8-aeb4-42d0-a065-85229a1ae6e7';
+  '/api/files/content/78b68af8-aeb4-42d0-a065-85229a1ae6e7';
 
 const DEFAULT_STATUS: FollowOnboardingStatus = {
   required: true,

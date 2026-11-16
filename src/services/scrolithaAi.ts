@@ -27,6 +27,9 @@ export type AIStatus = {
   productionSafeDefaults: boolean;
 };
 
+export type AIAdminFeatureFlags = Record<string, boolean>;
+export type AIProviderTestResult = { health?: { status?: string } };
+
 const unwrap = <T>(res: any): T => {
   if (res?.data?.data !== undefined) return res.data.data as T;
   if (res?.data !== undefined) return res.data as T;
@@ -80,51 +83,51 @@ export const ScrolithaAIService = {
   },
 
   // Admin
-  async adminOverview() {
+  async adminOverview(): Promise<Record<string, unknown>> {
     const res = await api.get('/admin/ai/overview');
-    return unwrap(res);
+    return unwrap<Record<string, unknown>>(res);
   },
-  async adminProviders() {
+  async adminProviders(): Promise<Record<string, unknown>> {
     const res = await api.get('/admin/ai/providers');
-    return unwrap(res);
+    return unwrap<Record<string, unknown>>(res);
   },
   async adminPutProvider(provider: string, body: Record<string, unknown>) {
     const res = await api.put(`/admin/ai/providers/${provider}`, body);
     return unwrap(res);
   },
-  async adminTestProvider(provider: string) {
+  async adminTestProvider(provider: string): Promise<AIProviderTestResult> {
     const res = await api.post(`/admin/ai/providers/${provider}/test`);
-    return unwrap(res);
+    return unwrap<AIProviderTestResult>(res);
   },
-  async adminModels() {
+  async adminModels(): Promise<unknown[]> {
     const res = await api.get('/admin/ai/models');
-    return unwrap(res);
+    return unwrap<unknown[]>(res);
   },
-  async adminPrompts() {
+  async adminPrompts(): Promise<unknown[]> {
     const res = await api.get('/admin/ai/prompts');
-    return unwrap(res);
+    return unwrap<unknown[]>(res);
   },
-  async adminUsage() {
+  async adminUsage(): Promise<Record<string, unknown>> {
     const res = await api.get('/admin/ai/usage');
-    return unwrap(res);
+    return unwrap<Record<string, unknown>>(res);
   },
-  async adminHealth() {
+  async adminHealth(): Promise<Record<string, unknown>> {
     const res = await api.get('/admin/ai/health');
-    return unwrap(res);
+    return unwrap<Record<string, unknown>>(res);
   },
-  async adminAudit(limit = 50) {
+  async adminAudit(limit = 50): Promise<unknown[]> {
     const res = await api.get('/admin/ai/audit', { params: { limit } });
-    return unwrap(res);
+    return unwrap<unknown[]>(res);
   },
-  async adminGetFlags() {
+  async adminGetFlags(): Promise<AIAdminFeatureFlags> {
     const res = await api.get('/admin/ai/feature-flags');
-    return unwrap(res);
+    return unwrap<AIAdminFeatureFlags>(res);
   },
-  async adminPutFlags(body: Record<string, unknown>, confirmRisk = false) {
+  async adminPutFlags(body: Record<string, unknown>, confirmRisk = false): Promise<AIAdminFeatureFlags> {
     const res = await api.put('/admin/ai/feature-flags', body, {
       headers: confirmRisk ? { 'X-Confirm-AI-Risk': 'CONFIRM' } : {}
     });
-    return unwrap(res);
+    return unwrap<AIAdminFeatureFlags>(res);
   }
 };
 

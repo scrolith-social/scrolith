@@ -394,16 +394,20 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .then(({ clearInstantGraphUser }) => clearInstantGraphUser(previousUserId))
       .catch(() => undefined);
 
-    void AuthService.clearToken();
+    // Keep the bearer token available for the authenticated logout request.
+    // AuthService.logout clears local token storage only after that request
+    // completes (or times out), so the server can durably revoke the session.
     void (async () => {
       try {
         const { unregisterPushNotifications } = await import('../mobile/push');
         await unregisterPushNotifications();
-      } catch {}
-      await AuthService.logout();
-    })();
+      } catch {
+        // Push cleanup is best-effort and must not prevent session revocation.
+      }
 
-    window.location.assign('/auth/login');
+      await AuthService.logout().catch(() => undefined);
+      window.location.assign('/auth/login');
+    })();
   };
 
   const updateUser = (updates: Partial<User>) => {

@@ -1,45 +1,56 @@
 import { test as setup, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import {
+  CERT_BASE_URL,
   CERT_EMAIL,
   CERT_PASSWORD,
   CERT_STORAGE_STATE,
   canRunAuthenticated,
-  hasAuthCredentials,
   hasAuthStorage
 } from '../helpers/env';
-import { injectToken, loginViaApi, loginViaUi } from '../helpers/auth';
+import {
+  completeFollowOnboardingIfRequired,
+  isLikelyAuthenticated,
+  loginViaUi
+} from '../helpers/auth';
 
-const here = dirname(fileURLToPath(import.meta.url));
-
-setup('authenticate for certification suite', async ({ page, request }) => {
+setup('authenticate for certification suite', async ({ page }) => {
   setup.skip(!canRunAuthenticated(), 'No CERT_STORAGE_STATE or CERT_EMAIL/CERT_PASSWORD');
+  expect(process.env.CERT_BASE_URL, 'Set CERT_BASE_URL explicitly before running authenticated browser certification').toBeTruthy();
+  const baseHost = new URL(CERT_BASE_URL).hostname.toLowerCase();
+  expect(
+    ['localhost', '127.0.0.1', '[::1]', '::1'].includes(baseHost),
+    'Authenticated certification must use the approved local loopback server'
+  ).toBe(true);
 
-  // Existing storage state is sufficient — refresh file timestamp by re-saving
-  if (hasAuthStorage() && !hasAuthCredentials()) {
+  // Prefer a verified, already-authenticated browser session when provided.
+  // A real signup UI session is a valid trusted first device; attempting a
+  // second UI login here can correctly trigger device approval with no trusted
+  // session left to approve it.
+  if (hasAuthStorage()) {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 15_000 });
+    expect(
+      await isLikelyAuthenticated(page),
+      'CERT_STORAGE_STATE must contain an authenticated Scrolith session'
+    ).toBe(true);
+    await completeFollowOnboardingIfRequired(page);
     await page.context().storageState({ path: CERT_STORAGE_STATE });
     return;
   }
 
   mkdirSync(dirname(CERT_STORAGE_STATE), { recursive: true });
+  // Exercise the real browser login/session path; API login and token injection
+  // do not establish device approval or prove that the UI can authenticate.
+  await loginViaUi(page, CERT_EMAIL, CERT_PASSWORD);
 
-  const token = await loginViaApi(request, CERT_EMAIL, CERT_PASSWORD);
-  if (token) {
-    await injectToken(page, token, { email: CERT_EMAIL });
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
-  } else {
-    await loginViaUi(page, CERT_EMAIL, CERT_PASSWORD);
-  }
-
-  // Soft assert: we should not remain on login
-  await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 15_000 }).catch(() => undefined);
+  // Never save an anonymous state as a successful authentication fixture.
+  await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 15_000 });
+  expect(
+    await isLikelyAuthenticated(page),
+    'Certification login must establish an authenticated Scrolith session'
+  ).toBe(true);
+  await completeFollowOnboardingIfRequired(page);
   await page.context().storageState({ path: CERT_STORAGE_STATE });
-  // Also write example path for local default
-  const defaultPath = join(here, 'storage-state.json');
-  if (defaultPath !== CERT_STORAGE_STATE) {
-    await page.context().storageState({ path: defaultPath });
-  }
 });

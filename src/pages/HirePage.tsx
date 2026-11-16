@@ -70,7 +70,9 @@ const HirePage = () => {
       void loadConfig();
     };
     socket.on('cms:hire_updated', refresh);
-    return () => socket.off('cms:hire_updated', refresh);
+    return () => {
+      socket.off('cms:hire_updated', refresh);
+    };
   }, [socket]);
 
   useEffect(() => {

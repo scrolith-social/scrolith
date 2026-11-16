@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom';
 import { SkipLink, RouteAnnouncer, KeyboardShortcutsHelp } from './components/a11y';
 import { UserRole } from './types';
+import type { AppDistributionEvent } from './services/appDistribution';
 import { CurrencyProvider } from './context/CurrencyContext';
 import { ContentProvider, useContent } from './context/ContentContext';
 import { LiveFeatureProvider, useLiveFeature } from './context/LiveFeatureContext';
@@ -112,7 +113,11 @@ const writeBiometricPreference = (enabled: boolean) => {
   localStorage.setItem(BIOMETRIC_PREF_KEY, enabled ? 'true' : 'false');
 };
 
-const trackRuntimeEvent = (eventName: string, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+const trackRuntimeEvent = (
+  eventName: AppDistributionEvent,
+  payload: Record<string, unknown>,
+  options?: { dedupeMs?: number; sourcePath?: string }
+) => {
   void import('./mobile/mobileTelemetry')
     .then(({ trackMobileRuntimeEvent }) => trackMobileRuntimeEvent(eventName, payload, options))
     .catch(() => {});
@@ -576,7 +581,7 @@ class OptionalFeatureBoundary extends React.Component<React.PropsWithChildren<{}
 
   componentDidCatch(error: unknown, info: unknown) {
     trackRuntimeEvent(
-      'mobile_optional_feature_error',
+      'mobile_runtime_error',
       {
         message: (error as { message?: string } | null)?.message || 'optional_feature_error',
         componentStack: (info as { componentStack?: string } | null)?.componentStack || ''
@@ -1232,7 +1237,7 @@ const AppContent = () => {
 
     return () => {
       disposed = true;
-      void cleanup?.();
+      if (typeof cleanup === 'function') void cleanup();
     };
   }, [navigate, isNative]);
 
@@ -1592,7 +1597,7 @@ const AppContent = () => {
         ) : (
           <ErrorBoundary key={routeRenderKey}>
             <Suspense key={routeRenderKey} fallback={<RouteLoadingFallback />}>
-              <Routes location={location} key={routeRenderKey}>
+              <Routes>
               <Route path="/" element={signedInHomepageElement} />
               <Route path="/home" element={signedInHomepageElement} />
               <Route path="/member-home" element={signedInHomepageElement} />

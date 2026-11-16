@@ -71,7 +71,20 @@ const setValueByPath = (obj: Record<string, any>, path: string, value: any) => {
   return out;
 };
 
-const initialCampaignForm = {
+type AppCampaignForm = {
+  name: string;
+  title: string;
+  body: string;
+  mediaType: 'none' | 'image' | 'video';
+  mediaUrl: string;
+  actionUrl: string;
+  targetPlatform: 'all' | 'android' | 'desktop';
+  targetRole: 'freelancer' | 'employer' | 'admin' | 'all';
+  deliveryInApp: boolean;
+  deliveryPush: boolean;
+};
+
+const initialCampaignForm: AppCampaignForm = {
   name: '',
   title: '',
   body: '',
@@ -96,7 +109,7 @@ const AppManagement: React.FC = () => {
   const [analytics, setAnalytics] = useState<any>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [campaignForm, setCampaignForm] = useState(initialCampaignForm);
+  const [campaignForm, setCampaignForm] = useState<AppCampaignForm>(initialCampaignForm);
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -655,7 +668,7 @@ const AppManagement: React.FC = () => {
           />
           <select
             value={campaignForm.mediaType}
-            onChange={(e) => setCampaignForm((prev) => ({ ...prev, mediaType: e.target.value }))}
+            onChange={(e) => setCampaignForm((prev) => ({ ...prev, mediaType: e.target.value as AppCampaignForm['mediaType'] }))}
             className="rounded-md border border-gray-300 px-3 py-2 text-sm"
           >
             <option value="none">Text only</option>
@@ -677,7 +690,7 @@ const AppManagement: React.FC = () => {
           <select
             value={campaignForm.targetPlatform}
             onChange={(e) =>
-              setCampaignForm((prev) => ({ ...prev, targetPlatform: e.target.value }))
+              setCampaignForm((prev) => ({ ...prev, targetPlatform: e.target.value as AppCampaignForm['targetPlatform'] }))
             }
             className="rounded-md border border-gray-300 px-3 py-2 text-sm"
           >
@@ -687,7 +700,7 @@ const AppManagement: React.FC = () => {
           </select>
           <select
             value={campaignForm.targetRole}
-            onChange={(e) => setCampaignForm((prev) => ({ ...prev, targetRole: e.target.value }))}
+            onChange={(e) => setCampaignForm((prev) => ({ ...prev, targetRole: e.target.value as AppCampaignForm['targetRole'] }))}
             className="rounded-md border border-gray-300 px-3 py-2 text-sm"
           >
             <option value="all">All roles</option>

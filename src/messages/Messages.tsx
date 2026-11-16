@@ -1268,7 +1268,18 @@ const Messages = () => {
       () => visibleConversations.slice(conversationWindow.start, conversationWindow.end),
       [visibleConversations, conversationWindow.start, conversationWindow.end]
   );
-  const otherParticipant = (() => {
+  const otherParticipant: Partial<Conversation['participants'][number]> & {
+    id: string;
+    name?: string;
+    gender?: string;
+    lastSeenAt?: string;
+    last_seen_at?: string;
+    isScrolitha?: boolean;
+    is_scrolitha?: boolean;
+    systemLabel?: string;
+    system_label?: string;
+    presenceState?: string;
+  } | undefined = (() => {
       const selfId = String(user?.id || '').trim();
       const participants = Array.isArray(activeConvo?.participants) ? activeConvo!.participants : [];
       const others = participants.filter(

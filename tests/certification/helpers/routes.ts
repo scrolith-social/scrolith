@@ -2,7 +2,7 @@ export const CERT_ROUTES = {
   memberHome: '/',
   community: '/community',
   scroll: '/scroll',
-  profile: '/profile',
+  profile: '/profile/edit',
   notifications: '/notifications',
   login: '/auth/login'
 } as const;

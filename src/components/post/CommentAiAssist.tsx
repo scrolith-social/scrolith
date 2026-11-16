@@ -102,7 +102,7 @@ const CommentAiAssist: React.FC<CommentAiAssistProps> = ({
         goal: action.goal,
         scope: `comment-${scopeLabel}`
       });
-      if (!result.ok) {
+      if ('message' in result) {
         showNotification(result.retryable ? 'warning' : 'error', 'Scrolitha', result.message);
         return;
       }

@@ -110,7 +110,6 @@ const RemoteAudio: React.FC<{ stream: MediaStream; speakerOn: boolean }> = ({ st
     if (!el) return;
     el.srcObject = stream;
     el.autoplay = true;
-    el.playsInline = true;
     el.disableRemotePlayback = true;
     el.muted = !speakerOn;
     el.volume = speakerOn ? 0.82 : 0;
@@ -418,7 +417,11 @@ const VoiceCallModal: React.FC<VoiceCallModalProps> = ({
             <ConferenceParticipantsPanel
               participants={participants}
               meId={meId}
-              candidateUsers={participantUsers}
+              candidateUsers={participantUsers.map((participant) => ({
+                id: participant.id,
+                name: participant.name?.trim() || participant.id,
+                avatar: participant.avatar
+              }))}
               canAddParticipant={canAddParticipant}
               addBusy={addBusy}
               onAddParticipant={onAddParticipant}

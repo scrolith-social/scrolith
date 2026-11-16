@@ -2,7 +2,7 @@ import React from 'react';
 
 interface StatusBadgeProps {
   status?: string;
-  type?: 'order' | 'gig' | 'job' | 'contract' | 'kyc' | 'withdrawal' | 'proposal';
+  type?: 'order' | 'gig' | 'job' | 'contract' | 'kyc' | 'withdrawal' | 'proposal' | 'transaction';
   className?: string;
 }
 
@@ -67,6 +67,14 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status = 'unknown', ty
         accepted: { label: 'Accepted', color: 'green' },
         rejected: { label: 'Rejected', color: 'red' },
         withdrawn: { label: 'Withdrawn', color: 'gray' }
+      },
+      transaction: {
+        pending: { label: 'Pending', color: 'yellow' },
+        processing: { label: 'Processing', color: 'blue' },
+        completed: { label: 'Completed', color: 'green' },
+        failed: { label: 'Failed', color: 'red' },
+        refunded: { label: 'Refunded', color: 'gray' },
+        reversed: { label: 'Reversed', color: 'gray' }
       }
     };
 

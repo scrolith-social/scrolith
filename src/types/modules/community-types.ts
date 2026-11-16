@@ -175,6 +175,10 @@ export interface CommunitySettings {
   enable_clubs: boolean;
   enable_events: boolean;
 
+  maxImagesPerPost?: number;
+  maxVideoSizeMb?: number;
+  storyExpiryHours?: number;
+
   // camelCase aliases (compat)
   requireLoginToView?: boolean;
   allowGuestComments?: boolean;

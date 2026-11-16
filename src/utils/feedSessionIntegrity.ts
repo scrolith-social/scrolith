@@ -195,7 +195,7 @@ export type IntegrityProbeController = {
   /** Record an event and optional snapshot; returns regression if any. */
   observe: (
     event: FeedIntegrityEvent,
-    snapshot: Omit<FeedIntegritySnapshot, 'sessionId' | 'surface' | 'capturedAt'> & {
+    snapshot: {
       orderedItemIds: Array<string | null | undefined>;
       visiblePostId?: string | null;
       visibleAuthorId?: string | null;
@@ -344,6 +344,8 @@ export const runFeedIntegrityStressScenario = (params: {
     const postId = order[visibleIndex] || null;
     return {
       orderedItemIds: order,
+      orderedItemHash: hashOrderedItemIds(order),
+      orderedItemCount: order.length,
       visiblePostId: postId,
       visibleAuthorId: postId ? `author:${postId}` : null,
       visibleAnchorId: postId

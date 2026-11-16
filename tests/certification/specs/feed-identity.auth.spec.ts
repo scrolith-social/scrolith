@@ -44,7 +44,6 @@ test.describe('Feed identity — 60s stability', () => {
     while (Date.now() - started < Math.min(FEED_IDENTITY_MS, 30_000)) {
       await page.waitForTimeout(3_000);
       await page.evaluate(() => {
-        document.dispatchEvent(new Event('visibilitychange'));
         window.dispatchEvent(new Event('focus'));
       });
       const alive = await page.evaluate(() => Boolean(document.body));

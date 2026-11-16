@@ -21,6 +21,7 @@ export type AppDistributionEvent =
   | 'push_notification_opened'
   | 'push_notification_open_failed'
   | 'push_token_sync_failed'
+  | 'notification_sync_failed'
   | 'socket_connect_error'
   | 'socket_reconnected'
   | 'app_backgrounded'
@@ -71,7 +72,7 @@ const SUPPORTED_EVENTS = new Set<AppDistributionEvent>([
   'campaign_opened', 'push_registration_error', 'push_token_registered', 'push_token_project_reset',
   'mobile_runtime_error', 'chunk_load_recovery', 'route_sync_recovery', 'deep_link_opened',
   'deep_link_invalid', 'push_permission_denied', 'push_notification_received', 'push_notification_opened',
-  'push_notification_open_failed', 'push_token_sync_failed', 'socket_connect_error', 'socket_reconnected',
+  'push_notification_open_failed', 'push_token_sync_failed', 'notification_sync_failed', 'socket_connect_error', 'socket_reconnected',
   'app_backgrounded', 'app_resumed', 'deep_link_navigation_failed'
 ]);
 

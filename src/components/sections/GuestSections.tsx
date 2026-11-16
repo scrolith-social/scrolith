@@ -165,7 +165,7 @@ const extractCommunityPreviewItems = (payload: any): GuestCommunityPreviewItem[]
     .map((item, index) => {
       const reactionsMap = item?.interactions?.reactions;
       const reactions = reactionsMap && typeof reactionsMap === "object"
-        ? Object.values(reactionsMap as Record<string, unknown>).reduce(
+          ? Object.values(reactionsMap as Record<string, unknown>).reduce<number>(
             (sum: number, value) => sum + Number(value || 0),
             0
           )
@@ -1011,7 +1011,7 @@ export const GuestFeatureShowcaseSection: React.FC<{ content: GuestFeatureShowca
     const markReady = () => setShouldLoadMarketplacePreview(true);
 
     if (typeof window === "undefined") return undefined;
-    if (!("IntersectionObserver" in window)) {
+    if (typeof IntersectionObserver === 'undefined') {
       const timer = window.setTimeout(markReady, 1800);
       return () => window.clearTimeout(timer);
     }

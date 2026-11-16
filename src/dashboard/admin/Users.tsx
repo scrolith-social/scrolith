@@ -63,7 +63,7 @@ import {
   Video
 } from 'lucide-react';
 
-import type { User as UserType, UserRole, GcoinWallet } from '../../types';
+import type { User as UserType, UserRole, UserStatus, GcoinWallet } from '../../types';
 import { AdminService } from '../../services/admin';
 import { WalletService } from '../../services/wallet';
 import { GcoinService } from '../../services/gcoin';
@@ -282,7 +282,14 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
       secondaryErrors.push('wallets');
       setWallets([]);
     }
-    if (sResult.status === 'fulfilled') setSubscribers(sResult.value || []);
+    if (sResult.status === 'fulfilled') {
+      setSubscribers((sResult.value || []).map((subscriber) => ({
+        ...subscriber,
+        source: String(subscriber.source || 'other'),
+        status: String(subscriber.status || 'pending'),
+        subscribedAt: String(subscriber.subscribed_at ?? '')
+      })));
+    }
     else {
       secondaryErrors.push('subscribers');
       setSubscribers([]);
@@ -351,13 +358,12 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
       username: entry.username || '',
       avatar: entry.avatar || '',
       profilePhotoFileId: entry.profilePhotoFileId || undefined,
-      role: 'user',
       status: entry.isActive ? 'active' : 'inactive',
       isActive: Boolean(entry.isActive)
-    } as Partial<UserType> & { id: string });
+    });
   };
 
-  const handleStatusUpdate = async (userId: string, status: string) => {
+  const handleStatusUpdate = async (userId: string, status: UserStatus) => {
     try {
       // Optimistic keep-in-list update so deactivated rows never "disappear"
       setUsers((prev) =>
@@ -1350,11 +1356,11 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                       <td className="px-6 py-4">
                         <div className="flex flex-col">
                           <span className="font-bold text-gray-900">
-                            {wallet ? formatPrice(wallet.availableBalance, wallet.currency) : '-'}
+                            {wallet ? formatPrice(wallet.availableBalance, { fromCurrency: wallet.currency }) : '-'}
                           </span>
                           {wallet && wallet.escrowBalance > 0 && (
                             <span className="text-xs text-gray-500 flex items-center">
-                              <Lock className="w-3 h-3 mr-1" /> {formatPrice(wallet.escrowBalance, wallet.currency)} Escrow
+                              <Lock className="w-3 h-3 mr-1" /> {formatPrice(wallet.escrowBalance, { fromCurrency: wallet.currency })} Escrow
                             </span>
                           )}
                         </div>
@@ -1406,8 +1412,8 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                           className="text-gray-600 hover:bg-gray-100 p-1.5 rounded"
                           title="View Wallet"
                           onClick={() => {
-                            const available = wallet ? formatPrice(wallet.availableBalance, wallet.currency) : '—';
-                            const escrow = wallet ? formatPrice(wallet.escrowBalance, wallet.currency) : '—';
+                            const available = wallet ? formatPrice(wallet.availableBalance, { fromCurrency: wallet.currency }) : '—';
+                            const escrow = wallet ? formatPrice(wallet.escrowBalance, { fromCurrency: wallet.currency }) : '—';
                             showNotification('info', 'Wallet', `${userLabel}: ${available} available, ${escrow} escrow`);
                           }}
                         >
@@ -1837,7 +1843,11 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <select
                     className="w-full border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     value={editingUser.status || 'active'}
-                    onChange={e => setEditingUser({ ...editingUser, status: e.target.value })}
+                    onChange={e => {
+                      const status = (['active', 'inactive', 'restricted', 'suspended', 'banned'] as const)
+                        .find(value => value === e.target.value);
+                      if (status) setEditingUser({ ...editingUser, status });
+                    }}
                   >
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
@@ -2122,11 +2132,11 @@ const UsersManagementTab: React.FC<UsersManagementTabProps> = ({
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
                     <div className="text-xs uppercase text-gray-500">Wallet Balance</div>
                     <div className="text-lg font-semibold text-gray-900">
-                      {editingWallet ? formatPrice(editingWallet.availableBalance, editingWallet.currency) : '—'}
+                      {editingWallet ? formatPrice(editingWallet.availableBalance, { fromCurrency: editingWallet.currency }) : '—'}
                     </div>
                     {editingWallet && editingWallet.escrowBalance > 0 && (
                       <div className="text-xs text-gray-500 mt-1">
-                        Escrow: {formatPrice(editingWallet.escrowBalance, editingWallet.currency)}
+                        Escrow: {formatPrice(editingWallet.escrowBalance, { fromCurrency: editingWallet.currency })}
                       </div>
                     )}
                   </div>

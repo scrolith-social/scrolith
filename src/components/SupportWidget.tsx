@@ -211,7 +211,9 @@ const SupportWidget: React.FC = () => {
           ...flow,
           agent: {
             ...(flow.agent || {}),
-            name: normalizedConfig.assistantName || flow.agent?.name || defaultWidgetConfig.assistantName
+            name: normalizedConfig.assistantName || flow.agent?.name || defaultWidgetConfig.assistantName,
+            role: flow.agent?.role || normalizedConfig.assistantRoleLabel || defaultWidgetConfig.assistantRoleLabel,
+            description: flow.agent?.description || normalizedConfig.welcomeText || defaultWidgetConfig.welcomeText
           },
           initial_prompt: {
             ...(flow.initial_prompt || {}),

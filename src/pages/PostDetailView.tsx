@@ -671,7 +671,7 @@ export default function PostDetailView() {
 
   const loadMoreRef = useRef(false);
   const feedSentinelRef = useRef<HTMLDivElement | null>(null);
-  const streamItemRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const streamItemRefs = useRef<Record<number, HTMLElement | null>>({});
   const streamObserverRef = useRef<IntersectionObserver | null>(null);
 
   const load = useCallback(async () => {

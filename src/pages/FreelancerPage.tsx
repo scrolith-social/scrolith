@@ -75,7 +75,9 @@ const FreelancerPage = () => {
       void loadConfig();
     };
     socket.on('cms:freelancer_updated', refresh);
-    return () => socket.off('cms:freelancer_updated', refresh);
+    return () => {
+      socket.off('cms:freelancer_updated', refresh);
+    };
   }, [socket]);
 
   useEffect(() => {

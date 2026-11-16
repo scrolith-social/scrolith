@@ -9,7 +9,7 @@ import {
   validateStagingConnectSources,
 } from '../../scripts/stagingFrontendConfig.mjs';
 
-const sampleOrigin = 'https://candidate--revision.test.azurecontainerapps.io';
+const sampleOrigin = 'https://ca-scrolith-staging-api---g1-candidate.yellowmushroom-b8714740.southeastasia.azurecontainerapps.io';
 const selectedCandidateOrigin = 'https://ca-scrolith-staging-api---g1-candidate.yellowmushroom-b8714740.southeastasia.azurecontainerapps.io';
 const template = readFileSync(resolve(process.cwd(), 'nginx.staging.conf.template'), 'utf8');
 const stagingDockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile.staging'), 'utf8');
@@ -37,8 +37,9 @@ test('VITE_API_URL remains the preferred API-base setting', () => {
 });
 
 test('staging origin validation rejects non-HTTPS, app-level, and path-bearing URLs', () => {
-  assert.throws(() => validateStagingApiOrigin('http://candidate--revision.test.azurecontainerapps.io'));
-  assert.throws(() => validateStagingApiOrigin('https://candidate.test.azurecontainerapps.io'));
+  assert.throws(() => validateStagingApiOrigin('http://ca-scrolith-staging-api---g1-candidate.yellowmushroom-b8714740.southeastasia.azurecontainerapps.io'));
+  assert.throws(() => validateStagingApiOrigin('https://another-app---g1-candidate.yellowmushroom-b8714740.southeastasia.azurecontainerapps.io'));
+  assert.throws(() => validateStagingApiOrigin('https://ca-scrolith-staging-api---g1-candidate.otherenv.southeastasia.azurecontainerapps.io'));
   assert.throws(() => validateStagingApiOrigin('https://ca-scrolith-staging-api.yellowmushroom-b8714740.southeastasia.azurecontainerapps.io'));
   assert.throws(() => validateStagingApiOrigin(sampleOrigin + '/api'));
 });
@@ -46,14 +47,15 @@ test('staging origin validation rejects non-HTTPS, app-level, and path-bearing U
 test('staging CSP allows the exact API, derived WebSocket, and OSM tile origins in connect-src', () => {
   const rendered = renderStagingNginxConfig(template, sampleOrigin);
   const directives = [...rendered.matchAll(/connect-src\s+([^;]+);/g)].map((match) => match[1].trim());
+  const sampleWebSocketOrigin = 'wss://' + new URL(sampleOrigin).host;
 
   assert.deepEqual(directives, [
-    `'self' ${sampleOrigin} wss://candidate--revision.test.azurecontainerapps.io https://tile.openstreetmap.org`,
+    `'self' ${sampleOrigin} ${sampleWebSocketOrigin} https://tile.openstreetmap.org`,
   ]);
   assert.equal(rendered.includes('__SCROLITH_STAGING_API_ORIGIN__'), false);
   assert.equal(rendered.includes('__SCROLITH_STAGING_API_WEBSOCKET_ORIGIN__'), false);
   assert.equal(directives[0].includes('*'), false);
-  assert.equal(directives[0].includes('wss://candidate--revision.test.azurecontainerapps.io'), true);
+  assert.equal(directives[0].includes(sampleWebSocketOrigin), true);
 });
 
 test('staging CSP rejects unrelated and wildcard WebSocket origins', () => {
@@ -82,12 +84,13 @@ test('staging build keeps the configured API origin aligned across CSP and API r
   });
   const rendered = renderStagingNginxConfig(template, sampleOrigin);
   const connectSources = [...rendered.matchAll(/connect-src\s+([^;]+);/g)].map((match) => match[1].trim());
+  const sampleWebSocketOrigin = 'wss://' + new URL(sampleOrigin).host;
 
   assert.equal(apiBase, `${sampleOrigin}/api`);
   assert.equal(`${apiBase}/homepage/guest`, `${sampleOrigin}/api/homepage/guest`);
   assert.equal(`${apiBase}/cms/platform-settings`, `${sampleOrigin}/api/cms/platform-settings`);
   assert.deepEqual(connectSources, [
-    `'self' ${sampleOrigin} wss://candidate--revision.test.azurecontainerapps.io https://tile.openstreetmap.org`,
+    `'self' ${sampleOrigin} ${sampleWebSocketOrigin} https://tile.openstreetmap.org`,
   ]);
 });
 

@@ -24,6 +24,7 @@ type Panel = 'accuracy' | 'media' | 'security' | null;
 
 type AttachmentItem = {
   id: string;
+  messageId?: string;
   name: string;
   type: string;
   createdAt: string;

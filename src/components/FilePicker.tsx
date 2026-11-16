@@ -32,17 +32,18 @@ const FilePicker: React.FC<FilePickerProps> = ({ isOpen, onClose, onSelect, acce
     try {
       // Add delay to prevent rate limiting
       await new Promise(resolve => setTimeout(resolve, 200));
-      const userFiles = await FileService.getFiles(user.id, {
+      const response = await FileService.getFiles(user.id, {
         role: user.role,
         visibility: 'public'
       });
+      const userFiles = Array.isArray(response) ? response : response.files;
       setFiles(userFiles);
     } catch (error) {
       console.error('Failed to load file library:', error);
       // Set fallback data
       setFiles([
-        { id: 'file-1', name: 'sample-logo.png', url: '/placeholders/media-preview.svg', type: 'image/png', size: 124000, category: 'portfolio', uploadedAt: new Date().toISOString(), thumbnail: '/placeholders/media-preview.svg' },
-        { id: 'file-2', name: 'portfolio.pdf', url: '/placeholders/document-preview.svg', type: 'application/pdf', size: 2450000, category: 'document', uploadedAt: new Date().toISOString(), thumbnail: '/placeholders/document-preview.svg' }
+        { id: 'file-1', user_id: user.id, name: 'sample-logo.png', url: '/placeholders/media-preview.svg', type: 'image/png', size: 124000, category: 'portfolio', created_at: new Date().toISOString(), uploadedAt: new Date().toISOString(), thumbnail: '/placeholders/media-preview.svg' },
+        { id: 'file-2', user_id: user.id, name: 'portfolio.pdf', url: '/placeholders/document-preview.svg', type: 'application/pdf', size: 2450000, category: 'document', created_at: new Date().toISOString(), uploadedAt: new Date().toISOString(), thumbnail: '/placeholders/document-preview.svg' }
       ]);
     }
   };

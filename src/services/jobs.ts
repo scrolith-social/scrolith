@@ -1,4 +1,5 @@
 import api from './api';
+import type { JobStatus } from '../types';
 
 interface ApiResponse<T> {
   success: boolean;
@@ -29,7 +30,7 @@ export interface Job {
         minAmount?: number;
         maxAmount?: number;
       };
-  status: string;
+  status: JobStatus;
   proposalsCount: number;
   attachments: string[];
   tags: string[];
@@ -44,6 +45,7 @@ export interface Job {
   clientIsVerified?: boolean;
   client_is_verified?: boolean;
   clientVerified?: boolean;
+  duration?: string;
 }
 
 export interface CreateJobData {

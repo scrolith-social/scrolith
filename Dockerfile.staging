@@ -16,6 +16,7 @@ RUN --mount=type=secret,id=staging_api_origin \
     node scripts/stagingFrontendConfig.mjs /tmp/default.conf; \
     export VITE_BACKEND_URL="$STAGING_API_ORIGIN"; \
     export VITE_API_URL="$STAGING_API_ORIGIN/api"; \
+    export VITE_SCROLITH_ENV=staging; \
     npm run build
 
 FROM nginx:1.27-alpine AS runtime

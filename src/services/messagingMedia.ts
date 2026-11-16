@@ -635,7 +635,7 @@ export const fetchAuthenticatedMediaObjectUrl = async (
           });
           await putDiskCacheBlob(cacheKey, blob, {
             conversationId: options?.conversationId || activeConversationAffinity,
-            kind: attachment.type,
+            kind: attachment.type === 'generic_file' ? 'generic' : attachment.type,
             mimeType: blob.type
           });
           const objectUrl = URL.createObjectURL(blob);

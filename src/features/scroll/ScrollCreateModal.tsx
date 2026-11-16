@@ -150,16 +150,15 @@ const ScrollCreateModal: React.FC<ScrollCreateModalProps> = ({
         : 60
     );
     setVideoFile(null);
-    setOfferTags(
-      Array.isArray(editScroll?.offerTags)
-        ? editScroll.offerTags
-            .map((tag) => ({
-              offerType: tag?.offerType,
-              offerId: tag?.offerId
-            }))
-            .filter((tag) => Boolean(tag.offerType) && Boolean(tag.offerId))
-        : []
-    );
+    const restoredOfferTags: OfferTagSelection[] = [];
+    if (Array.isArray(editScroll?.offerTags)) {
+      for (const tag of editScroll.offerTags) {
+        const offerId = String(tag?.offerId || '').trim();
+        if (!offerId || (tag?.offerType !== 'user_gig' && tag?.offerType !== 'business_package')) continue;
+        restoredOfferTags.push({ offerType: tag.offerType, offerId });
+      }
+    }
+    setOfferTags(restoredOfferTags);
     setResponseMode((String(editScroll?.responseMode || '').trim().toLowerCase() === 'duet' ? 'duet' : 'remix'));
     setSourceRemoved(false);
     setMySeries([]);
@@ -378,7 +377,7 @@ const ScrollCreateModal: React.FC<ScrollCreateModalProps> = ({
         mode,
         scope: 'scroll_description'
       });
-      if (!result.ok) {
+      if ('message' in result) {
         showNotification(result.retryable ? 'warning' : 'error', 'Scrolitha', result.message);
         return;
       }

@@ -2069,12 +2069,12 @@ export default function MobileFeed({
         const serviceBaselineRequest = withFastFail(
           CommunityService.getPosts({ limit: feedLimit }),
           constrainedForFeed ? 10000 : 12000,
-          [] as any[]
+          'Posts request timed out. Please retry.'
         );
         const publicBaselineRequest = withFastFail(
           fetchPublicCommunityPostsBaseline(feedLimit),
           constrainedForFeed ? 7000 : 9000,
-          [] as any[]
+          'Public posts request timed out. Please retry.'
         );
         void publicBaselineRequest
           .then((value) => {
@@ -2116,7 +2116,7 @@ export default function MobileFeed({
               await withFastFail(
                 fetchPublicCommunityPostsBaseline(feedLimit),
                 constrainedForFeed ? 7000 : 9000,
-                [] as any[]
+                'Public posts request timed out. Please retry.'
               )
             );
             if (emergencyBaseline.length > 0) {
@@ -2133,7 +2133,7 @@ export default function MobileFeed({
               await withFastFail(
                 CommunityService.getPosts({ limit: feedLimit }),
                 constrainedForFeed ? 10000 : 12000,
-                [] as any[]
+                'Posts request timed out. Please retry.'
               )
             );
             if (emergencyPosts.length > 0) {

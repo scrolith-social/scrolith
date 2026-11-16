@@ -1,4 +1,4 @@
-import type { Conversation } from '../types';
+import type { Conversation, Message } from '../types';
 import { formatConversationPreview } from './conversationPreview';
 
 const safeString = (value: any, fallback = ''): string => {
@@ -366,17 +366,15 @@ export const mergeDirectConversations = (list: Conversation[], selfUserId?: stri
     });
     const primaryWithSelf = selfId ? ordered.find((entry) => conversationHasViewer(entry, selfId)) : undefined;
     const primary = primaryWithSelf || ordered[0] || bucket[0];
-    const mergedMessages = Array.from(
-      ordered
-        .flatMap((entry) => safeArray<any>(entry?.messages))
-        .reduce((acc, message) => {
-          const messageId = safeString(message?.id);
-          if (!messageId) return acc;
-          if (!acc.has(messageId)) acc.set(messageId, message);
-          return acc;
-        }, new Map<string, any>())
-        .values()
-    ).sort((left, right) => {
+    const messageMap = ordered
+      .flatMap((entry) => safeArray<Message>(entry?.messages))
+      .reduce<Map<string, Message>>((acc, message) => {
+        const messageId = safeString(message.id);
+        if (!messageId) return acc;
+        if (!acc.has(messageId)) acc.set(messageId, message);
+        return acc;
+      }, new Map<string, Message>());
+    const mergedMessages = Array.from(messageMap.values()).sort((left, right) => {
         const leftAt = new Date(left?.timestamp || left?.createdAt || 0).getTime();
         const rightAt = new Date(right?.timestamp || right?.createdAt || 0).getTime();
         if (leftAt !== rightAt) return leftAt - rightAt;
@@ -384,10 +382,10 @@ export const mergeDirectConversations = (list: Conversation[], selfUserId?: stri
       });
     // Union participants across bucket so Scrolitha (or peer) is not dropped when
     // the primary row only has a partial participant list.
-    const mergedParticipants = Array.from(
+    const mergedParticipants: Conversation['participants'] = Array.from(
       ordered
-        .flatMap((entry) => safeArray<any>(entry?.participants))
-        .reduce((acc, participant) => {
+        .flatMap((entry) => safeArray<Conversation['participants'][number]>(entry?.participants))
+        .reduce<Map<string, Conversation['participants'][number]>>((acc, participant) => {
           const id = participantUserId(participant);
           if (!id) return acc;
           if (!acc.has(id)) acc.set(id, participant);
@@ -407,7 +405,7 @@ export const mergeDirectConversations = (list: Conversation[], selfUserId?: stri
             });
           }
           return acc;
-        }, new Map<string, any>())
+        }, new Map<string, Conversation['participants'][number]>())
         .values()
     );
     const lastVisibleMessage = mergedMessages[mergedMessages.length - 1];
@@ -438,7 +436,7 @@ export const mergeDirectConversations = (list: Conversation[], selfUserId?: stri
       // Help clients remap deep-links that pointed at absorbed duplicate ids.
       mergedFromIds: mergedIds,
       merged_from_ids: mergedIds
-    } as Conversation;
+    } satisfies Conversation;
   });
 
   return [...passthrough, ...mergedDirects].sort((left, right) => {

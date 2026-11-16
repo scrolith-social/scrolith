@@ -997,6 +997,8 @@ const SystemSettings = () => {
             const normalizedCurrencyConfig = { 
                 ...currencyConfig, 
                 baseCurrency,
+                auto_exchange_rate: currencyConfig.autoExchangeRate,
+                base_currency: baseCurrency,
                 provider: fxConfig.providerCode,
                 api_key: (currencyConfig as any).api_key || currencyConfig.apiKey || ''
             };
@@ -1012,6 +1014,13 @@ const SystemSettings = () => {
             const systemValues = (localSettings.system || {}) as Record<string, any>;
             const updatedSystem = {
                 ...(localSettings.system || {}),
+                maintenance_mode: normalizeBoolean(systemValues.maintenance_mode ?? systemValues.maintenanceMode, false),
+                registrations_enabled: normalizeBoolean(
+                    systemValues.registrations_enabled ?? systemValues.registrationsEnabled,
+                    true
+                ),
+                kyc_enforced: normalizeBoolean(systemValues.kyc_enforced ?? systemValues.kycEnforced, false),
+                admin_2fa: normalizeBoolean(systemValues.admin_2fa ?? systemValues.admin2FA, false),
                 maintenanceMode: normalizeBoolean(systemValues.maintenanceMode ?? systemValues.maintenance_mode, false),
                 registrationsEnabled: normalizeBoolean(
                     systemValues.registrationsEnabled ?? systemValues.registrations_enabled,
@@ -1814,7 +1823,7 @@ const SystemSettings = () => {
                                             const id = String(freelancerLabelFileId || '').trim();
                                             if (id && img.dataset.fallbackTried !== '1') {
                                               img.dataset.fallbackTried = '1';
-                                              img.src = `https://api.scrolith.com/api/files/content/${encodeURIComponent(id)}`;
+                                               img.src = resolveAssetUrl(id) || '';
                                               return;
                                             }
                                             img.style.display = 'none';
@@ -1868,7 +1877,7 @@ const SystemSettings = () => {
                                             const id = String(employerLabelFileId || '').trim();
                                             if (id && img.dataset.fallbackTried !== '1') {
                                               img.dataset.fallbackTried = '1';
-                                              img.src = `https://api.scrolith.com/api/files/content/${encodeURIComponent(id)}`;
+                                               img.src = resolveAssetUrl(id) || '';
                                               return;
                                             }
                                             img.style.display = 'none';
@@ -3078,8 +3087,17 @@ const SystemSettings = () => {
                                     type="button"
                                     className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
                                     onClick={() => {
-                                        const page = (localSettings.system as any)?.maintenancePage || {};
-                                        void AdminService.saveSystemSettings({ maintenancePage: page } as SystemConfig)
+                                        const currentSystem = localSettings.system;
+                                        const page = currentSystem?.maintenancePage || {};
+                                        const payload: SystemConfig = {
+                                            ...currentSystem,
+                                            maintenance_mode: normalizeBoolean(currentSystem?.maintenance_mode ?? currentSystem?.maintenanceMode, false),
+                                            registrations_enabled: normalizeBoolean(currentSystem?.registrations_enabled ?? currentSystem?.registrationsEnabled, true),
+                                            kyc_enforced: normalizeBoolean(currentSystem?.kyc_enforced ?? currentSystem?.kycEnforced, false),
+                                            admin_2fa: normalizeBoolean(currentSystem?.admin_2fa ?? currentSystem?.admin2FA, false),
+                                            maintenancePage: page
+                                        };
+                                        void AdminService.saveSystemSettings(payload)
                                             .then(() => showNotification('success', 'Maintenance page', 'Fault page content saved.'))
                                             .catch(() => showNotification('error', 'Save Failed', 'Could not save maintenance page.'));
                                     }}

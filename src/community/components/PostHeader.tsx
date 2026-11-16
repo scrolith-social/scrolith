@@ -35,6 +35,7 @@ type PostHeaderAuthor = {
   verificationStatus?: string | null;
   verification_status?: string | null;
   availability?: any;
+  professionalAvailability?: unknown;
   hiring?: any;
   clientHiringStatus?: string | null;
   availableForHire?: boolean;

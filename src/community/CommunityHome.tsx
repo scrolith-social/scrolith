@@ -48,6 +48,7 @@ import MentionHashtagTextarea from './components/MentionHashtagTextarea';
 import FollowButton from './components/FollowButton';
 import PostOptionsButton from './components/post-options/PostOptionsButton';
 import { applyFollowUpdatePayload, resetFollowState, setFollowStatuses, useFollowStateMap } from './followState';
+import { mergeStorySnapshot } from './storyState';
 import { useNotification } from '../context/NotificationContext';
 import { FileService } from '../services/files';
 import { getDefaultStoryTextDraft, getStoryTextStyle, storyTextFonts, storyTextThemes } from './storyStyles';
@@ -454,6 +455,7 @@ type PostDraft = {
     id?: string;
     url: string;
     name?: string;
+    thumbnailUrl?: string | null;
     type?: 'image' | 'video' | 'document';
   }>;
 };
@@ -1145,19 +1147,7 @@ const CommunityHome = () => {
         : [updated, ...prev];
       return filterActiveStories(next);
     });
-    setActiveStory((current) => (current?.id === updated.id ? { ...current, ...updated } : current));
-    setStoryActionTarget((current) =>
-      current?.id === updated.id
-        ? {
-            ...current,
-            ...updated,
-            interactions: {
-              ...(current?.interactions || {}),
-              ...(updated?.interactions || {})
-            }
-          }
-        : current
-    );
+    setActiveStory((current) => mergeStorySnapshot(current, updated));
   }, [filterActiveStories]);
 
   const syncCommentCount = useCallback((postId: string, nextCount: unknown) => {
@@ -1663,7 +1653,7 @@ const CommunityHome = () => {
               }
             });
             if (Object.keys(followSeed).length) {
-              setFollowStatuses((prev) => ({ ...prev, ...followSeed }));
+              setFollowStatuses(followSeed);
             }
           }
           }
@@ -1725,7 +1715,7 @@ const CommunityHome = () => {
             }
           });
           if (Object.keys(followSeed).length) {
-            setFollowStatuses((prev) => ({ ...prev, ...followSeed }));
+            setFollowStatuses(followSeed);
           }
           if (authorIds.size && user?.id) {
             try {
@@ -3550,7 +3540,7 @@ const CommunityHome = () => {
                       const page = await MemberFeedService.tryFetchPage({
                         surface: 'community',
                         mode: 'for_you',
-                        limit: postsLimit,
+                        limit: Math.max(10, Math.min(48, Number(profile.feedPageSize || 24))),
                         timeoutMs: 12000
                       });
                       if (!page?.posts?.length) return;

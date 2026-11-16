@@ -10,7 +10,19 @@ test.describe('Profile — authenticated cert', () => {
 
   test('profile surface loads and remains stable', async ({ page }, testInfo) => {
     await page.goto(CERT_ROUTES.profile, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
+    await expect
+      .poll(
+        async () => {
+          if (isValidAuthDestination(page.url(), 'profile')) return true;
+          return page
+            .locator('input[type="email"], input[autocomplete="username"]')
+            .first()
+            .isVisible()
+            .catch(() => false);
+        },
+        { timeout: 30_000, message: 'wait for authenticated profile routing or a fully rendered login form' }
+      )
+      .toBe(true);
 
     const url = page.url();
     testInfo.annotations.push({ type: 'landedUrl', description: url });
