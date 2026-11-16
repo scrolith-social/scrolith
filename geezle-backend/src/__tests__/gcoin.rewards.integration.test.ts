@@ -4,7 +4,12 @@ import prisma from '../utils/prismaClient';
 
 describe('Gcoin rewards integration', () => {
   let userId: string;
+  let previousMoneyMovementGate: string | undefined;
+  let previousGcoinSettings: any;
   beforeAll(async () => {
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+    previousGcoinSettings = await prisma.gcoinSettings.findUnique({ where: { id: 'default' } });
     userId = 'itest-user-' + Date.now().toString().slice(-6);
     await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, role: 'USER' } });
     // ensure any prior artifacts for this id are removed
@@ -42,14 +47,32 @@ describe('Gcoin rewards integration', () => {
   });
 
   afterAll(async () => {
-    await prisma.gcoinTransaction.deleteMany({ where: { userId } });
-    await prisma.gcoinEarningEvent.deleteMany({ where: { actorId: userId } });
-    await prisma.transaction.deleteMany({ where: { userId } });
-    await prisma.gcoinWallet.deleteMany({ where: { userId } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId } });
-    await prisma.notification.deleteMany({ where: { userId } });
-    await prisma.user.deleteMany({ where: { id: userId } });
-    await prisma.$disconnect();
+    try {
+      await prisma.gcoinTransaction.deleteMany({ where: { userId } });
+      await prisma.gcoinEarningEvent.deleteMany({ where: { actorId: userId } });
+      await prisma.transaction.deleteMany({ where: { userId } });
+      await prisma.gcoinWallet.deleteMany({ where: { userId } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId } });
+      await prisma.notification.deleteMany({ where: { userId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+      if (previousGcoinSettings) {
+        const { id, ...settingsData } = previousGcoinSettings;
+        await prisma.gcoinSettings.upsert({
+          where: { id },
+          create: previousGcoinSettings,
+          update: settingsData
+        });
+      } else {
+        await prisma.gcoinSettings.deleteMany({ where: { id: 'default' } });
+      }
+    } finally {
+      if (previousMoneyMovementGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+      }
+      await prisma.$disconnect();
+    }
   });
 
   test('POST /api/gcoin/rewards awards coins and creates ledger entries', async () => {

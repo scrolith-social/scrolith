@@ -4,10 +4,9 @@
  * Admins always bypass. Fail-open if settings cannot be read.
  */
 import { NextFunction, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { getSystemControls, isAdminRole, isKycSatisfied } from '../services/systemControls.service';
-import { jwtSecret } from '../utils/security/requiredSecret';
 
 // KYC is required for financial actions, not for publishing work.
 // Keep this list explicit so adding a new write route cannot silently change
@@ -31,7 +30,7 @@ export const isSensitiveWrite = (req: Request): boolean => {
   return SENSITIVE_WRITE_PREFIXES.some((p) => fullPath.startsWith(p));
 };
 
-const softUserFromJwt = (req: Request): { id?: string; role?: string } | null => {
+const softUserFromJwt = async (req: Request): Promise<{ id?: string; role?: string } | null> => {
   if (req.user?.id) return { id: req.user.id, role: String(req.user.role || '') };
   try {
     const authHeader = req.headers.authorization;
@@ -40,11 +39,9 @@ const softUserFromJwt = (req: Request): { id?: string; role?: string } | null =>
         ? authHeader.slice(7).trim()
         : null;
     if (!token) return null;
-    const decoded = jwt.verify(token, jwtSecret()) as {
-      id?: string;
-      role?: string;
-    };
-    return { id: decoded?.id, role: decoded?.role };
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth || !auth.user.isActive) return null;
+    return { id: auth.user.id, role: auth.user.role };
   } catch {
     return null;
   }
@@ -53,7 +50,7 @@ const softUserFromJwt = (req: Request): { id?: string; role?: string } | null =>
 export const kycEnforceMiddleware = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!isSensitiveWrite(req)) return next();
-    const soft = softUserFromJwt(req);
+    const soft = await softUserFromJwt(req);
     const userId = soft?.id;
     if (!userId) return next(); // unauthenticated — route auth will handle
 

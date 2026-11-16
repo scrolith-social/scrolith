@@ -1,12 +1,12 @@
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { getGcoinSettingsSafe } from '../utils/gcoinSettings';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
 import { recordDbDuplicateMetric } from '../utils/observability/metricsRegistry';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { getTrustedClientIp } from '../utils/security/clientIdentity';
 import { setSafeObjectValue } from '../utils/security/safeObjectKey';
+import { isMoneyMovementEnabled } from '../config/moneyMovement';
 
 import realtime from '../utils/realtime';
 import { syncFileUsages, removeUsage } from '../utils/fileUsage';
@@ -604,17 +604,9 @@ const resolveOptionalUserFromRequest = async (req: Request): Promise<{ id: strin
   if (!token) return null;
 
   try {
-    const secret = jwtSecret();
-    const decoded = jwt.verify(token, secret) as { id?: string };
-    const userId = String(decoded?.id || '').trim();
-    if (!userId) return null;
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, role: true, isActive: true }
-    });
-    if (!user || user.isActive === false) return null;
-    return { id: user.id, role: user.role };
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth || auth.user.isActive === false) return null;
+    return { id: auth.user.id, role: auth.user.role };
   } catch {
     return null;
   }
@@ -1617,7 +1609,11 @@ const tryCreateEarningEvent = async (data: { postId:string, actorId?:string, eve
   }
 };
 
-const processThresholds = async (postId: string, io: any) => {
+export const processThresholds = async (postId: string, io: any) => {
+  // Engagement remains available while the pilot money gate is off, but
+  // threshold-triggered Gcoin awards and their ledger writes do not.
+  if (!isMoneyMovementEnabled()) return;
+
   // Fetch post counts
   const post = await prisma.communityPost.findUnique({ where: { id: postId } });
   if (!post) return;
@@ -2094,11 +2090,27 @@ export const postLike = async (req: Request, res: Response) => {
     }
 
     const eventKey = buildEventKey(postId, 'like', actorId);
-    // Prevent double-like via unique eventKey
-    const created = await tryCreateEarningEvent({ postId, actorId, eventType: 'like', eventKey });
-    if (!created.created) return res.json({ success: true, duplicate: true });
+    const activated = await prisma.$transaction(async (tx) => {
+      const existing = await tx.gcoinEarningEvent.findUnique({ where: { eventKey } });
+      if (existing) {
+        if (existing.eventType !== 'like' || existing.reactionActive) return false;
+        const reactivated = await tx.gcoinEarningEvent.updateMany({
+          where: { id: existing.id, reactionActive: false },
+          data: { reactionActive: true }
+        });
+        if (reactivated.count !== 1) return false;
+      } else {
+        const inserted = await tx.gcoinEarningEvent.createMany({
+          data: { postId, actorId, eventType: 'like', eventKey, value: 0, credited: false },
+          skipDuplicates: true
+        });
+        if (inserted.count !== 1) return false;
+      }
 
-    await prisma.communityPost.update({ where: { id: postId }, data: { likesCount: { increment: 1 } as any } as any });
+      await tx.communityPost.update({ where: { id: postId }, data: { likesCount: { increment: 1 } } });
+      return true;
+    });
+    if (!activated) return res.json({ success: true, duplicate: true });
 
     await emitPostMetricsUpdated(io, postId, 'like');
 
@@ -2118,13 +2130,24 @@ export const postUnlike = async (req: Request, res: Response) => {
     const io = getAppIo(req);
     if (!actorId) return res.status(401).json({ error: 'Unauthorized' });
 
-    // Remove the actor-specific like event if exists
-    const keyPrefix = `${postId}:like:${actorId}:${dayKey()}`;
-    const ev = await prisma.gcoinEarningEvent.findFirst({ where: { eventKey: { startsWith: keyPrefix } } });
-    if (ev) {
-      await prisma.gcoinEarningEvent.delete({ where: { id: ev.id } });
-      await prisma.communityPost.update({ where: { id: postId }, data: { likesCount: { decrement: 1 } as any } as any });
-    }
+    const eventKey = buildEventKey(postId, 'like', actorId);
+    await prisma.$transaction(async (tx) => {
+      const event = await tx.gcoinEarningEvent.findUnique({ where: { eventKey } });
+      if (!event || event.eventType !== 'like' || !event.reactionActive) return;
+
+      const reversedAt = new Date();
+      const reversed = await tx.gcoinEarningEvent.updateMany({
+        where: { id: event.id, reactionActive: true },
+        data: { reactionActive: false, reversedAt, reversalCount: { increment: 1 } }
+      });
+      if (reversed.count !== 1) return;
+
+      const decremented = await tx.communityPost.updateMany({
+        where: { id: postId, likesCount: { gt: 0 } },
+        data: { likesCount: { decrement: 1 } }
+      });
+      if (decremented.count !== 1) throw new Error('Like counter is inconsistent; unlike was rolled back');
+    });
 
     await emitPostMetricsUpdated(io, postId, 'unlike');
 

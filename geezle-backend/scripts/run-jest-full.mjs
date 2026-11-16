@@ -6,9 +6,17 @@ import { join } from 'node:path';
 process.env.NODE_ENV = 'test';
 process.env.APP_RUNTIME = 'test';
 process.env.DISABLE_BACKGROUND_WORKERS = 'true';
-process.env.DATABASE_URL =
-  process.env.DATABASE_URL ||
-  'postgresql://scrolith_test:local_test_password@127.0.0.1:55432/scrolith_test';
+try {
+  const dotenv = await import('dotenv');
+  dotenv.config({ path: '.env.test', override: false });
+} catch {
+  // dotenv is best-effort; the test database must still be supplied explicitly.
+}
+
+if (!process.env.DATABASE_URL?.trim()) {
+  console.error('[jest] DATABASE_URL must target an explicitly configured disposable test database.');
+  process.exit(1);
+}
 process.env.TEST_DB_KIND = process.env.TEST_DB_KIND || 'local-postgres';
 process.env.TEST_DB_PROJECT = process.env.TEST_DB_PROJECT || 'local-only';
 process.env.TEST_DB_INSTANCE = process.env.TEST_DB_INSTANCE || 'local-postgres-test';
@@ -23,6 +31,12 @@ process.env.ALLOW_DEV_AUTH_BYPASS = process.env.ALLOW_DEV_AUTH_BYPASS || 'true';
 process.env.ALLOW_DEV_ADMIN_BYPASS = process.env.ALLOW_DEV_ADMIN_BYPASS || 'true';
 
 await import('./test-db-guard.mjs');
+
+// The database guard above proves this runner targets a loopback-only
+// disposable database. Existing auth-focused tests explicitly opt into their
+// synthetic role-header path; the middleware requires this independent marker
+// as well as NODE_ENV=test and the ALLOW_DEV_* flags below.
+process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY = process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY || 'true';
 
 const jestBin = './node_modules/jest/bin/jest.js';
 const jestTimeoutMs = Number.parseInt(process.env.JEST_TEST_TIMEOUT_MS || '60000', 10);

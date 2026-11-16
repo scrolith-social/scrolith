@@ -31,13 +31,14 @@ jobs:
       TEST_DB_PROJECT: local-only
       TEST_DB_INSTANCE: local-disposable-postgres-test
       TEST_DB_NAME: scrolith_test
+      TEST_DB_PORT: '5432'
       JWT_SECRET: local_ci_only_jwt_secret
       REDIS_URL: redis://127.0.0.1:6379
       REDIS_TEST_MODE: local
       REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
     services:
       postgres:
-        image: postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65
+        image: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
         env:
           POSTGRES_DB: scrolith_test
           POSTGRES_USER: scrolith_test
@@ -74,7 +75,7 @@ jobs:
           cache-dependency-path: geezle-backend/package-lock.json
 
       - name: Install locked dependencies without install scripts
-        run: npm ci --ignore-scripts --no-audit --fund=false
+        run: npm ci --registry=https://registry.npmjs.org --ignore-scripts --no-audit --fund=false
 
       - name: Create isolated shadow database
         run: |
@@ -126,7 +127,7 @@ jobs:
             --testTimeout=60000
 
       - name: Verify TypeScript compilation
-        run: npm run build
+        run: npm run build:prod
 
       - name: Run dependency security gate
         shell: bash

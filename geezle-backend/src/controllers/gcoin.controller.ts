@@ -5,6 +5,7 @@ import { notifyUser } from '../utils/notify';
 import { computeWalletFraudScore, recomputeAllWalletScores } from '../services/fraudDetector';
 import { getPostDashTotal, getScrollDashTotal } from '../services/gcoinDonationTotals.service';
 import { getGcoinSettingsSafe, saveGcoinSettingsSafe } from '../utils/gcoinSettings';
+import { assertMoneyMovementEnabled, MoneyMovementDisabledError } from '../config/moneyMovement';
 
 interface AuthRequest extends Request {
   user?: { id: string; email?: string; role?: string };
@@ -14,6 +15,10 @@ const nowIso = () => new Date().toISOString();
 const ok = <T>(res: Response, data: T) => res.json({ success: true, data, timestamp: nowIso() });
 const fail = (res: Response, status: number, message: string, code = 'ERR_GCOIN') =>
   res.status(status).json({ success: false, error: message, code, timestamp: nowIso() });
+const respondToMoneyMovementDisabled = (res: Response, error: unknown) =>
+  error instanceof MoneyMovementDisabledError
+    ? fail(res, error.status, error.message, error.code)
+    : null;
 
 const isAdminRole = (role?: string) => (role || '').toString().toLowerCase().includes('admin');
 
@@ -336,6 +341,7 @@ export const getAdminSummary = async (req: AuthRequest, res: Response) => {
 
 export const createTransaction = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     if (!isAdminRole(req.user?.role)) return fail(res, 403, 'Forbidden');
     const { userId, amount, type, reason } = req.body || {};
     if (!userId || amount === undefined || !type) return fail(res, 400, 'Missing fields');
@@ -343,6 +349,8 @@ export const createTransaction = async (req: AuthRequest, res: Response) => {
     const tx = await prisma.gcoinTransaction.create({ data: { userId, amount: Number(amount), type, reason, status: 'completed', createdBy: req.user?.id } });
     return ok(res, tx);
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to create transaction');
   }
@@ -350,6 +358,7 @@ export const createTransaction = async (req: AuthRequest, res: Response) => {
 
 export const creditUser = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     if (!isAdminRole(req.user?.role)) return fail(res, 403, 'Forbidden');
     const { userId, amount, note, recipientId, recipientIdentifier, email } = req.body || {};
     const rawRecipient = recipientId || recipientIdentifier || userId || '';
@@ -398,6 +407,8 @@ export const creditUser = async (req: AuthRequest, res: Response) => {
     }
     return ok(res, { wallet: { userId: resolvedUserId, balance: newBal }, tx, message: 'Grant processed' });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to credit user');
   }
@@ -405,6 +416,7 @@ export const creditUser = async (req: AuthRequest, res: Response) => {
 
 export const adminAdjustBalance = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     if (!isAdminRole(req.user?.role)) return fail(res, 403, 'Forbidden');
     const { userId: userIdParam } = req.params;
     const { amount, note, userId: userIdBody } = req.body || {};
@@ -431,6 +443,8 @@ export const adminAdjustBalance = async (req: AuthRequest, res: Response) => {
     }
     return ok(res, { wallet: { userId, balance: newBal }, tx });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to adjust balance');
   }
@@ -438,6 +452,7 @@ export const adminAdjustBalance = async (req: AuthRequest, res: Response) => {
 
 export const checkAndAward = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const { userId, type, count } = req.body || {};
     if (!userId || !type || count === undefined) return fail(res, 400, 'Missing fields');
     const settingsRaw = await getOrCreateGcoinSettings();
@@ -539,6 +554,8 @@ export const checkAndAward = async (req: AuthRequest, res: Response) => {
 
     return ok(res, { success: true, awarded: totalCoins, units: awardableUnits });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to evaluate rewards');
   }
@@ -591,6 +608,7 @@ import { tryRecordTransfer, tryRecordConversion } from '../middleware/gcoinLimit
 
 export const transferGcoin = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const sender = req.user;
     if (!sender?.id) return fail(res, 401, 'Unauthorized');
     const { toRecipientId, toEmail, amount, amountGcoin, note, recipientIdentifier } = req.body || {};
@@ -696,6 +714,8 @@ export const transferGcoin = async (req: AuthRequest, res: Response) => {
     try { realtime.emitToWallet(recipientUser.id, 'community:gcoin_balance_updated', { userId: recipientUser.id, balance: Number(recipientW.balance) + value }); } catch(e){}
     return ok(res, { from: sender.id, to: recipientUser.id, amount: value });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Transfer failed');
   }
@@ -704,6 +724,7 @@ export const transferGcoin = async (req: AuthRequest, res: Response) => {
 // Donate Gcoin to post author
 export const donateGcoin = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const sender = req.user;
     if (!sender?.id) return fail(res, 401, 'Unauthorized');
     
@@ -924,6 +945,8 @@ export const donateGcoin = async (req: AuthRequest, res: Response) => {
       dashGcoinTotal
     });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to process donation');
   }
@@ -931,6 +954,7 @@ export const donateGcoin = async (req: AuthRequest, res: Response) => {
 
 export const donateScrollGcoin = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const sender = req.user;
     if (!sender?.id) return fail(res, 401, 'Unauthorized');
 
@@ -1263,6 +1287,8 @@ export const donateScrollGcoin = async (req: AuthRequest, res: Response) => {
       metrics
     });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to process scroll donation');
   }
@@ -1270,6 +1296,7 @@ export const donateScrollGcoin = async (req: AuthRequest, res: Response) => {
 
 export const requestConversion = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const user = req.user;
     if (!user?.id) return fail(res, 401, 'Unauthorized');
     const { amount, amountGcoin, payoutMethodId } = req.body || {};
@@ -1323,6 +1350,8 @@ export const requestConversion = async (req: AuthRequest, res: Response) => {
 
     return ok(res, { ...rec, payoutMethodId: payoutMethodId || null });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Conversion request failed');
   }
@@ -1346,6 +1375,7 @@ export const getConversionRequests = async (req: AuthRequest, res: Response) => 
 
 export const processConversion = async (req: AuthRequest, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     if (!isAdminRole(req.user?.role)) return fail(res, 403, 'Forbidden');
     const { id } = req.params;
     const { action, note } = req.body || {};
@@ -1392,6 +1422,8 @@ export const processConversion = async (req: AuthRequest, res: Response) => {
     try { io?.emit('community:gcoin_conversion_processed', { id, status: 'denied', userId: reqRec.userId }); } catch(e){}
     return ok(res, { id, status: 'denied' });
   } catch (e: any) {
+    const disabled = respondToMoneyMovementDisabled(res, e);
+    if (disabled) return disabled;
     console.error(e);
     return fail(res, 500, 'Failed to process conversion');
   }

@@ -1,20 +1,29 @@
-/**
- * Phase 25C — OAuth exchange code security (namespace, single-use, shape).
- */
+/** OAuth exchange codes are single-use and mint a persisted first-party session. */
 import crypto from 'crypto';
 
 const mockCreate = jest.fn();
 const mockFindUnique = jest.fn();
 const mockUpdateMany = jest.fn();
+const mockQueryRaw = jest.fn();
+const mockAuthSessionCreate = jest.fn();
+
+const mockTx = {
+  $queryRaw: (...args: any[]) => mockQueryRaw(...args),
+  oAuthExchangeCode: {
+    create: (...args: any[]) => mockCreate(...args),
+    findUnique: (...args: any[]) => mockFindUnique(...args),
+    updateMany: (...args: any[]) => mockUpdateMany(...args)
+  },
+  authSession: {
+    create: (...args: any[]) => mockAuthSessionCreate(...args)
+  }
+};
 
 jest.mock('../utils/prismaClient', () => ({
   __esModule: true,
   default: {
-    passwordResetToken: {
-      create: (...args: any[]) => mockCreate(...args),
-      findUnique: (...args: any[]) => mockFindUnique(...args),
-      updateMany: (...args: any[]) => mockUpdateMany(...args)
-    }
+    ...mockTx,
+    $transaction: (operation: (tx: typeof mockTx) => unknown) => operation(mockTx)
   }
 }));
 
@@ -25,126 +34,150 @@ import {
 
 describe('oauthExchange.service', () => {
   const originalEnv = { ...process.env };
+  const activeUser = { id: 'u1', isActive: true, authSessionVersion: 0 };
+
+  const exchangeRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'row1',
+    userId: activeUser.id,
+    codeHash: 'stored-code-hash',
+    authSessionVersion: activeUser.authSessionVersion,
+    usedAt: null,
+    expiresAt: new Date(Date.now() + 60_000),
+    user: { ...activeUser },
+    ...overrides
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.JWT_SECRET = 'test-secret-for-phase25c';
+    process.env.JWT_SECRET = 'test-secret-for-oauth-exchange';
     process.env.JWT_EXPIRES_IN = '1h';
+    mockQueryRaw.mockResolvedValue([activeUser]);
+    mockCreate.mockResolvedValue({ id: 'row1' });
+    mockAuthSessionCreate.mockResolvedValue({ id: 'session-1' });
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
   });
 
-  test('createOAuthExchangeCode stores hash with oauth-exchange namespace prefix', async () => {
-    mockCreate.mockResolvedValue({ id: 'row1' });
-    const result = await createOAuthExchangeCode({
-      userId: 'user-1',
-      email: 'qa@example.com',
-      role: 'EMPLOYER'
-    });
+  test('creation stores a namespaced code hash and the current session version', async () => {
+    const result = await createOAuthExchangeCode({ userId: activeUser.id });
 
     expect(result.code).toBeTruthy();
     expect(result.code.includes('.')).toBe(false); // not a JWT
     expect(result.code.length).toBeGreaterThanOrEqual(32);
     expect(result.expiresAt.getTime()).toBeGreaterThan(Date.now());
 
-    const storedHash = mockCreate.mock.calls[0][0].data.tokenHash as string;
-    const expected = crypto
+    const createData = mockCreate.mock.calls[0][0].data;
+    const expectedHash = crypto
       .createHash('sha256')
       .update(`oauth-exchange:${result.code}`)
       .digest('hex');
-    expect(storedHash).toBe(expected);
-
-    // Password-reset namespace uses raw sha256 without prefix — different hash.
-    const passwordResetStyle = crypto.createHash('sha256').update(result.code).digest('hex');
-    expect(storedHash).not.toBe(passwordResetStyle);
+    expect(createData).toEqual(expect.objectContaining({
+      userId: activeUser.id,
+      codeHash: expectedHash,
+      authSessionVersion: activeUser.authSessionVersion,
+      expiresAt: result.expiresAt
+    }));
+    expect(mockQueryRaw).toHaveBeenCalledTimes(1);
   });
 
   test('consume rejects missing / short codes', async () => {
-    const r1 = await consumeOAuthExchangeCode('');
-    expect(r1.ok).toBe(false);
-    const r2 = await consumeOAuthExchangeCode('short');
-    expect(r2.ok).toBe(false);
+    const empty = await consumeOAuthExchangeCode('');
+    const short = await consumeOAuthExchangeCode('short');
+
+    expect(empty.ok).toBe(false);
+    expect(short.ok).toBe(false);
     expect(mockFindUnique).not.toHaveBeenCalled();
   });
 
   test('consume rejects unknown code', async () => {
     mockFindUnique.mockResolvedValue(null);
-    const r = await consumeOAuthExchangeCode('a'.repeat(40));
-    expect(r).toEqual(expect.objectContaining({ ok: false, error: expect.stringMatching(/Invalid|expired/i) }));
+    const result = await consumeOAuthExchangeCode('a'.repeat(40));
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.stringMatching(/Invalid|expired/i)
+    }));
   });
 
   test('consume rejects already used code (replay)', async () => {
-    mockFindUnique.mockResolvedValue({
-      id: 'row1',
-      usedAt: new Date(),
-      expiresAt: new Date(Date.now() + 60_000),
-      user: { id: 'u1', email: 'a@b.com', role: 'EMPLOYER', isActive: true }
-    });
-    const r = await consumeOAuthExchangeCode('a'.repeat(40));
-    expect(r).toEqual(expect.objectContaining({ ok: false, error: expect.stringMatching(/already used/i) }));
+    mockFindUnique.mockResolvedValue(exchangeRow({ usedAt: new Date() }));
+    const result = await consumeOAuthExchangeCode('a'.repeat(40));
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.stringMatching(/already used/i)
+    }));
+    expect(mockUpdateMany).not.toHaveBeenCalled();
   });
 
   test('consume rejects expired code', async () => {
-    mockFindUnique.mockResolvedValue({
-      id: 'row1',
-      usedAt: null,
-      expiresAt: new Date(Date.now() - 1000),
-      user: { id: 'u1', email: 'a@b.com', role: 'EMPLOYER', isActive: true }
-    });
-    const r = await consumeOAuthExchangeCode('a'.repeat(40));
-    expect(r).toEqual(expect.objectContaining({ ok: false, error: expect.stringMatching(/expired/i) }));
+    mockFindUnique.mockResolvedValue(exchangeRow({ expiresAt: new Date(Date.now() - 1000) }));
+    const result = await consumeOAuthExchangeCode('a'.repeat(40));
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.stringMatching(/expired/i)
+    }));
+    expect(mockUpdateMany).not.toHaveBeenCalled();
   });
 
-  test('consume success marks single-use and returns session JWT', async () => {
-    mockFindUnique.mockResolvedValue({
-      id: 'row1',
-      usedAt: null,
-      expiresAt: new Date(Date.now() + 60_000),
-      user: { id: 'u1', email: 'a@b.com', role: 'EMPLOYER', isActive: true }
-    });
+  test('consume success marks code single-use and persists a session JWT', async () => {
+    mockFindUnique.mockResolvedValue(exchangeRow());
     mockUpdateMany.mockResolvedValue({ count: 1 });
 
-    const r = await consumeOAuthExchangeCode('a'.repeat(40));
-    expect(r.ok).toBe(true);
-    expect(r).toEqual(
-      expect.objectContaining({
-        ok: true,
-        userId: 'u1',
-        token: expect.stringMatching(/^[^.]+\.[^.]+\.[^.]+$/)
-      })
-    );
-    expect(mockUpdateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'row1', usedAt: null }
-      })
-    );
-  });
+    const result = await consumeOAuthExchangeCode('a'.repeat(40));
 
-  test('consume race on single-use returns already used', async () => {
-    mockFindUnique.mockResolvedValue({
-      id: 'row1',
-      usedAt: null,
-      expiresAt: new Date(Date.now() + 60_000),
-      user: { id: 'u1', email: 'a@b.com', role: 'EMPLOYER', isActive: true }
+    expect(result.ok).toBe(true);
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      userId: activeUser.id,
+      token: expect.stringMatching(/^[^.]+\.[^.]+\.[^.]+$/)
+    }));
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'row1',
+        usedAt: null,
+        authSessionVersion: activeUser.authSessionVersion
+      },
+      data: { usedAt: expect.any(Date) }
     });
-    mockUpdateMany.mockResolvedValue({ count: 0 });
-    const r = await consumeOAuthExchangeCode('a'.repeat(40));
-    expect(r).toEqual(expect.objectContaining({ ok: false, error: expect.stringMatching(/already used/i) }));
+    expect(mockAuthSessionCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: activeUser.id,
+        tokenIdHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        expiresAt: expect.any(Date)
+      })
+    });
+    expect(mockQueryRaw).toHaveBeenCalledTimes(2);
   });
 
-  test('password-reset style hash is not found as oauth exchange', async () => {
-    // Simulates looking up with wrong namespace: findUnique returns null
+  test('consume race on single-use returns already used without minting a session', async () => {
+    mockFindUnique.mockResolvedValue(exchangeRow());
+    mockUpdateMany.mockResolvedValue({ count: 0 });
+
+    const result = await consumeOAuthExchangeCode('a'.repeat(40));
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.stringMatching(/already used/i)
+    }));
+    expect(mockAuthSessionCreate).not.toHaveBeenCalled();
+  });
+
+  test('password-reset style hash is not found as an OAuth exchange code', async () => {
     mockFindUnique.mockResolvedValue(null);
-    const passwordResetToken = 'reset-token-value-abcdefghijklmnopqrstuvwxyz';
-    const r = await consumeOAuthExchangeCode(passwordResetToken);
-    expect(r.ok).toBe(false);
-    const lookupHash = mockFindUnique.mock.calls[0][0].where.tokenHash as string;
-    const oauthNamespaced = crypto
+    const resetToken = 'reset-token-value-abcdefghijklmnopqrstuvwxyz';
+
+    const result = await consumeOAuthExchangeCode(resetToken);
+
+    expect(result.ok).toBe(false);
+    const lookupHash = mockFindUnique.mock.calls[0][0].where.codeHash as string;
+    const expectedHash = crypto
       .createHash('sha256')
-      .update(`oauth-exchange:${passwordResetToken}`)
+      .update(`oauth-exchange:${resetToken}`)
       .digest('hex');
-    expect(lookupHash).toBe(oauthNamespaced);
+    expect(lookupHash).toBe(expectedHash);
   });
 });

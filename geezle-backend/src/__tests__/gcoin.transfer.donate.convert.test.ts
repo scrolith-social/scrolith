@@ -1,14 +1,22 @@
 import request from 'supertest';
 import app from '../testApp';
 import prisma from '../utils/prismaClient';
+import { shutdown as shutdownGcoinLimits } from '../middleware/gcoinLimits';
 
 describe('Gcoin transfer, donate, conversion endpoints', () => {
   const devUserId = 'dev-user-id-123';
   let recipientId: string;
   let recipientUserId = 'dev-recipient-1';
   let postId: string;
+  let previousMoneyMovementGate: string | undefined;
 
   beforeAll(async () => {
+    // This suite covers enabled-mode business behavior with synthetic data in
+    // the guarded disposable database. Hard-off behavior remains covered by
+    // dedicated tests; never change the application default.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+
     // clean
     await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
     await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
@@ -55,11 +63,23 @@ describe('Gcoin transfer, donate, conversion endpoints', () => {
   });
 
   afterAll(async () => {
-    await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
-    await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
-    await prisma.communityPost.deleteMany({ where: { id: postId } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: devUserId } });
-    await prisma.$disconnect();
+    try {
+      await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
+      await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: devUserId }, { userId: recipientUserId }] } });
+      await prisma.communityPost.deleteMany({ where: { id: postId } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: devUserId } });
+    } finally {
+      try {
+        await shutdownGcoinLimits();
+        await prisma.$disconnect();
+      } finally {
+        if (previousMoneyMovementGate === undefined) {
+          delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+        } else {
+          process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+        }
+      }
+    }
   });
 
   test('POST /api/gcoin/transfer transfers gcoin between users', async () => {

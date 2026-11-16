@@ -1,20 +1,20 @@
-import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import app from '../testApp';
+import { issueAuthSessionToken } from '../services/authSession.service';
 import prisma from '../utils/prismaClient';
 
 describe('Marketplace boost prefill', () => {
-  const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret';
   const ownerId = 'boost-owner-user';
   const viewerId = 'boost-viewer-user';
-  const ownerToken = jwt.sign({ id: ownerId }, JWT_SECRET);
-  const viewerToken = jwt.sign({ id: viewerId }, JWT_SECRET);
   const previousDevBypass = process.env.ALLOW_DEV_AUTH_BYPASS;
+  let ownerToken: string;
+  let viewerToken: string;
   let listingId: string;
   let listingWithoutMediaId: string;
   let fileId: string;
 
   beforeAll(async () => {
+    process.env.ALLOW_DEV_AUTH_BYPASS = 'false';
     await prisma.$connect();
 
     await prisma.user.upsert({
@@ -38,6 +38,9 @@ describe('Marketplace boost prefill', () => {
         isActive: true
       }
     });
+
+    ownerToken = await issueAuthSessionToken(ownerId);
+    viewerToken = await issueAuthSessionToken(viewerId);
 
     const file = await prisma.file.create({
       data: {

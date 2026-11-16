@@ -10,14 +10,31 @@ const AUDIT_ACTION = 'follow_onboarding.content.update';
 
 const assertDisposableLocalTarget = () => {
   const rawUrl = String(process.env.DATABASE_URL || '').trim();
-  const parsed = new URL(rawUrl);
-  const host = parsed.hostname.toLowerCase();
-  const database = parsed.pathname.replace(/^\/+/, '').toLowerCase();
-  if (!['127.0.0.1', 'localhost'].includes(host) || database !== 'scrolith_test') {
-    throw new Error(`Refusing CMS integration test against non-disposable database target: ${host}/${database}`);
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('Refusing CMS integration test against an invalid database target.');
   }
-  if (String(process.env.TEST_DB_KIND || '').trim() !== 'local-disposable') {
-    throw new Error('CMS integration test requires TEST_DB_KIND=local-disposable');
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const database = parsed.pathname.replace(/^\/+/, '').toLowerCase();
+  const expectedName = String(process.env.TEST_DB_NAME || '').trim().toLowerCase();
+  const expectedPort = Number(process.env.TEST_DB_PORT || 55432);
+  const localHost = ['127.0.0.1', 'localhost', '::1'].includes(host);
+  const disposableName = database.includes('test') || database.includes('e2e');
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !localHost || Number(parsed.port) !== expectedPort || !disposableName || (expectedName && database !== expectedName)) {
+    throw new Error('Refusing CMS integration test against a non-disposable database target.');
+  }
+  const testDbKind = String(process.env.TEST_DB_KIND || '').trim().toLowerCase();
+  const testDbInstance = String(process.env.TEST_DB_INSTANCE || '').trim().toLowerCase();
+  const localMarkerMatches =
+    (testDbKind === 'local-disposable' && testDbInstance === 'local-disposable-postgres-test') ||
+    (testDbKind === 'local-postgres' && testDbInstance === 'local-postgres-test');
+  if (
+    !localMarkerMatches ||
+    String(process.env.TEST_DB_PROJECT || '').trim().toLowerCase() !== 'local-only'
+  ) {
+    throw new Error('CMS integration test requires an approved local disposable PostgreSQL marker');
   }
 }
 

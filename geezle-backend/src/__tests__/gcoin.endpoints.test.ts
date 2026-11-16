@@ -1,12 +1,20 @@
 import request from 'supertest';
 import app from '../testApp';
 import prisma from '../utils/prismaClient';
+import { shutdown as shutdownGcoinLimits } from '../middleware/gcoinLimits';
 
 describe('Gcoin API endpoint tests', () => {
   let aliceId: string;
   let bobId: string;
+  let previousMoneyMovementGate: string | undefined;
 
   beforeAll(async () => {
+    // This suite verifies enabled-mode business behavior with synthetic data
+    // in the guarded disposable database. The runner keeps money movement
+    // disabled by default; hard-off behavior is covered independently.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+
     await prisma.$connect();
     const alice = await prisma.user.findUnique({ where: { email: 'alice+seed@local.dev' } });
     const bob = await prisma.user.findUnique({ where: { email: 'bob+seed@local.dev' } });
@@ -16,7 +24,16 @@ describe('Gcoin API endpoint tests', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    try {
+      await shutdownGcoinLimits();
+      await prisma.$disconnect();
+    } finally {
+      if (previousMoneyMovementGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+      }
+    }
   });
 
   test('Admin can credit a user wallet', async () => {

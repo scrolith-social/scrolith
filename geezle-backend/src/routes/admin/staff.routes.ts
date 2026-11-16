@@ -5,6 +5,7 @@ import { ensureAdminStaffProfile, ensureRbacSeeded, isAdminRole } from '../../se
 import { requirePermission, resolveStaffContext } from '../../middleware/rbac.middleware';
 import { recordGovernedAdminAction } from '../../services/enterpriseGovernance.service';
 import { getTrustedClientIp } from '../../utils/security/clientIdentity';
+import { revokeAllAuthSessionsInTransaction } from '../../services/authSession.service';
 
 const router = express.Router();
 
@@ -296,6 +297,9 @@ router.post('/', async (req, res) => {
               ...(hasPasswordUpdate ? { passwordHash, refreshToken: null } : {})
             }
           });
+          if (hasPasswordUpdate || !isActive) {
+            await revokeAllAuthSessionsInTransaction(tx, existing.userId, hasPasswordUpdate ? 'admin_password_reset' : 'staff_deactivated');
+          }
 
           return tx.staffUser.update({
             where: { id: staffId },
@@ -405,6 +409,10 @@ router.post('/', async (req, res) => {
                 isVerified: true
               }
             });
+
+        if (existingUserByEmail) {
+          await revokeAllAuthSessionsInTransaction(tx, existingUserByEmail.id, 'staff_credentials_reset');
+        }
 
         return tx.staffUser.create({
           data: {
@@ -532,6 +540,9 @@ router.put('/:id', requirePermission('staff.update'), async (req, res) => {
           ...(hasPasswordUpdate ? { passwordHash, refreshToken: null } : {})
         }
       });
+      if (hasPasswordUpdate || !isActive) {
+        await revokeAllAuthSessionsInTransaction(tx, existing.userId, hasPasswordUpdate ? 'admin_password_reset' : 'staff_deactivated');
+      }
 
       return tx.staffUser.update({
         where: { id: staffId },
@@ -586,22 +597,17 @@ router.post('/:id/reset-password', requirePermission('staff.reset_password'), as
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await prisma.$transaction([
-      prisma.staffUser.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.staffUser.update({
         where: { id: staffId },
-        data: {
-          passwordHash,
-          forcePasswordReset: true
-        }
-      }),
-      prisma.user.update({
+        data: { passwordHash, forcePasswordReset: true }
+      });
+      await tx.user.update({
         where: { id: staff.userId },
-        data: {
-          passwordHash,
-          refreshToken: null
-        }
-      })
-    ]);
+        data: { passwordHash, refreshToken: null }
+      });
+      await revokeAllAuthSessionsInTransaction(tx, staff.userId, 'staff_password_reset');
+    });
 
     await writeAuditLog(req, 'STAFF_PASSWORD_RESET', 'staff', staffId, {
       userId: staff.userId
@@ -628,22 +634,17 @@ router.delete('/:id', requirePermission('staff.update'), async (req, res) => {
       return res.status(404).json({ success: false, error: 'Staff member not found', code: 'NOT_FOUND' });
     }
 
-    await prisma.$transaction([
-      prisma.staffUser.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.staffUser.update({
         where: { id: staffId },
-        data: {
-          status: 'INACTIVE',
-          forcePasswordReset: true
-        }
-      }),
-      prisma.user.update({
+        data: { status: 'INACTIVE', forcePasswordReset: true }
+      });
+      await tx.user.update({
         where: { id: staff.userId },
-        data: {
-          isActive: false,
-          refreshToken: null
-        }
-      })
-    ]);
+        data: { isActive: false, refreshToken: null }
+      });
+      await revokeAllAuthSessionsInTransaction(tx, staff.userId, 'staff_deactivated');
+    });
 
     await writeAuditLog(req, 'STAFF_DEACTIVATED', 'staff', staffId, { userId: staff.userId });
     await writeGovernanceAudit(req, 'staff_deactivate', {

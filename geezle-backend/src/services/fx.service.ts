@@ -2,6 +2,7 @@ import type { Application } from 'express';
 import cron from 'node-cron';
 import prisma from '../utils/prismaClient';
 import { listFxLocks } from './fxLock.service';
+import { withDistributedJobLock } from './distributedJobLock.service';
 
 type SystemCurrencyEntry = {
   code?: string;
@@ -859,16 +860,18 @@ export const registerFxJobs = async (app: Application) => {
     expression,
     async () => {
       try {
-        const result = await runFxSync({ triggerType: 'scheduled' });
-        if (result.autoApproved) {
-          await notifyFxRuntimeUpdate(app, {
-            fx: {
-              providerCode: result.provider.code,
-              snapshotId: result.snapshot.id,
-              source: 'scheduled_sync'
-            }
-          });
-        }
+        await withDistributedJobLock('fx:scheduled-sync', async () => {
+          const result = await runFxSync({ triggerType: 'scheduled' });
+          if (result.autoApproved) {
+            await notifyFxRuntimeUpdate(app, {
+              fx: {
+                providerCode: result.provider.code,
+                snapshotId: result.snapshot.id,
+                source: 'scheduled_sync'
+              }
+            });
+          }
+        });
       } catch (error) {
         console.error('[fx] scheduled sync failed:', error);
       }

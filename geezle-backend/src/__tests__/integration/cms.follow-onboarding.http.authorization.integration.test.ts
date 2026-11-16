@@ -1,5 +1,4 @@
 import express from 'express';
-import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { DEFAULT_FOLLOW_ONBOARDING_CONTENT } from '../../utils/followOnboardingContent';
 
@@ -8,6 +7,7 @@ type SyntheticUser = {
   email: string;
   role: string;
   isActive: boolean;
+  authSessionVersion?: number;
 };
 
 type SyntheticStaff = {
@@ -22,6 +22,7 @@ type SyntheticStaff = {
 
 const mockState = {
   users: new Map<string, SyntheticUser>(),
+  authSessions: [] as Array<Record<string, any>>,
   staff: new Map<string, SyntheticStaff>(),
   setting: null as { scope: string; data: unknown } | null,
   auditEvents: [] as Array<Record<string, unknown>>,
@@ -33,6 +34,34 @@ const mockState = {
 const mockPrisma = {
   user: {
     findUnique: jest.fn(async ({ where }: any) => mockState.users.get(String(where?.id)) || null)
+  },
+  authSession: {
+    create: jest.fn(async ({ data }: any) => {
+      const row = { id: `session-${mockState.authSessions.length + 1}`, ...data, revokedAt: null };
+      mockState.authSessions.push(row);
+      return row;
+    }),
+    findFirst: jest.fn(async ({ where }: any) => {
+      const row = mockState.authSessions.find((session) =>
+        session.userId === where?.userId &&
+        session.tokenIdHash === where?.tokenIdHash &&
+        session.revokedAt === where?.revokedAt &&
+        session.expiresAt > where?.expiresAt?.gt
+      );
+      const user = row && mockState.users.get(row.userId);
+      if (!row || !user) return null;
+      return {
+        id: row.id,
+        userId: row.userId,
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          isActive: user.isActive,
+          authSessionVersion: user.authSessionVersion ?? 0
+        }
+      };
+    })
   },
   staffUser: {
     findUnique: jest.fn(async ({ where }: any) => mockState.staff.get(String(where?.userId)) || null)
@@ -83,6 +112,10 @@ const mockPrisma = {
   $transaction: jest.fn(async (operation: any) => {
     if (typeof operation === 'function') return operation({ ...mockPrisma });
     return Promise.all(operation);
+  }),
+  $queryRaw: jest.fn(async (_query: TemplateStringsArray, userId: string) => {
+    const user = mockState.users.get(userId);
+    return user ? [{ ...user, authSessionVersion: user.authSessionVersion ?? 0 }] : [];
   })
 };
 
@@ -96,8 +129,12 @@ const CONTENT_SCOPE = 'cms_follow_onboarding';
 
 let app: express.Express;
 
-const tokenFor = (user: SyntheticUser) =>
-  jwt.sign({ id: user.id }, String(process.env.JWT_SECRET || JWT_SECRET), { expiresIn: '5m' });
+const issueAuthSessionToken = (userId: string): Promise<string> =>
+  require('../../services/authSession.service').issueAuthSessionToken(userId);
+
+const authorizationHeader = async (user: SyntheticUser) => ({
+  Authorization: `Bearer ${await issueAuthSessionToken(user.id)}`
+});
 
 const seedUser = (user: SyntheticUser, staff?: SyntheticStaff) => {
   mockState.users.set(user.id, user);
@@ -115,10 +152,6 @@ const staff = (
     isActive: true,
     rolePermissions: permissionKeys.map((key) => ({ permission: { key } }))
   }
-});
-
-const authorizationHeader = (user: SyntheticUser) => ({
-  Authorization: `Bearer ${tokenFor(user)}`
 });
 
 describe('Follow Onboarding CMS HTTP authorization', () => {
@@ -139,6 +172,7 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
 
   beforeEach(() => {
     mockState.users.clear();
+    mockState.authSessions.length = 0;
     mockState.staff.clear();
     mockState.setting = null;
     mockState.auditEvents.length = 0;
@@ -148,7 +182,7 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
     process.env.NODE_ENV = 'test';
     process.env.APP_RUNTIME = 'test';
     process.env.JWT_SECRET = JWT_SECRET;
-    process.env.ALLOW_DEV_AUTH_BYPASS = 'true';
+    process.env.ALLOW_DEV_AUTH_BYPASS = 'false';
     process.env.ALLOW_DEV_ADMIN_BYPASS = 'false';
     delete process.env.ALLOW_DEV_BYPASS_LOCAL_ONLY;
     delete process.env.CONTAINER_APP_NAME;
@@ -183,7 +217,7 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
 
     const response = await request(app)
       .put('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(ordinaryUser))
+      .set(await authorizationHeader(ordinaryUser))
       .send({ ...DEFAULT_FOLLOW_ONBOARDING_CONTENT });
 
     expect(response.status).toBe(403);
@@ -203,10 +237,10 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
 
     const getResponse = await request(app)
       .get('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(reader));
+      .set(await authorizationHeader(reader));
     const putResponse = await request(app)
       .put('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(reader))
+      .set(await authorizationHeader(reader))
       .send({ ...DEFAULT_FOLLOW_ONBOARDING_CONTENT });
 
     expect(getResponse.status).toBe(200);
@@ -231,17 +265,19 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
     };
     seedUser(administrator);
     seedUser(manager, staff('Author/Editor/Writer', ['cms.read', 'cms.manage']));
+    const administratorAuth = await authorizationHeader(administrator);
+    const managerAuth = await authorizationHeader(manager);
 
     const adminGet = await request(app)
       .get('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(administrator));
+      .set(administratorAuth);
     const adminPut = await request(app)
       .put('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(administrator))
+      .set(administratorAuth)
       .send({ ...DEFAULT_FOLLOW_ONBOARDING_CONTENT });
     const managerPut = await request(app)
       .put('/api/cms/admin/follow-onboarding/content')
-      .set(authorizationHeader(manager))
+      .set(managerAuth)
       .send({
         ...DEFAULT_FOLLOW_ONBOARDING_CONTENT,
         hero: { ...DEFAULT_FOLLOW_ONBOARDING_CONTENT.hero, title: 'Managed update' }
@@ -265,10 +301,11 @@ describe('Follow Onboarding CMS HTTP authorization', () => {
         isActive: true
       };
       seedUser(user);
+      const authorization = await authorizationHeader(user);
 
       const response = await request(app)
         .put('/api/cms/admin/follow-onboarding/content')
-        .set(authorizationHeader(user))
+        .set(authorization)
         .send({ ...DEFAULT_FOLLOW_ONBOARDING_CONTENT });
 
       expect(response.status).toBe(403);

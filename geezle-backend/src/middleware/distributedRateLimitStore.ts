@@ -25,9 +25,29 @@ export class DistributedRateLimitStore implements Store {
     this.prefix = prefix;
     this.failClosed = options.failClosed ?? false;
     this.entraClientId = options.entraClientId;
+    const client = this.redis as Redis & { on?: (event: string, listener: (...args: any[]) => void) => unknown };
+    client.on?.('ready', () => {
+      if (this.state === 'closed') return;
+      this.state = 'ready';
+      this.lastFailureAt = 0;
+    });
+    client.on?.('reconnecting', () => this.markUnavailable());
+    client.on?.('close', () => this.markUnavailable());
+    client.on?.('end', () => this.markUnavailable());
+    client.on?.('error', () => this.markUnavailable());
   }
 
   private readonly entraClientId?: string;
+
+  private markUnavailable(): void {
+    if (this.state === 'closed') return;
+    // Repeated readiness probes during the retry cooldown can fail immediately
+    // without attempting a Redis connection. Do not let those probes keep
+    // moving the retry deadline forward; only a new failed connection attempt
+    // (which first moves state to `connecting`) should start a fresh cooldown.
+    if (this.state !== 'unavailable') this.lastFailureAt = Date.now();
+    this.state = 'unavailable';
+  }
 
   init(options: Options) {
     this.windowMs = Number(options.windowMs || this.windowMs);
@@ -39,6 +59,17 @@ export class DistributedRateLimitStore implements Store {
 
   getRedisState(): 'idle' | 'connecting' | 'ready' | 'unavailable' | 'closed' {
     return this.state;
+  }
+
+  /** Probe the same Redis connection used by the global API limiter. */
+  async checkHealth(): Promise<boolean> {
+    try {
+      await this.ensureReady();
+      return String(await this.redis.ping()).toUpperCase() === 'PONG';
+    } catch {
+      this.markUnavailable();
+      return false;
+    }
   }
 
   private retryCooldownMs(): number {
@@ -58,7 +89,9 @@ export class DistributedRateLimitStore implements Store {
   }
 
   private async ensureReady(): Promise<void> {
-    if (this.state === 'ready') return;
+    const transportStatus = String((this.redis as Redis & { status?: string }).status || '');
+    if (this.state === 'ready' && transportStatus === 'ready') return;
+    if (this.state === 'ready' && transportStatus !== 'ready') this.markUnavailable();
     if (this.state === 'closed') throw new Error('Redis rate-limit store is closed');
 
     const now = Date.now();
@@ -83,8 +116,7 @@ export class DistributedRateLimitStore implements Store {
         this.state = 'ready';
         this.lastFailureAt = 0;
       } catch (error) {
-        this.state = 'unavailable';
-        this.lastFailureAt = Date.now();
+        this.markUnavailable();
         console.warn('[rate-limit] Redis unavailable; protected requests denied', { reason: this.failureCategory(error) });
         throw error;
       } finally {
@@ -122,6 +154,7 @@ export class DistributedRateLimitStore implements Store {
       if (!Number.isFinite(totalHits) || totalHits <= 0) throw new Error('Invalid Redis rate-limit response');
       return { totalHits, resetTime: new Date(Date.now() + Math.max(1_000, ttl)) };
     } catch (error) {
+      this.markUnavailable();
       if (this.failClosed) {
         return { totalHits: Number.MAX_SAFE_INTEGER, resetTime: new Date(Date.now() + this.windowMs) };
       }

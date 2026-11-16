@@ -1,5 +1,8 @@
 /** Canonical ledger entry point for new wallet credits. */
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
+
 export const creditWallet = async (tx: any, input: { userId: string; amount: number; currency: string; referenceId: string; description: string; metadata?: Record<string, any> }) => {
+  assertMoneyMovementEnabled();
   let wallet = await tx.wallet.findUnique({ where: { userId: input.userId } });
   if (!wallet) wallet = await tx.wallet.create({ data: { userId: input.userId, currency: input.currency } });
   if (wallet.currency.toUpperCase() !== input.currency.toUpperCase()) throw new Error(`Wallet currency ${wallet.currency} does not match settlement currency ${input.currency}`);

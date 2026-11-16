@@ -8,6 +8,7 @@ import { sendSystemMessage } from '../services/systemMessaging';
 import { maybeDecryptSecret } from '../utils/secretCipher';
 import { publishIntegrationEvent } from '../services/talentCloud.service';
 import { safeLogLine } from '../utils/security/safeLog';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 const nowIso = () => new Date().toISOString();
 
@@ -406,6 +407,7 @@ const attemptPaypalPayout = async (settings: any, amount: number, currency: stri
 };
 
 export const requestWithdrawal = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const userId = req.user?.id;
     if (!userId) return fail(res, 401, 'Unauthorized', 'ERR_UNAUTHORIZED');
@@ -921,6 +923,7 @@ export const listWithdrawalsAdmin = async (req: Request, res: Response) => {
 };
 
 export const approveWithdrawalAdmin = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     if (!req.user?.role || !req.user.role.toString().toLowerCase().includes('admin')) {
       return fail(res, 403, 'Forbidden', 'ERR_FORBIDDEN');
@@ -1042,6 +1045,7 @@ export const approveWithdrawalAdmin = async (req: Request, res: Response) => {
 };
 
 export const markWithdrawalPaidAdmin = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     if (!req.user?.role || !req.user.role.toString().toLowerCase().includes('admin')) {
       return fail(res, 403, 'Forbidden', 'ERR_FORBIDDEN');

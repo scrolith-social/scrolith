@@ -2,6 +2,7 @@ import type { Application } from 'express';
 import { ChannelVisibility } from '@prisma/client';
 import prisma from '../../../utils/prismaClient';
 import gcoinService from '../../../services/gcoinService';
+import { isMoneyMovementEnabled } from '../../../config/moneyMovement';
 
 const FAN_CHANNEL_PLAN_SCOPE = 'insights_fan_channel_plans_v1';
 const MINI_GAMES_SCOPE = 'insights_skill_mini_games_v1';
@@ -244,6 +245,9 @@ export type EngagementExpansionSummary = {
 const toArray = <T = any>(value: any): T[] => (Array.isArray(value) ? (value as T[]) : []);
 const todayKey = (date = new Date()) => date.toISOString().slice(0, 10);
 const normalizeAmount = (value: unknown) => Math.max(0, Number(value || 0));
+
+export const isSkillMiniGameRewardGranted = (correct: boolean, rewardAmount: unknown): boolean =>
+  isMoneyMovementEnabled() && correct && Number(rewardAmount || 0) > 0;
 
 const loadScope = async <T>(scope: string, fallback: T): Promise<T> => {
   const record = await prisma.appSetting.findUnique({ where: { scope } });
@@ -899,7 +903,9 @@ export const submitSkillMiniGameAnswer = async ({
     throw new Error('You already played this mini-game today.');
   }
   const correct = choiceId === game.correctChoiceId;
-  const rewardGranted = correct && Number(game.rewardAmount || 0) > 0;
+  // The mini-game remains playable in a pilot with money movement disabled;
+  // persist the reward as granted only when the server gate permits crediting.
+  const rewardGranted = isSkillMiniGameRewardGranted(correct, game.rewardAmount);
   attempts.push({
     userId,
     gameId,

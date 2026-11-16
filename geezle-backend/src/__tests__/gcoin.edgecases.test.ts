@@ -6,6 +6,7 @@ describe('Gcoin edge cases', () => {
   const senderId = 'dev-user-id-123';
   const recipientId = 'edge-recipient-1';
   let prevSettings: any = null;
+  let previousMoneyMovementGate: string | undefined;
   const enabledSettings = {
     conversionRate: 0.5,
     minWithdrawal: 0,
@@ -26,6 +27,12 @@ describe('Gcoin edge cases', () => {
   };
 
   beforeAll(async () => {
+    // This suite exercises enabled-mode business rules using only synthetic
+    // rows in the guarded disposable database. Other suites verify the default
+    // hard-off behavior and restore their own gate state.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+
     // ensure users and clean state
     await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
     await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
@@ -41,18 +48,23 @@ describe('Gcoin edge cases', () => {
   });
 
   afterAll(async () => {
-    await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
-    await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: senderId } });
-    // restore previous gcoin settings if any
-    if (!prevSettings || prevSettings.id !== 'default') {
-      await prisma.gcoinSettings.deleteMany({ where: { id: 'default' } });
+    try {
+      await prisma.gcoinTransaction.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
+      await prisma.gcoinWallet.deleteMany({ where: { OR: [{ userId: senderId }, { userId: recipientId }] } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: senderId } });
+      // restore previous gcoin settings if any
+      if (!prevSettings || prevSettings.id !== 'default') {
+        await prisma.gcoinSettings.deleteMany({ where: { id: 'default' } });
+      }
+      if (prevSettings) {
+        const { id, createdAt, updatedAt, ...restoredSettings } = prevSettings;
+        await prisma.gcoinSettings.update({ where: { id: prevSettings.id }, data: restoredSettings as any });
+      }
+    } finally {
+      if (previousMoneyMovementGate === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+      await prisma.$disconnect();
     }
-    if (prevSettings) {
-      const { id, createdAt, updatedAt, ...restoredSettings } = prevSettings;
-      await prisma.gcoinSettings.update({ where: { id: prevSettings.id }, data: restoredSettings as any });
-    }
-    await prisma.$disconnect();
   });
 
   test('transfer fails when insufficient balance for amount+fee', async () => {

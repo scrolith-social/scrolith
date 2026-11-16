@@ -1,6 +1,7 @@
 import prisma from '../utils/prismaClient';
 import { computeCommissionBreakdown } from '../utils/commission';
 import { awardAffiliateFirstPurchaseCommission } from './affiliateProgram.service';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 type OrderPaymentStatus = 'succeeded' | 'failed';
 
@@ -44,6 +45,7 @@ export const settleOrderPaymentIntent = async (params: {
   intentId?: string;
   stripeIntentId?: string | null;
 }) => {
+  assertMoneyMovementEnabled();
   const { provider, providerReferenceId, status, rawEvent, intentId, stripeIntentId } = params;
   const intent = await resolveIntent(provider, providerReferenceId, intentId);
   if (!intent) {

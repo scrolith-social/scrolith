@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 
 export type UserRole = 'ADMIN' | 'ANALYST' | 'MODERATOR' | 'CLIENT' | 'FREELANCER' | 'EMPLOYER' | 'USER' | 'GUEST';
 
@@ -10,17 +9,18 @@ export interface AuthUser {
   email?: string;
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization as string | undefined;
   if (!header?.startsWith('Bearer ')) return res.status(401).json({ success: false, error: { message: 'Unauthorized' } });
 
-  const token = header.replace('Bearer ', '');
+  const token = header.slice('Bearer '.length).trim();
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as AuthUser;
-    req.user = payload;
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth || !auth.user.isActive) return res.status(401).json({ success: false, error: { message: 'Invalid or revoked token' } });
+    req.user = { id: auth.user.id, email: auth.user.email, role: auth.user.role as UserRole };
     return next();
   } catch {
-    return res.status(401).json({ success: false, error: { message: 'Invalid token' } });
+    return res.status(503).json({ success: false, error: { message: 'Authentication temporarily unavailable' } });
   }
 }
 

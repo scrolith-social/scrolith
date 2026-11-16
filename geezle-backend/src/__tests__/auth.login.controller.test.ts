@@ -1,8 +1,8 @@
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { login, getCurrentUser } from '../controllers/auth.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
 import prisma from '../utils/prismaClient';
+import { issueAuthSessionToken, resolveAuthSessionToken } from '../services/authSession.service';
 
 jest.mock('../utils/humanVerificationGate', () => ({
   enforceHumanVerification: jest.fn().mockResolvedValue(true)
@@ -29,6 +29,19 @@ jest.mock('../utils/prismaClient', () => {
   };
 });
 
+jest.mock('../services/authSession.service', () => ({
+  AuthSessionIssueError: class AuthSessionIssueError extends Error {},
+  issueAuthSessionToken: jest.fn().mockResolvedValue('synthetic-durable-session-token'),
+  issueAuthSessionTokenInTransaction: jest.fn(),
+  resolveAuthSessionToken: jest.fn(),
+  revokeAuthSession: jest.fn(),
+  revokeAllAuthSessionsInTransaction: jest.fn()
+}));
+
+jest.mock('../controllers/admin2fa.controller', () => ({
+  evaluateAdmin2FAGate: jest.fn().mockResolvedValue({ required: false })
+}));
+
 const mockPrisma = prisma as unknown as {
   user: {
     findUnique: jest.Mock;
@@ -50,6 +63,7 @@ const createResponse = () => {
 
 const createUser = async (overrides: Record<string, unknown> = {}) => ({
   id: 'user-1',
+  authSessionVersion: 0,
   email: 'valid@example.com',
   name: 'Valid User',
   username: 'validuser',
@@ -67,6 +81,8 @@ describe('auth login controller', () => {
     process.env.JWT_SECRET = 'dev_jwt_secret';
     mockPrisma.staffUser.findUnique.mockResolvedValue(null);
     mockPrisma.user.update.mockResolvedValue({});
+    (issueAuthSessionToken as jest.Mock).mockResolvedValue('synthetic-durable-session-token');
+    (resolveAuthSessionToken as jest.Mock).mockReset();
   });
 
   test('missing login fields returns 400', async () => {
@@ -169,19 +185,20 @@ describe('auth login controller', () => {
     expect(payload.success).toBe(true);
     expect(payload.token).toEqual(expect.any(String));
     expect(payload.accessToken).toBe(payload.token);
+    expect(issueAuthSessionToken).toHaveBeenCalledWith('user-1', 0);
     expect(payload.user).toEqual(expect.objectContaining({ id: 'user-1', email: 'valid@example.com' }));
     expect(res.cookie).toHaveBeenCalledWith('Scrolith_token', payload.token, expect.any(Object));
   });
 
   test('/auth/me accepts Bearer token and returns the current user', async () => {
-    const token = jwt.sign(
-      { id: 'user-1', email: 'valid@example.com', role: 'EMPLOYER' },
-      'dev_jwt_secret',
-      { expiresIn: '1h' }
-    );
-    mockPrisma.user.findUnique
-      .mockResolvedValueOnce({ id: 'user-1', email: 'valid@example.com', role: 'EMPLOYER', isActive: true })
-      .mockResolvedValueOnce(await createUser());
+    const token = 'synthetic-durable-session-token';
+    (resolveAuthSessionToken as jest.Mock).mockResolvedValue({
+      sessionId: 'session-row-1',
+      userId: 'user-1',
+      sessionVersion: 0,
+      user: { id: 'user-1', email: 'valid@example.com', role: 'EMPLOYER', isActive: true }
+    });
+    mockPrisma.user.findUnique.mockResolvedValue(await createUser());
 
     const req: any = {
       headers: { authorization: `Bearer ${token}` }
@@ -200,5 +217,29 @@ describe('auth login controller', () => {
     expect(meRes.json).toHaveBeenCalledWith({
       user: expect.objectContaining({ id: 'user-1', email: 'valid@example.com' })
     });
+  });
+
+  test('rejects a token marked revoked by the durable session store', async () => {
+    (resolveAuthSessionToken as jest.Mock).mockResolvedValue(null);
+    const req: any = { headers: { authorization: 'Bearer synthetic-revoked-token' } };
+    const res = createResponse();
+    const next = jest.fn();
+
+    await authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  test('fails closed when the durable session store is unavailable', async () => {
+    (resolveAuthSessionToken as jest.Mock).mockRejectedValue(new Error('synthetic database failure'));
+    const req: any = { headers: { authorization: 'Bearer synthetic-session-token' } };
+    const res = createResponse();
+    const next = jest.fn();
+
+    await authMiddleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
   });
 });

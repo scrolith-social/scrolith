@@ -17,7 +17,18 @@ export const assertSafeTestDatabaseUrl = (databaseUrl = process.env.DATABASE_URL
   if (!runtimePolicy.isTest) {
     throw new Error('Refusing to operate on test database when NODE_ENV/APP_RUNTIME is not test.');
   }
-  if (!value.includes('scrolith_test') || !value.includes('127.0.0.1:55432')) {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('Refusing to reset or prepare a non-isolated test database.');
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  const databaseName = parsed.pathname.replace(/^\/+/, '').toLowerCase();
+  const expectedPort = Number(process.env.TEST_DB_PORT || 55432);
+  const allowedHost = ['127.0.0.1', 'localhost', '::1'].includes(host);
+  const disposableName = databaseName.includes('test') || databaseName.includes('e2e');
+  if (!allowedHost || Number(parsed.port) !== expectedPort || expectedPort < 1 || expectedPort > 65535 || !disposableName) {
     throw new Error('Refusing to reset or prepare a non-isolated test database.');
   }
   return value;

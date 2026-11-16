@@ -36,19 +36,52 @@ describe('Gcoin admin endpoints', () => {
     await prisma.$disconnect();
   });
 
-  test('Admin can approve a conversion request', async () => {
-    const res = await request(app)
-      .post(`/api/gcoin/conversions/${convId}`)
-      .set('x-dev-role', 'admin')
-      .send({ action: 'approve', note: 'approved in test' });
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty('success', true);
-    const updated = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
-    expect(updated?.status).toBe('approved');
-    // fiat wallet credited
-    const fiat = await prisma.wallet.findUnique({ where: { userId: devUserId } });
-    expect(fiat).toBeTruthy();
-    expect(Number(fiat?.balance || 0)).toBeGreaterThan(0);
+  test('money-movement hard-off rejects approval without changing balances or request state', async () => {
+    const priorGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'false';
+    try {
+      const beforeRequest = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
+      const beforeGcoin = await prisma.gcoinWallet.findUnique({ where: { userId: devUserId } });
+      const beforeFiat = await prisma.wallet.findUnique({ where: { userId: devUserId } });
+      const res = await request(app)
+        .post(`/api/gcoin/conversions/${convId}`)
+        .set('x-dev-role', 'admin')
+        .send({ action: 'approve', note: 'should remain blocked in test' });
+
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('MONEY_MOVEMENT_DISABLED');
+      const afterRequest = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
+      const afterGcoin = await prisma.gcoinWallet.findUnique({ where: { userId: devUserId } });
+      const afterFiat = await prisma.wallet.findUnique({ where: { userId: devUserId } });
+      expect(afterRequest?.status).toBe(beforeRequest?.status);
+      expect(Number(afterGcoin?.balance || 0)).toBe(Number(beforeGcoin?.balance || 0));
+      expect(afterFiat ? Number(afterFiat.balance) : null).toEqual(beforeFiat ? Number(beforeFiat.balance) : null);
+    } finally {
+      if (priorGate === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = priorGate;
+    }
+  });
+
+  test('Admin can approve a conversion request with an explicit synthetic test opt-in', async () => {
+    const priorGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+    try {
+      const res = await request(app)
+        .post(`/api/gcoin/conversions/${convId}`)
+        .set('x-dev-role', 'admin')
+        .send({ action: 'approve', note: 'approved in synthetic test' });
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('success', true);
+      const updated = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
+      expect(updated?.status).toBe('approved');
+      // The synthetic fiat wallet is credited only in this explicitly opted-in test.
+      const fiat = await prisma.wallet.findUnique({ where: { userId: devUserId } });
+      expect(fiat).toBeTruthy();
+      expect(Number(fiat?.balance || 0)).toBeGreaterThan(0);
+    } finally {
+      if (priorGate === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = priorGate;
+    }
   });
 
   test('Admin summary endpoint returns expected fields', async () => {

@@ -1,9 +1,18 @@
 import request from 'supertest';
 import app from '../testApp';
 import prisma from '../utils/prismaClient';
+import { shutdown as shutdownGcoinLimits } from '../middleware/gcoinLimits';
 
 describe('Gcoin transfer with fees', () => {
+  let previousMoneyMovementGate: string | undefined;
+
   beforeAll(async () => {
+    // This suite verifies enabled-mode fee behavior using only synthetic data
+    // in the guarded disposable test database. Hard-off behavior is covered
+    // separately; never change the application default.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+
     // Clean possible conflicting recipientIds from other tests
     await prisma.gcoinWallet.deleteMany({ where: { recipientId: { in: ['GC-RECIP', 'GC-SRC', 'GC-ADMIN'] } } });
     // Ensure admin user exists and has a wallet
@@ -13,19 +22,32 @@ describe('Gcoin transfer with fees', () => {
 
   
   afterAll(async () => {
-    // cleanup wallets and transactions created by test users
-    // find wallets for users and delete any gcoinTransactions referencing them first
-    const userIds = ['dev-user-id-123', 'recipient-user'];
-    const wallets = await prisma.gcoinWallet.findMany({ where: { userId: { in: userIds } }, select: { id: true } });
-    const walletIds = wallets.map(w => w.id);
-    if (walletIds.length > 0) {
-      await prisma.gcoinTransaction.deleteMany({ where: { OR: [ { walletId: { in: walletIds } }, { fromUserId: { in: userIds } }, { toUserId: { in: userIds } }, { userId: { in: userIds } } ] } });
+    try {
+      // cleanup wallets and transactions created by test users
+      // find wallets for users and delete any gcoinTransactions referencing them first
+      const userIds = ['dev-user-id-123', 'recipient-user'];
+      const wallets = await prisma.gcoinWallet.findMany({ where: { userId: { in: userIds } }, select: { id: true } });
+      const walletIds = wallets.map(w => w.id);
+      if (walletIds.length > 0) {
+        await prisma.gcoinTransaction.deleteMany({ where: { OR: [ { walletId: { in: walletIds } }, { fromUserId: { in: userIds } }, { toUserId: { in: userIds } }, { userId: { in: userIds } } ] } });
+      }
+      await prisma.gcoinTransaction.deleteMany({ where: { OR: [ { createdBy: 'dev-user-id-123' }, { userId: { in: userIds } } ] } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: { in: userIds } } });
+      await prisma.gcoinWallet.deleteMany({ where: { userId: { in: userIds } } });
+      await prisma.transaction.deleteMany({ where: { userId: { in: userIds } } });
+      await prisma.user.deleteMany({ where: { id: { in: ['recipient-user'] } } });
+    } finally {
+      try {
+        await shutdownGcoinLimits();
+        await prisma.$disconnect();
+      } finally {
+        if (previousMoneyMovementGate === undefined) {
+          delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+        } else {
+          process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+        }
+      }
     }
-    await prisma.gcoinTransaction.deleteMany({ where: { OR: [ { createdBy: 'dev-user-id-123' }, { userId: { in: userIds } } ] } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.gcoinWallet.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.transaction.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.user.deleteMany({ where: { id: { in: ['recipient-user'] } } });
   });
 
   test('applies percentage transfer fee and credits admin wallet', async () => {

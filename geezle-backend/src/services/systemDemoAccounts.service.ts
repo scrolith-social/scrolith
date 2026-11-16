@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import prisma from '../utils/prismaClient';
+import { withDistributedJobLock } from './distributedJobLock.service';
 import { ScrolithaService, createSystemScrolithaActor } from '../modules/scrolitha/inference/scrolitha.service';
 
 type DemoProfileSeed = {
@@ -515,7 +516,7 @@ export const startDemoAutomationScheduler = () => {
         const requiredMs = config.cadenceMinutes * 60_000;
         if (elapsedMs < requiredMs) return;
       }
-      await runDemoAutomationCycle();
+      await withDistributedJobLock('demo-accounts:automation-cycle', () => runDemoAutomationCycle());
     } catch (error) {
       console.error('[system-demo-accounts] scheduler cycle failed', error);
     } finally {

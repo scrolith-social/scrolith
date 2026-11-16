@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import prisma from '../utils/prismaClient';
 import realtime from '../utils/realtime';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 export const AFFILIATE_SETTINGS_SCOPE = 'affiliate_program_settings';
 export const AFFILIATE_APPLICATIONS_SCOPE = 'affiliate_program_applications';
@@ -504,6 +505,7 @@ export const awardAffiliateFirstPurchaseCommission = async (input: {
   orderAmount: number;
   currency?: string;
 }) => {
+  assertMoneyMovementEnabled();
   const settings = await loadSettings();
   if (!settings.enabled) return { awarded: false, reason: 'disabled' };
 
@@ -588,6 +590,7 @@ export const awardAffiliateFirstPurchaseCommission = async (input: {
 };
 
 export const requestAffiliateWithdrawalToWallet = async (input: { userId: string; amount?: number }) => {
+  assertMoneyMovementEnabled();
   const settings = await loadSettings();
   const partners = await loadPartners();
   const earnings = await loadEarnings();

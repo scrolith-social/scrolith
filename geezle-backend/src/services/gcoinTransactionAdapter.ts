@@ -1,6 +1,8 @@
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 export async function createLedgerFromGcoin(gcoinTxId: string) {
+  assertMoneyMovementEnabled();
   const gtx = await prisma.gcoinTransaction.findUnique({ where: { id: gcoinTxId } });
   if (!gtx) throw new Error('Gcoin transaction not found');
 

@@ -1,4 +1,5 @@
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 import { notifyAdmins, notifyUser } from '../utils/notify';
 import { DEFAULT_MARKETPLACE_CATEGORIES } from '../config/marketplaceCategories';
 import { publishIntegrationEvent } from './talentCloud.service';
@@ -828,6 +829,7 @@ export const createMarketplaceOrder = async (params: {
   deliveryOption?: string | null;
   quantity?: number;
 }) => {
+  assertMoneyMovementEnabled();
   const listing = await prisma.marketplaceListing.findUnique({
     where: { id: String(params.listingId || '').trim() }
   });
