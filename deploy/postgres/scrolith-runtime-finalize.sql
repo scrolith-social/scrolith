@@ -113,7 +113,7 @@ BEGIN
     'FoundingPartnerProgram', 'FoundingPartner',
     'FoundingPartnerEnrollmentPayment', 'FoundingPartnerProfitPeriod',
     'FoundingPartnerProfitSource', 'FoundingPartnerDistributionRun',
-    'FoundingPartnerDistribution'
+    'FoundingPartnerDistribution', 'AuthSession'
   ] LOOP
     FOR column_row IN
       SELECT attname
@@ -151,7 +151,8 @@ REVOKE UPDATE ON TABLE
   :"application_schema"."FoundingPartnerProfitPeriod",
   :"application_schema"."FoundingPartnerProfitSource",
   :"application_schema"."FoundingPartnerDistributionRun",
-  :"application_schema"."FoundingPartnerDistribution"
+  :"application_schema"."FoundingPartnerDistribution",
+  :"application_schema"."AuthSession"
 FROM :"runtime_role";
 
 GRANT UPDATE ("status", "description", "metadata", "updatedAt")
@@ -184,6 +185,12 @@ GRANT UPDATE ("amount", "currency", "status")
   ON TABLE :"application_schema"."AdPayment" TO :"runtime_role";
 GRANT UPDATE ("reactionActive", "reversedAt", "reversalCount")
   ON TABLE :"application_schema"."GcoinEarningEvent" TO :"runtime_role";
+-- Authentication writes durable sessions, updates only the revocation fields,
+-- and removes expired rows after the service retention window.
+GRANT SELECT, INSERT, DELETE
+  ON TABLE :"application_schema"."AuthSession" TO :"runtime_role";
+GRANT UPDATE ("revokedAt", "revokeReason")
+  ON TABLE :"application_schema"."AuthSession" TO :"runtime_role";
 
 -- Founding Partner field allowlists are derived from the current service and
 -- admin route writes. Economic inputs and identity/idempotency keys remain
@@ -242,6 +249,19 @@ BEGIN
      OR has_column_privilege('scrolith_runtime', 'public."HumanVerificationSettings"', 'scope', 'UPDATE')
      OR has_column_privilege('scrolith_runtime', 'public."HumanVerificationSettings"', 'id', 'UPDATE') THEN
     RAISE EXCEPTION 'runtime HumanVerificationSettings UPDATE allowlist does not match its service';
+  END IF;
+  IF has_table_privilege('scrolith_runtime', 'public."AuthSession"', 'UPDATE')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."AuthSession"', 'SELECT')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."AuthSession"', 'INSERT')
+     OR NOT has_table_privilege('scrolith_runtime', 'public."AuthSession"', 'DELETE')
+     OR NOT has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'revokedAt', 'UPDATE')
+     OR NOT has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'revokeReason', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'id', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'userId', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'tokenIdHash', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'expiresAt', 'UPDATE')
+     OR has_column_privilege('scrolith_runtime', 'public."AuthSession"', 'createdAt', 'UPDATE') THEN
+    RAISE EXCEPTION 'runtime AuthSession privileges do not match the reviewed service operations';
   END IF;
   IF has_table_privilege('scrolith_runtime', 'public._prisma_migrations', 'SELECT')
      OR has_table_privilege('scrolith_runtime', 'public._prisma_migrations', 'INSERT')

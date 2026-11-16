@@ -55,6 +55,11 @@ INSERT INTO "User" ("id", "email", "updatedAt") VALUES
   ('role-review-user-a', 'role-review-a@example.test', now()),
   ('role-review-user-b', 'role-review-b@example.test', now()),
   ('role-review-user-gcoin-only', 'role-review-gcoin-only@example.test', now());
+INSERT INTO "AuthSession" ("id", "userId", "tokenIdHash", "expiresAt", "createdAt") VALUES
+  ('role-review-auth-session-active', 'role-review-user-a', 'synthetic-auth-session-active-hash',
+   now() + interval '7 days', now()),
+  ('role-review-auth-session-expired', 'role-review-user-a', 'synthetic-auth-session-expired-hash',
+   now() - interval '2 days', now() - interval '2 days');
 INSERT INTO "Wallet" ("id", "userId", "updatedAt") VALUES
   ('role-review-wallet-a', 'role-review-user-a', now());
 INSERT INTO "Order" ("id", "clientId", "freelancerId", "amount", "updatedAt")
@@ -105,6 +110,17 @@ INSERT INTO "HumanVerificationSettings" ("id", "scope", "data", "updatedBy", "up
    '{"masterEnabled":false,"endpoints":{"signup":false}}'::jsonb, NULL, now());
 
 SET LOCAL ROLE scrolith_runtime;
+
+-- Durable auth-session operations: issue, revoke, and retention cleanup.
+INSERT INTO "AuthSession" ("id", "userId", "tokenIdHash", "expiresAt", "createdAt")
+VALUES ('role-review-auth-session-runtime-created', 'role-review-user-b',
+        'synthetic-auth-session-runtime-hash', now() + interval '7 days', now());
+UPDATE "AuthSession"
+   SET "revokedAt" = now(), "revokeReason" = 'synthetic logout'
+ WHERE "id" = 'role-review-auth-session-active';
+DELETE FROM "AuthSession"
+ WHERE "id" = 'role-review-auth-session-expired'
+   AND "expiresAt" < now() - interval '1 day';
 
 -- Supported app behavior: account deactivation is a soft UPDATE; wallet and
 -- Gcoin snapshots, transaction status, payment intents and withdrawal fields
@@ -228,7 +244,10 @@ BEGIN
       OR (SELECT "status" FROM "GcoinConversionRequest" WHERE "id" = 'role-review-gcoin-conversion') <> 'approved'
       OR (SELECT "data"->>'enabled' FROM "AppSetting" WHERE "scope" = 'role_review_existing') <> 'true'
       OR (SELECT "data"->>'masterEnabled' FROM "HumanVerificationSettings" WHERE "scope" = 'role_review_hv_existing') <> 'true'
-      OR (SELECT "updatedBy" FROM "HumanVerificationSettings" WHERE "scope" = 'role_review_hv_existing') <> 'role-review-user-a' THEN
+      OR (SELECT "updatedBy" FROM "HumanVerificationSettings" WHERE "scope" = 'role_review_hv_existing') <> 'role-review-user-a'
+      OR (SELECT "revokeReason" FROM "AuthSession" WHERE "id" = 'role-review-auth-session-active') <> 'synthetic logout'
+      OR (SELECT count(*) FROM "AuthSession" WHERE "id" = 'role-review-auth-session-runtime-created') <> 1
+      OR (SELECT count(*) FROM "AuthSession" WHERE "id" = 'role-review-auth-session-expired') <> 0 THEN
     RAISE EXCEPTION 'runtime supported writes or settlement idempotency did not match expectations';
   END IF;
 END
@@ -282,6 +301,32 @@ BEGIN
     WHERE "id" = 'role-review-hv-setting-existing';
   EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
   IF NOT denied THEN RAISE EXCEPTION 'runtime changed Human Verification settings identity'; END IF;
+
+  denied := false;
+  BEGIN UPDATE "AuthSession" SET "id" = 'tampered-auth-session-id'
+    WHERE "id" = 'role-review-auth-session-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession identity'; END IF;
+  denied := false;
+  BEGIN UPDATE "AuthSession" SET "userId" = 'role-review-user-b'
+    WHERE "id" = 'role-review-auth-session-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession ownership'; END IF;
+  denied := false;
+  BEGIN UPDATE "AuthSession" SET "tokenIdHash" = 'tampered-session-hash'
+    WHERE "id" = 'role-review-auth-session-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession token binding'; END IF;
+  denied := false;
+  BEGIN UPDATE "AuthSession" SET "expiresAt" = now() + interval '30 days'
+    WHERE "id" = 'role-review-auth-session-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession expiry'; END IF;
+  denied := false;
+  BEGIN UPDATE "AuthSession" SET "createdAt" = now() - interval '30 days'
+    WHERE "id" = 'role-review-auth-session-active';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed AuthSession creation time'; END IF;
 
   denied := false;
   BEGIN DELETE FROM "PaymentSettlement" WHERE "id" = 'role-review-funding-settlement';
