@@ -1,9 +1,8 @@
 import type { Express } from 'express';
 import request from 'supertest';
 import Stripe from 'stripe';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { issueAuthSessionToken } from '../services/authSession.service';
 
 const approved = process.env.SCROLITH_ROLE_HTTP_TEST_APPROVED === 'true';
 const suite = approved ? describe : describe.skip;
@@ -30,8 +29,12 @@ const assertDisposableRuntimeTarget = () => {
 
 if (approved) assertDisposableRuntimeTarget();
 
-const tokenFor = (userId: string) => jwt.sign({ id: userId }, jwtSecret(), { expiresIn: '5m' });
-const authenticatedAs = (userId: string) => ({ Authorization: `Bearer ${tokenFor(userId)}` });
+const sessionTokens = new Map<string, string>();
+const authenticatedAs = (userId: string) => {
+  const token = sessionTokens.get(userId);
+  if (!token) throw new Error('The synthetic user has no issued durable auth session');
+  return { Authorization: `Bearer ${token}` };
+};
 
 suite('financial-history routes under the runtime database role', () => {
   let app: Express;
@@ -55,6 +58,8 @@ suite('financial-history routes under the runtime database role', () => {
       email: `${adminUserId}@example.invalid`,
       role: 'ADMIN'
     } });
+    sessionTokens.set(creatorUserId, await issueAuthSessionToken(creatorUserId));
+    sessionTokens.set(adminUserId, await issueAuthSessionToken(adminUserId));
   });
 
   afterAll(async () => {
