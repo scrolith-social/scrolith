@@ -218,6 +218,7 @@ jobs:
           cleanup() {
             kill "$web_pid" "$api_pid" 2>/dev/null || true
             wait "$web_pid" "$api_pid" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/scrolith-certification-account-a.json" "$RUNNER_TEMP/scrolith-certification-account-b.json"
           }
           trap cleanup EXIT
 
@@ -272,26 +273,51 @@ jobs:
           signup_password="Scrolith-CI-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a@example.invalid"
           signup_b="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b@example.invalid"
-          env -u CERT_EMAIL -u CERT_PASSWORD -u SCROLITH_CERT_EMAIL -u SCROLITH_CERT_PASSWORD \
-            CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
-            SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
-            npx playwright test --config tests/certification/playwright.config.ts \
-              --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
-          env -u CERT_EMAIL -u CERT_PASSWORD -u SCROLITH_CERT_EMAIL -u SCROLITH_CERT_PASSWORD \
-            CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-            SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
-            npx playwright test --config tests/certification/playwright.config.ts \
-              --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
-
-          CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-          CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
-            npx playwright test --config tests/certification/playwright.config.ts \
-              --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
-              --grep-invert 'local signup|Logout revokes the current authenticated session'
-          CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-          CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
-            npx playwright test --config tests/certification/playwright.config.ts \
-              --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
+                --grep-invert 'local signup|Logout revokes the current authenticated session'
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
+          )
 
       - name: Check migration files and patch formatting
         shell: bash
