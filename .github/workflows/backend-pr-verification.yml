@@ -144,9 +144,9 @@ jobs:
         working-directory: geezle
         run: npm ci --registry=https://registry.npmjs.org --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --no-audit --no-fund
 
-      - name: Install Chromium for authenticated browser validation
+      - name: Install Chromium and WebKit for authenticated browser validation
         working-directory: geezle
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Run local signup, Human Verification, authenticated suite, and logout regressions
         shell: bash
@@ -250,7 +250,7 @@ jobs:
               masterEnabled: true,
               emergencyDisabled: false,
               endpoints: { login: true, signup: true, forgot_password: true, password_reset: true },
-              difficulty: 'automatic',
+              difficulty: 'easy',
               challengeTypes: {
                 arithmetic: true, sequence: false, shape_count: false, icon_count: false,
                 largest_number: false, smallest_number: false, odd_even: false, color: false,
@@ -300,6 +300,7 @@ jobs:
             env -i \
               PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
               CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
               CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
               CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
@@ -312,6 +313,7 @@ jobs:
             env -i \
               PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
               CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
               CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
               CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
