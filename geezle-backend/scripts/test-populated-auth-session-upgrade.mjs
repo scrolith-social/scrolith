@@ -291,7 +291,7 @@ try {
 
   const migratorPassword = randomBytes(32).toString('hex');
   const passwordStatement = await admin.query(
-    'SELECT format(\'ALTER ROLE %I PASSWORD %L\', $1, $2) AS statement',
+    'SELECT format(\'ALTER ROLE %I PASSWORD %L\', $1::text, $2::text) AS statement',
     ['scrolith_migrator', migratorPassword]
   );
   await admin.query(passwordStatement.rows[0].statement);
@@ -371,7 +371,7 @@ try {
 
   const runtimePassword = randomBytes(32).toString('hex');
   const runtimePasswordStatement = await admin.query(
-    'SELECT format(\'ALTER ROLE %I PASSWORD %L\', $1, $2) AS statement',
+    'SELECT format(\'ALTER ROLE %I PASSWORD %L\', $1::text, $2::text) AS statement',
     ['scrolith_runtime', runtimePassword]
   );
   await admin.query(runtimePasswordStatement.rows[0].statement);
