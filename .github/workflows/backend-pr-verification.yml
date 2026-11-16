@@ -204,7 +204,11 @@ jobs:
           api_pid=$!
           (
             cd ../geezle
-            exec env \
+            exec env -i \
+              PATH="$PATH" \
+              HOME="$HOME" \
+              CI=true \
+              NODE_ENV=development \
               VITE_BACKEND_URL=http://127.0.0.1:5000 \
               VITE_API_URL=http://127.0.0.1:5000/api \
               VITE_SCROLITH_ENV=ci \
