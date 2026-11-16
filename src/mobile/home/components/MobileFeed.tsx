@@ -37,7 +37,7 @@ import {
   shouldRenderTextBackground
 } from '../../../utils/postTextBackgrounds';
 import { INLINE_VIDEO_PREVIEW_AUTOPLAY } from '../../../utils/inlineMedia';
-import { resolveAssetUrl } from '../../../utils/assetUrl';
+import { isCanonicalApiUploadUrl, resolveAssetUrl } from '../../../utils/assetUrl';
 import { normalizeContentOfferTags } from '../../../utils/contentOffers';
 import {
   resolvePostAttachmentMediaPair,
@@ -361,13 +361,7 @@ const pickFirstMediaEntry = (values: unknown) => {
 };
 
 const isRawApiUploadUrl = (value: unknown) => {
-  const normalized = String(value || '').trim().toLowerCase();
-  return (
-    normalized.startsWith('https://api.scrolith.com/uploads/') ||
-    normalized.startsWith('http://api.scrolith.com/uploads/') ||
-    normalized.startsWith('/uploads/') ||
-    normalized.startsWith('uploads/')
-  );
+  return isCanonicalApiUploadUrl(value);
 };
 
 const listingHasUsableImageFileId = (row: any) => {

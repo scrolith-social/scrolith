@@ -100,6 +100,22 @@ const isCanonicalApiAssetHost = (hostname: string) => {
   return false;
 };
 
+/** True for relative uploads or absolute upload URLs from a known Scrolith API host. */
+export const isCanonicalApiUploadUrl = (value: unknown) => {
+  const raw = String(value || '').trim();
+  const normalized = raw.toLowerCase();
+  if (normalized.startsWith('/uploads/') || normalized.startsWith('uploads/')) return true;
+
+  try {
+    const parsed = new URL(raw);
+    return ['http:', 'https:'].includes(parsed.protocol) &&
+      parsed.pathname.toLowerCase().startsWith('/uploads/') &&
+      isCanonicalApiAssetHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
 /** Pre-signed / tokenized object URLs must never be rewritten (signatures are host-bound). */
 const isSignedOrTokenizedUrl = (url: URL) => {
   for (const key of url.searchParams.keys()) {

@@ -3630,7 +3630,7 @@ const SystemSettings = () => {
                                             preconnectOrigins: normalizeOptimizationArray(e.target.value, [])
                                         }))
                                     }
-                                    placeholder={'https://api.scrolith.com\nhttps://cdn.scrolith.com'}
+                                    placeholder={'https://api.example.invalid\nhttps://cdn.example.invalid'}
                                 />
                                 <p className="text-xs text-gray-500 mt-2">Used when speed hints are enabled.</p>
                             </div>

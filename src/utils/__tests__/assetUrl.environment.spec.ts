@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveAssetUrl } from '../assetUrl';
+import { isCanonicalApiUploadUrl, resolveAssetUrl } from '../assetUrl';
 
 describe('asset URL environment isolation', () => {
   beforeEach(() => {
@@ -23,5 +23,13 @@ describe('asset URL environment isolation', () => {
     const signed = 'https://storage.example.test/file.png?X-Amz-Signature=synthetic';
     expect(resolveAssetUrl(signed)).toBe(signed);
     expect(resolveAssetUrl('https://cdn.example.test/image.png')).toBe('https://cdn.example.test/image.png');
+  });
+
+  it('recognizes canonical API uploads without hardcoding an endpoint URL in callers', () => {
+    expect(isCanonicalApiUploadUrl('/uploads/public.png')).toBe(true);
+    expect(isCanonicalApiUploadUrl('uploads/public.png')).toBe(true);
+    expect(isCanonicalApiUploadUrl('https://api.scrolith.com/uploads/public.png')).toBe(true);
+    expect(isCanonicalApiUploadUrl('https://api.scrolith.com/api/files/content/file-1')).toBe(false);
+    expect(isCanonicalApiUploadUrl('https://storage.example.test/uploads/public.png')).toBe(false);
   });
 });
