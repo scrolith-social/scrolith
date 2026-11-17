@@ -172,6 +172,7 @@ jobs:
           CERT_BASE_URL: http://127.0.0.1:5173
           CERT_API_BASE: http://127.0.0.1:5000/api
           CERT_LOCAL_HV_SOLVER: 'true'
+          CERT_REQUIRE_FEED_FIXTURES: 'true'
           CERT_RESULTS_DIR: ${{ runner.temp }}/scrolith-authenticated-browser-results
         run: |
           set -euo pipefail
@@ -302,6 +303,7 @@ jobs:
               PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
               CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
               CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+              CERT_REQUIRE_FEED_FIXTURES="$CERT_REQUIRE_FEED_FIXTURES" \
               CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
               CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
@@ -334,7 +336,26 @@ jobs:
                 --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
           )
 
+      - name: Sanitize authenticated browser evidence
+        if: always()
+        working-directory: geezle
+        env:
+          CERT_RESULTS_DIR: ${{ runner.temp }}/scrolith-authenticated-browser-results
+          SCROLITH_ROOT_SHA: ${{ github.event.pull_request.head.sha }}
+          RUNNER_OS: ${{ runner.os }}
+        run: node scripts/sanitize-certification-results.mjs
+
+      - name: Upload sanitized authenticated browser evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.2
+        with:
+          name: scrolith-browser-evidence-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/scrolith-authenticated-browser-results/sanitized/
+          if-no-files-found: warn
+          retention-days: 3
+
       - name: Check migration files and patch formatting
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
