@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { CERT_BASE_URL, requireAuthOrSkip } from '../helpers/env';
 
 const CERT_API_BASE = process.env.CERT_API_BASE || '';
@@ -15,6 +16,27 @@ const isLoopback = (value: string) => {
     return false;
   }
 };
+
+async function signOutFromVisibleNavigation(page: Page) {
+  const desktopAccountMenu = page.getByRole('button', { name: 'Open account menu', exact: true });
+  const mobileQuickMenu = page.getByRole('button', { name: 'Open menu', exact: true });
+
+  await expect(
+    desktopAccountMenu.or(mobileQuickMenu).first(),
+    'the authenticated app must expose its responsive account navigation'
+  ).toBeVisible({ timeout: 30_000 });
+
+  if (await mobileQuickMenu.isVisible()) {
+    await mobileQuickMenu.click();
+    const quickMenu = page.getByRole('dialog', { name: 'Quick menu' });
+    await expect(quickMenu).toBeVisible();
+    await quickMenu.getByRole('button', { name: 'Logout', exact: true }).click();
+    return;
+  }
+
+  await desktopAccountMenu.click();
+  await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
+}
 
 test.describe('Logout revokes the current authenticated session', () => {
   test.beforeEach(() => {
@@ -41,8 +63,7 @@ test.describe('Logout revokes the current authenticated session', () => {
     expect(originalToken, 'authenticated browser state must contain a session token').toBeTruthy();
 
     await page.route('**/api/auth/logout', (route) => route.abort('failed'));
-    await page.getByRole('button', { name: 'Open account menu' }).click();
-    await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
+    await signOutFromVisibleNavigation(page);
     await page.waitForURL((url) =>
       url.pathname === '/auth/login' && url.searchParams.get('logout') === 'revocation-unconfirmed'
     );
@@ -97,8 +118,7 @@ test.describe('Logout revokes the current authenticated session', () => {
       }
     });
 
-    await page.getByRole('button', { name: 'Open account menu' }).click();
-    await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
+    await signOutFromVisibleNavigation(page);
 
     const response = await logoutResponse;
     expect(response.status()).toBe(200);
