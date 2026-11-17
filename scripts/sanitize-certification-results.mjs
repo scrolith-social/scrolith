@@ -185,13 +185,29 @@ for (const source of safeEvidencePaths) {
       if (['items_array', 'missing_items', 'invalid_json'].includes(event.responseShape)) item.responseShape = event.responseShape;
       return [item];
     });
+    const rawApprovalPolling = raw.diagnostics?.approvalPolling;
+    const approvalPolling = rawApprovalPolling && typeof rawApprovalPolling === 'object'
+      ? {
+          responseCount: Number.isInteger(rawApprovalPolling.responseCount) ? Math.max(0, rawApprovalPolling.responseCount) : 0,
+          statusCounts: (Array.isArray(rawApprovalPolling.statusCounts) ? rawApprovalPolling.statusCounts : [])
+            .filter((item) => Number.isInteger(item?.status) && item.status >= 100 && item.status <= 599 && Number.isInteger(item?.count))
+            .slice(0, 20)
+            .map((item) => ({ status: item.status, count: Math.max(0, item.count) })),
+          payloadParseFailures: Number.isInteger(rawApprovalPolling.payloadParseFailures) ? Math.max(0, rawApprovalPolling.payloadParseFailures) : 0,
+          pendingRowCount: Number.isInteger(rawApprovalPolling.pendingRowCount) ? Math.max(0, rawApprovalPolling.pendingRowCount) : 0,
+          matchingAttemptResponses: Number.isInteger(rawApprovalPolling.matchingAttemptResponses) ? Math.max(0, rawApprovalPolling.matchingAttemptResponses) : 0,
+          failedRequestCount: Number.isInteger(rawApprovalPolling.failedRequestCount) ? Math.max(0, rawApprovalPolling.failedRequestCount) : 0,
+          elapsedMs: Number.isFinite(rawApprovalPolling.elapsedMs) ? Math.max(0, Math.round(rawApprovalPolling.elapsedMs)) : 0
+        }
+      : undefined;
     const sanitized = {
       schemaVersion: 1,
       scenario: raw.scenario,
       project: safeProject(raw.project),
       testIdHash: /^[a-f0-9]{12}$/.test(raw.testIdHash) ? raw.testIdHash : undefined,
       pageState,
-      apiEvents
+      apiEvents,
+      ...(approvalPolling ? { diagnostics: { approvalPolling } } : {})
     };
     writeFileSync(dest, JSON.stringify(sanitized, null, 2), 'utf8');
     evidenceManifest.push({ name: safeName, type: 'safe_network_and_dom_diagnostics' });

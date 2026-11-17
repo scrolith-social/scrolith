@@ -18,21 +18,22 @@ test('a trusted local session approves a signed-in login from a new device', asy
   test.skip(!CERT_EMAIL || !CERT_PASSWORD, 'Requires a synthetic local certification account');
 
   const trustedApiWatch = watchSafeApiEvents(page);
-  const pendingApprovalIds = new Set<string>();
-  const pendingListObservations: Array<{ status: number; ids: string[] }> = [];
+  const pendingListObservations: Array<{ status: number; ids: string[]; payloadParseFailed: boolean }> = [];
+  const pendingListReads: Promise<void>[] = [];
+  const diagnosticsStartedAt = Date.now();
   const onPendingApprovalList = (response: import('@playwright/test').Response) => {
     const url = new URL(response.url());
     if (response.request().method() !== 'GET' || !url.pathname.endsWith('/api/security/login-approvals/pending')) return;
-    void response.json().then((payload: any) => {
+    const read = response.json().then((payload: any) => {
       const pending = payload?.data?.pendingApprovals;
       const ids = Array.isArray(pending)
         ? pending.map((item: { id?: unknown }) => String(item?.id || '')).filter(Boolean)
         : [];
-      for (const id of ids) pendingApprovalIds.add(id);
-      pendingListObservations.push({ status: response.status(), ids });
+      pendingListObservations.push({ status: response.status(), ids, payloadParseFailed: false });
     }).catch(() => {
-      pendingListObservations.push({ status: response.status(), ids: [] });
+      pendingListObservations.push({ status: response.status(), ids: [], payloadParseFailed: true });
     });
+    pendingListReads.push(read);
   };
   // Observe before starting the second-device login. The trusted page may poll
   // and receive the new row before the login response returns on mobile browsers.
@@ -90,17 +91,26 @@ test('a trusted local session approves a signed-in login from a new device', asy
     expect(loginAttemptId, 'the new-device login must return its pending approval identifier').not.toBe('');
     await expect(newDevicePage.getByText('Waiting for trusted-device approval', { exact: true })).toBeVisible();
 
-    // WebKit correctly suspends polling in a background page. Return to the
-    // trusted device so its visibility handler refreshes the authenticated list.
-    // Match the new attempt so an older empty polling response cannot satisfy
-    // this waiter before the login-approval request has propagated.
+    // WebKit correctly suspends polling in a background page. Bring the trusted
+    // app forward, then remount its normal authenticated UI so the overlay's
+    // initial pending-list request is deterministic across browser lifecycles.
+    // This exercises the real session and API path; it does not inject approval
+    // state or bypass the server authorization check.
     await page.bringToFront();
-    await expect.poll(() => pendingApprovalIds.has(loginAttemptId), {
+    const trustedPendingResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === 'GET' && url.pathname.endsWith('/api/security/login-approvals/pending');
+    }, { timeout: 30_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const pendingResponse = await trustedPendingResponse;
+    expect(pendingResponse.status(), 'the trusted session must receive the authenticated pending-approval list').toBe(200);
+    await expect.poll(() => isLikelyAuthenticated(page), {
       timeout: 30_000,
-      message: 'The trusted session must observe this exact pending approval, including if its response arrived before foregrounding.'
+      message: 'The trusted browser session must remain server-validated after the app remounts.'
     }).toBe(true);
+    await Promise.allSettled(pendingListReads);
     const matchingApprovalResponse = pendingListObservations.find((observation) => observation.ids.includes(loginAttemptId));
-    expect(matchingApprovalResponse?.status, 'the matching pending approval must come from a successful list response').toBe(200);
+    expect(matchingApprovalResponse?.status, 'the exact pending approval must appear in the successful authenticated list response').toBe(200);
 
     const approvalDialog = page.getByRole('dialog', { name: 'New sign-in request' });
     await expect(approvalDialog).toBeVisible({ timeout: 45_000 });
@@ -131,10 +141,31 @@ test('a trusted local session approves a signed-in login from a new device', asy
     if (testInfo.status !== testInfo.expectedStatus) {
       await trustedApiWatch.settle();
       await newDeviceApiWatch?.settle();
+      await Promise.allSettled(pendingListReads);
+      const statusCounts = new Map<number, number>();
+      for (const observation of pendingListObservations) {
+        statusCounts.set(observation.status, (statusCounts.get(observation.status) || 0) + 1);
+      }
+      const matchingAttemptResponses = loginAttemptId
+        ? pendingListObservations.filter((observation) => observation.ids.includes(loginAttemptId)).length
+        : 0;
+      const failedRequestCount = trustedApiWatch.events.filter(
+        (event) => event.kind === 'request_failed' && event.route === 'approval_list'
+      ).length;
       await writeSafeBrowserEvidence(page, testInfo, 'device_approval', [
         ...trustedApiWatch.events,
         ...(newDeviceApiWatch?.events || [])
-      ]).catch(() => undefined);
+      ], {
+        approvalPolling: {
+          responseCount: pendingListObservations.length,
+          statusCounts: Array.from(statusCounts.entries()).map(([status, count]) => ({ status, count })),
+          payloadParseFailures: pendingListObservations.filter((observation) => observation.payloadParseFailed).length,
+          pendingRowCount: pendingListObservations.reduce((total, observation) => total + observation.ids.length, 0),
+          matchingAttemptResponses,
+          failedRequestCount,
+          elapsedMs: Math.max(0, Date.now() - diagnosticsStartedAt)
+        }
+      }).catch(() => undefined);
     }
     await deviceContext?.close();
   }

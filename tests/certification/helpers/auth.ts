@@ -89,7 +89,9 @@ export async function completeFollowOnboardingIfRequired(page: Page) {
   await page.waitForFunction(
     () =>
       window.location.pathname.startsWith('/auth/follow-onboarding') ||
-      Boolean(document.querySelector('[data-testid="scrolith-member-home"]')),
+      Boolean(document.querySelector(
+        '[data-testid="scrolith-member-home"], [data-testid="scrolith-mobile-home"]'
+      )),
     undefined,
     { timeout: 30_000 }
   );

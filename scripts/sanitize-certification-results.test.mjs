@@ -60,6 +60,19 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     project: 'desktop-chrome',
     testIdHash: '012345abcdef',
     pageState: { route: 'member_home', postCardCount: 2, storedUserPresent: true, token: 'SYNTHETIC_TOKEN' },
+    diagnostics: {
+      approvalPolling: {
+        responseCount: 3,
+        statusCounts: [{ status: 200, count: 2 }, { status: 429, count: 1 }],
+        payloadParseFailures: 0,
+        pendingRowCount: 1,
+        matchingAttemptResponses: 1,
+        failedRequestCount: 0,
+        elapsedMs: 1250,
+        attemptId: 'SENSITIVE_SYNTHETIC_ATTEMPT_ID',
+        token: 'SYNTHETIC_TOKEN'
+      }
+    },
     apiEvents: [{
       kind: 'response',
       route: 'feed',
@@ -122,6 +135,13 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     });
     assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
     assert.equal(JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8')).pageState.storedUserPresent, true);
+    const sanitizedSynthetic = JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8'));
+    assert.deepEqual(sanitizedSynthetic.diagnostics.approvalPolling.statusCounts, [
+      { status: 200, count: 2 },
+      { status: 429, count: 1 }
+    ]);
+    assert.equal(sanitizedSynthetic.diagnostics.approvalPolling.matchingAttemptResponses, 1);
+    assert.equal(Object.hasOwn(sanitizedSynthetic.diagnostics.approvalPolling, 'attemptId'), false);
     assert.equal(existsSync(join(outputRoot, 'iphone-15_member-home__device-approval-iphone-15.json')), true);
     const manifest = JSON.parse(readFileSync(join(outputRoot, 'manifest.json'), 'utf8'));
     assert.equal(manifest.isolatedRunCount, 2);
@@ -134,6 +154,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       'SYNTHETIC_PASSWORD',
       'SYNTHETIC_STACK',
       'SYNTHETIC_TOKEN',
+      'SENSITIVE_SYNTHETIC_ATTEMPT_ID',
       'SYNTHETIC_BODY',
       'RAW_TEST_OUTPUT_MUST_NOT_BE_READ',
       'RAW_HTML_REPORT_MUST_NOT_BE_READ',

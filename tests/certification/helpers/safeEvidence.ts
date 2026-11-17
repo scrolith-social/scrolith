@@ -41,6 +41,18 @@ export type SafeApiWatch = {
   settle: () => Promise<void>;
 };
 
+export type SafeBrowserDiagnostics = {
+  approvalPolling?: {
+    responseCount: number;
+    statusCounts: Array<{ status: number; count: number }>;
+    payloadParseFailures: number;
+    pendingRowCount: number;
+    matchingAttemptResponses: number;
+    failedRequestCount: number;
+    elapsedMs: number;
+  };
+};
+
 export function watchSafeApiEvents(page: Page): SafeApiWatch {
   const events: SafeApiEvent[] = [];
   const pending: Promise<void>[] = [];
@@ -113,7 +125,8 @@ export async function writeSafeBrowserEvidence(
   page: Page,
   testInfo: TestInfo,
   scenario: 'device_approval' | 'member_home_feed' | 'notifications' | 'signup_hv',
-  apiEvents: SafeApiEvent[]
+  apiEvents: SafeApiEvent[],
+  diagnostics?: SafeBrowserDiagnostics
 ) {
   const outputRoot = process.env.CERT_RESULTS_DIR;
   if (!outputRoot) throw new Error('CERT_RESULTS_DIR is required for safe browser evidence.');
@@ -173,7 +186,8 @@ export async function writeSafeBrowserEvidence(
         project,
         testIdHash: suffix,
         pageState,
-        apiEvents: sanitizedEvents
+        apiEvents: sanitizedEvents,
+        ...(diagnostics ? { diagnostics } : {})
       },
       null,
       2
