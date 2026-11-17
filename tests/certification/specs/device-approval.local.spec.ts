@@ -18,6 +18,9 @@ test('a trusted local session approves a signed-in login from a new device', asy
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
+  await expect.poll(() => isLikelyAuthenticated(page), {
+    message: 'The trusted device must have a real authenticated synthetic session.'
+  }).toBe(true);
 
   const projectUse = testInfo.project.use as Record<string, unknown>;
   const viewport = projectUse.viewport as { width: number; height: number } | undefined;
@@ -66,8 +69,13 @@ test('a trusted local session approves a signed-in login from a new device', asy
     expect(loginOutcome.code).toBe('LOGIN_APPROVAL_REQUIRED');
     await expect(newDevicePage.getByText('Waiting for trusted-device approval', { exact: true })).toBeVisible();
 
+    // The authenticated page must refresh its pending-request list even if the
+    // realtime notification is delayed or unavailable on this browser engine.
+    const trustedApprovalRefresh = await trustedApprovalRefreshPromise;
+    expect(trustedApprovalRefresh.status()).toBe(200);
+
     const approvalDialog = page.getByRole('dialog', { name: 'New sign-in request' });
-    await expect(approvalDialog).toBeVisible({ timeout: 30_000 });
+    await expect(approvalDialog).toBeVisible({ timeout: 45_000 });
 
     const exchangeResponsePromise = newDevicePage.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -78,7 +86,6 @@ test('a trusted local session approves a signed-in login from a new device', asy
     expect(exchangeResponse.status()).toBe(200);
     await expect(newDevicePage).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/, { timeout: 30_000 });
     await expect.poll(() => isLikelyAuthenticated(newDevicePage)).toBe(true);
-    expect((await trustedApprovalRefreshPromise).status()).toBe(200);
     const apiBase = String(process.env.CERT_API_BASE || '');
     expect(isLoopback(apiBase), 'Authenticated verification must use the explicit loopback API origin').toBe(true);
     const currentUserStatus = await newDevicePage.evaluate(async (base) => {

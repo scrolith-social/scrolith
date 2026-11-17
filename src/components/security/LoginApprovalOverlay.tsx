@@ -21,6 +21,7 @@ type PendingApproval = {
 
 const REQUEST_EVENTS = ['security.login_approval.requested', 'security:login_approval_required', LOGIN_APPROVAL_OPEN_EVENT];
 const RESOLUTION_EVENTS = ['security.login_approval.updated', 'security.login_approval.resolved', 'security:login_approval_updated'];
+const PENDING_APPROVAL_POLL_INTERVAL_MS = 15_000;
 
 const normalizeStatus = (value: unknown) => String(value || 'PENDING').trim().toUpperCase();
 
@@ -79,6 +80,15 @@ export const LoginApprovalOverlay: React.FC = () => {
 
     traceDeviceSecurity('approval_realtime_listener_started', { realtimeListenerStarted: true });
     void refreshPending();
+    // Realtime is a fast path, not the source of truth. A polling fallback lets
+    // an authenticated device discover a request if a socket event is missed.
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshPending();
+    }, PENDING_APPROVAL_POLL_INTERVAL_MS);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refreshPending();
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     const listeners = REQUEST_EVENTS.map((eventName) => {
       const handler = (event: Event) => {
         const detail = (event as CustomEvent).detail;
@@ -102,6 +112,8 @@ export const LoginApprovalOverlay: React.FC = () => {
     });
     return () => {
       isMountedRef.current = false;
+      window.clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
       listeners.forEach((cleanup) => cleanup());
       resolutions.forEach((cleanup) => cleanup());
     };
