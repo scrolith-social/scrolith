@@ -26,7 +26,10 @@ test('local signup recovers from Human Verification service failure and complete
     let createCalls = 0;
     await page.route('**/api/human-verification/create', async (route) => {
       createCalls += 1;
-      if (createCalls === 1) {
+      // The service retries transient 5xx responses once. Keep both attempts
+      // of the initial load unavailable so this test actually reaches the
+      // rendered failure state before exercising the user's Refresh action.
+      if (createCalls <= 2) {
         await route.fulfill({
           status: 503,
           contentType: 'application/json',
@@ -41,12 +44,14 @@ test('local signup recovers from Human Verification service failure and complete
     const verification = page.getByTestId('scrolith-human-verification');
     await expect(verification).toBeVisible();
     await expect(verification).toContainText(/verification.*temporary issue/i);
+    expect(createCalls, 'initial challenge load should exhaust its one automatic retry').toBe(2);
 
     const refreshResponse = page.waitForResponse((response) =>
       response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/api/human-verification/create')
     );
     await verification.getByRole('button', { name: 'Refresh challenge' }).click();
     expect((await refreshResponse).status()).toBe(200);
+    expect(createCalls, 'manual refresh should issue exactly one new challenge request').toBe(3);
     const answerOptions = verification.getByRole('group', { name: 'Answer options' });
     await expect(answerOptions).toBeVisible();
 
