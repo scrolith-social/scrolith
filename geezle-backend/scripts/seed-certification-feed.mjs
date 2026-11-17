@@ -6,7 +6,7 @@ import pg from 'pg';
 await import('./test-db-guard.mjs');
 
 const email = String(process.env.SCROLITH_E2E_SIGNUP_EMAIL || '').trim().toLowerCase();
-if (!/^scrolith-e2e-\d+-\d+-b@example\.invalid$/.test(email)) {
+if (!/^scrolith-e2e-\d+-\d+(?:-(?:desktop-chrome|pixel-7|iphone-15|mobile-390))?-b@example\.invalid$/.test(email)) {
   throw new Error('Refusing to seed certification content for an unrecognized synthetic account.');
 }
 const authorEmail = email.replace(/-b@/, '-a@');
@@ -30,6 +30,9 @@ try {
   const seedPost = async (postEmail, owner, label) => {
     const suffix = createHash('sha256').update(postEmail).digest('hex').slice(0, 28);
     const id = `cert-feed-${suffix}`;
+    const content = label === 'cross-account'
+      ? `SCROLITH_CI_LONG_CONTENT_FIXTURE — Synthetic authenticated cross-account feed post. ${'This paragraph deliberately exercises realistic long-form post layout, wrapping, translation text bounds, and responsive action controls. '.repeat(12)}`
+      : 'Synthetic viewer-account post used to validate authenticated feed rendering.';
     const existing = await prisma.communityPost.findUnique({ where: { id }, select: { authorId: true } });
     if (existing && existing.authorId !== owner.id) {
       throw new Error('The deterministic certification fixture ID is already owned by another account.');
@@ -39,7 +42,7 @@ try {
       where: { id },
       update: {
         title: 'Certification feed fixture',
-        content: `Synthetic ${label} post used to validate authenticated feed and post-card rendering.`,
+        content,
         visibility: 'public',
         status: 'active'
       },
@@ -47,7 +50,7 @@ try {
         id,
         authorId: owner.id,
         title: 'Certification feed fixture',
-        content: `Synthetic ${label} post used to validate authenticated feed and post-card rendering.`,
+        content,
         visibility: 'public',
         status: 'active'
       }
@@ -59,33 +62,7 @@ try {
     seedPost(email, viewer, 'viewer-account')
   ]);
 
-  const scrollSuffix = createHash('sha256').update(authorEmail).digest('hex').slice(0, 28);
-  const scrollId = `cert-scroll-${scrollSuffix}`;
-  const existingScroll = await prisma.scrollVideo.findUnique({ where: { id: scrollId }, select: { authorId: true } });
-  if (existingScroll && existingScroll.authorId !== author.id) {
-    throw new Error('The deterministic certification scroll ID is already owned by another account.');
-  }
-
-  await prisma.scrollVideo.upsert({
-    where: { id: scrollId },
-    update: {
-      fileId: `cert-scroll-placeholder-${scrollSuffix}`,
-      title: 'Certification scroll fixture',
-      description: 'Synthetic public item used to validate the authenticated interest survey.',
-      visibility: 'public',
-      status: 'active'
-    },
-    create: {
-      id: scrollId,
-      authorId: author.id,
-      fileId: `cert-scroll-placeholder-${scrollSuffix}`,
-      title: 'Certification scroll fixture',
-      description: 'Synthetic public item used to validate the authenticated interest survey.',
-      visibility: 'public',
-      status: 'active'
-    }
-  });
-  console.log('Synthetic cross-account feed and scroll fixtures are ready.');
+  console.log('Synthetic cross-account feed fixtures are ready.');
 } finally {
   await prisma.$disconnect();
   await pool.end();

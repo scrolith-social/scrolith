@@ -167,6 +167,7 @@ jobs:
           PORT: '5000'
           FRONTEND_ORIGIN: http://127.0.0.1:5173
           FRONTEND_URL: http://127.0.0.1:5173
+          PUBLIC_API_URL: http://127.0.0.1:5000
           JWT_SECRET: scrolith_ci_only_auth_browser_secret_2026_local_validation
           DISABLE_BACKGROUND_WORKERS: 'true'
           SCROLITH_MONEY_MOVEMENT_ENABLED: 'false'
@@ -224,6 +225,9 @@ jobs:
             kill "$web_pid" "$api_pid" 2>/dev/null || true
             wait "$web_pid" "$api_pid" 2>/dev/null || true
             rm -f "$RUNNER_TEMP/scrolith-certification-account-a.json" "$RUNNER_TEMP/scrolith-certification-account-b.json" "$RUNNER_TEMP/scrolith-certification-logout.json"
+            for project in desktop-chrome pixel-7 iphone-15 mobile-390; do
+              rm -f "$RUNNER_TEMP/scrolith-certification-${project}-a.json" "$RUNNER_TEMP/scrolith-certification-${project}-b.json"
+            done
           }
           trap cleanup EXIT
 
@@ -276,84 +280,85 @@ jobs:
           NODE
 
           signup_password="Scrolith-CI-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a@example.invalid"
-          signup_b="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b@example.invalid"
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
-              SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
-          )
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-              SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
-          )
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
-              CERT_EMAIL="$signup_a" CERT_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
-                tests/certification/specs/device-approval.local.spec.ts
-          )
-          SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
-          CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-            CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-            node scripts/verify-certification-feed.mjs
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
-              CERT_REQUIRE_FEED_FIXTURES="$CERT_REQUIRE_FEED_FIXTURES" \
-              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
-                --grep-invert 'local signup|Logout revokes the current authenticated session|a trusted local session approves a signed-in login from a new device'
-          )
-          logout_email="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-logout@example.invalid"
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-logout.json" \
-              SCROLITH_E2E_SIGNUP_EMAIL="$logout_email" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
-          )
-          (
-            cd ../geezle
-            env -i \
-              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
-              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
-              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
-              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-logout.json" \
-              CERT_EMAIL="$logout_email" CERT_PASSWORD="$signup_password" \
-              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
-                --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
-          )
+          projects=(desktop-chrome pixel-7 iphone-15 mobile-390)
+          for project in "${projects[@]}"; do
+            for account in a b; do
+              signup_email="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${project}-${account}@example.invalid"
+              state_file="$RUNNER_TEMP/scrolith-certification-${project}-${account}.json"
+              run_results_dir="$CERT_RESULTS_DIR/$project/signup-$account"
+              mkdir -p "$run_results_dir"
+              (
+                cd ../geezle
+                env -i \
+                  PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+                  CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+                  CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$run_results_dir" \
+                  CERT_STORAGE_STATE="$state_file" CERT_BROWSER_PROJECT="$project" \
+                  SCROLITH_E2E_SIGNUP_EMAIL="$signup_email" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+                  ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                    --project="$project" tests/certification/specs/signup-human-verification.local.spec.ts
+              )
+            done
+
+            signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${project}-a@example.invalid"
+            signup_b="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${project}-b@example.invalid"
+            state_a="$RUNNER_TEMP/scrolith-certification-${project}-a.json"
+            state_b="$RUNNER_TEMP/scrolith-certification-${project}-b.json"
+            device_results_dir="$CERT_RESULTS_DIR/$project/device-approval"
+            authenticated_results_dir="$CERT_RESULTS_DIR/$project/authenticated"
+            logout_results_dir="$CERT_RESULTS_DIR/$project/logout"
+            mkdir -p "$device_results_dir" "$authenticated_results_dir" "$logout_results_dir"
+
+            SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
+            CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_STORAGE_STATE="$state_b" node scripts/verify-certification-feed.mjs
+            (
+              cd ../geezle
+              env -i \
+                PATH="$PATH" HOME="$HOME" NODE_ENV=test \
+                CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+                CERT_STORAGE_STATE="$state_a" SCROLITH_E2E_VIEWER_STORAGE_STATE="$state_b" \
+                SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" CERT_BROWSER_PROJECT="$project" \
+                node scripts/seed-certification-scroll.mjs
+            )
+
+            (
+              cd ../geezle
+              env -i \
+                PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+                CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+                CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$device_results_dir" \
+                CERT_STORAGE_STATE="$state_a" CERT_BROWSER_PROJECT="$project" \
+                CERT_EMAIL="$signup_a" CERT_PASSWORD="$signup_password" \
+                ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                  --project="$project" tests/certification/specs/device-approval.local.spec.ts
+            )
+
+            (
+              cd ../geezle
+              env -i \
+                PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+                CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+                CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+                CERT_REQUIRE_FEED_FIXTURES="$CERT_REQUIRE_FEED_FIXTURES" \
+                CERT_RESULTS_DIR="$authenticated_results_dir" CERT_STORAGE_STATE="$state_b" \
+                CERT_BROWSER_PROJECT="$project" CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+                ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                  --project="$project" \
+                  --grep-invert 'local signup|Logout revokes the current authenticated session|a trusted local session approves a signed-in login from a new device'
+            )
+
+            (
+              cd ../geezle
+              env -i \
+                PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+                CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+                CERT_RESULTS_DIR="$logout_results_dir" CERT_STORAGE_STATE="$state_b" \
+                CERT_BROWSER_PROJECT="$project" CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+                ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                  --project="$project" tests/certification/specs/logout.auth.spec.ts
+            )
+          done
 
       - name: Sanitize authenticated browser evidence
         if: always()
@@ -363,8 +368,14 @@ jobs:
           SCROLITH_ROOT_SHA: ${{ github.event.pull_request.head.sha }}
           RUNNER_OS: ${{ runner.os }}
         run: |
-          node --test scripts/sanitize-certification-results.test.mjs
-          node scripts/sanitize-certification-results.mjs
+          sanitizer_test_status=0
+          sanitize_status=0
+          node --test scripts/sanitize-certification-results.test.mjs || sanitizer_test_status=$?
+          node scripts/sanitize-certification-results.mjs || sanitize_status=$?
+          if (( sanitizer_test_status != 0 || sanitize_status != 0 )); then
+            echo "Sanitizer test exit: $sanitizer_test_status; sanitizer exit: $sanitize_status" >&2
+            exit 1
+          fi
 
       - name: Upload sanitized authenticated browser evidence
         if: always()
