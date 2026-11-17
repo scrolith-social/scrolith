@@ -27,6 +27,18 @@ export function postCards(page: Page): Locator {
   return page.locator(POST_CARD);
 }
 
+export const REQUIRED_LONG_CONTENT_MARKER = 'SCROLITH_CI_LONG_CONTENT_FIXTURE';
+
+/** CI selects an exact public synthetic post so card and long-content checks do not depend on feed ranking. */
+export async function selectCertificationPostCard(page: Page, fallback: Locator): Promise<Locator> {
+  const seededCard = postCards(page).filter({ hasText: REQUIRED_LONG_CONTENT_MARKER }).first();
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    await expect(seededCard, 'the deterministic cross-account long-content fixture must be in the feed').toBeVisible({ timeout: 15_000 });
+    return seededCard;
+  }
+  return (await seededCard.count()) > 0 ? seededCard : fallback;
+}
+
 /** CI uses explicitly seeded public fixtures; absence is a failure there, not a pass-by-skip. */
 export async function skipOrFailWhenFeedFixtureMissing(
   test: { skip: (condition: boolean, description?: string) => void },
@@ -248,6 +260,15 @@ export async function assertActionRowEqualColumns(card: Locator) {
   const max = Math.max(...widths);
   // Equal-width grid cells may differ by a few px due to badges
   expect(max - min, `action widths ${widths.join(',')}`).toBeLessThanOrEqual(24);
+}
+
+export async function assertRequiredPostControls(card: Locator) {
+  const actionRow = card.locator(POST_ACTIONS);
+  await expect(actionRow, 'the synthetic feed card must render its action row').toBeVisible();
+  const controls = actionRow.locator('button[data-post-action-control="true"]');
+  await expect(controls.first(), 'the synthetic feed card must render post controls').toBeVisible();
+  expect(await controls.count(), 'at least two post controls must be available for the layout and accessibility checks').toBeGreaterThanOrEqual(2);
+  await expect(card.getByRole('button', { name: 'Comment', exact: true })).toBeVisible();
 }
 
 export async function assertSurveyEqualButtons(card: Locator) {

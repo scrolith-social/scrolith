@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,15 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
   const resultsRoot = join(testRoot, 'results');
   const safeEvidenceRoot = join(resultsRoot, 'safe-evidence');
   mkdirSync(safeEvidenceRoot, { recursive: true });
+  const secondRunRoot = join(resultsRoot, 'iphone-15', 'member-home');
+  const secondEvidenceRoot = join(secondRunRoot, 'safe-evidence');
+  mkdirSync(secondEvidenceRoot, { recursive: true });
+  const rawTestOutput = join(secondRunRoot, 'test-output', 'raw');
+  const rawHtmlReport = join(secondRunRoot, 'html-report', 'data');
+  mkdirSync(rawTestOutput, { recursive: true });
+  mkdirSync(rawHtmlReport, { recursive: true });
+  writeFileSync(join(rawTestOutput, 'cert-results.json'), JSON.stringify({ suites: [{ specs: [{ title: 'RAW_TEST_OUTPUT_MUST_NOT_BE_READ' }] }] }));
+  writeFileSync(join(rawHtmlReport, 'cert-results.json'), JSON.stringify({ suites: [{ specs: [{ title: 'RAW_HTML_REPORT_MUST_NOT_BE_READ' }] }] }));
 
   const scenarios = [
     { title: 'passed', status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', duration: 1 }] },
@@ -50,7 +59,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     scenario: 'member_home_feed',
     project: 'desktop-chrome',
     testIdHash: '012345abcdef',
-    pageState: { route: 'member_home', postCardCount: 2, token: 'SYNTHETIC_TOKEN' },
+    pageState: { route: 'member_home', postCardCount: 2, storedUserPresent: true, token: 'SYNTHETIC_TOKEN' },
     apiEvents: [{
       kind: 'response',
       route: 'feed',
@@ -61,6 +70,31 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       url: 'http://127.0.0.1/private?token=SYNTHETIC_TOKEN',
       body: 'SYNTHETIC_BODY'
     }]
+  }));
+  writeFileSync(join(secondRunRoot, 'cert-results.json'), JSON.stringify({
+    suites: [{
+      title: 'Isolated WebKit run',
+      specs: [{
+        title: 'synthetic browser state',
+        file: 'tests/synthetic-webkit.spec.ts',
+        line: 11,
+        tests: [{
+          title: 'WebKit authenticated state',
+          projectName: 'iphone-15',
+          status: 'expected',
+          expectedStatus: 'passed',
+          results: [{ status: 'passed', duration: 5 }]
+        }]
+      }]
+    }]
+  }));
+  writeFileSync(join(secondEvidenceRoot, 'device-approval-iphone-15.json'), JSON.stringify({
+    schemaVersion: 1,
+    scenario: 'device_approval',
+    project: 'iphone-15',
+    testIdHash: 'fedcba987654',
+    pageState: { route: 'login', storedUserPresent: false, approvalDialogCount: 1 },
+    apiEvents: [{ kind: 'response', route: 'approval_list', method: 'GET', status: 200 }]
   }));
 
   try {
@@ -78,7 +112,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     const outputRoot = join(resultsRoot, 'sanitized');
     const summary = JSON.parse(readFileSync(join(outputRoot, 'test-summary.json'), 'utf8'));
     assert.deepEqual(summary.counts, {
-      passed: 1,
+      passed: 2,
       failed: 1,
       flaky: 1,
       skipped: 1,
@@ -86,6 +120,13 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       interrupted: 0,
       unknown: 0
     });
+    assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
+    assert.equal(JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8')).pageState.storedUserPresent, true);
+    assert.equal(existsSync(join(outputRoot, 'iphone-15_member-home__device-approval-iphone-15.json')), true);
+    const manifest = JSON.parse(readFileSync(join(outputRoot, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.isolatedRunCount, 2);
+    const evidenceManifest = JSON.parse(readFileSync(join(outputRoot, 'evidence-manifest.json'), 'utf8'));
+    assert.equal(evidenceManifest.files.some((item) => item.name === 'iphone-15_member-home__device-approval-iphone-15.json'), true);
 
     const safeOutput = listFiles(outputRoot).map((path) => readFileSync(path, 'utf8')).join('\n');
     for (const marker of [
@@ -94,6 +135,8 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       'SYNTHETIC_STACK',
       'SYNTHETIC_TOKEN',
       'SYNTHETIC_BODY',
+      'RAW_TEST_OUTPUT_MUST_NOT_BE_READ',
+      'RAW_HTML_REPORT_MUST_NOT_BE_READ',
       'http://127.0.0.1/private'
     ]) {
       assert.equal(safeOutput.includes(marker), false, `sanitized output leaked ${marker}`);

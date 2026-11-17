@@ -10,14 +10,11 @@ const isLoopbackUrl = (value: string) => {
   }
 };
 
-/** Solve only the challenge that is visibly rendered by an explicitly local test app. */
-export async function solveLocalHumanVerification(page: Page) {
-  if (process.env.CERT_LOCAL_HV_SOLVER !== 'true') return;
-  if (!isLoopbackUrl(CERT_BASE_URL)) {
-    throw new Error('CERT_LOCAL_HV_SOLVER requires an explicitly configured loopback CERT_BASE_URL');
-  }
-
-  const verification = page.getByTestId('scrolith-human-verification');
+/** Answer only the supported arithmetic challenge visibly rendered by a local test app. */
+export async function answerLocalHumanVerification(
+  page: Page,
+  verification = page.getByTestId('scrolith-human-verification')
+): Promise<string> {
   await verification.waitFor({ state: 'visible', timeout: 15_000 });
   const options = verification.getByRole('group', { name: 'Answer options' });
   await options.waitFor({ state: 'visible', timeout: 15_000 });
@@ -27,8 +24,30 @@ export async function solveLocalHumanVerification(page: Page) {
   const left = Number(expression[1]);
   const right = Number(expression[3]);
   const answer = String(expression[2] === '+' ? left + right : left - right);
-  await options.getByRole('button', { name: `Select ${answer}`, exact: true }).click();
+  const answerButton = options.getByRole('button', { name: `Select ${answer}`, exact: true });
+  await answerButton.scrollIntoViewIfNeeded();
+  await expect(answerButton).toBeVisible();
+  await expect(answerButton).toBeEnabled();
+  const supportsTouch = await page.evaluate(() => navigator.maxTouchPoints > 0);
+  if (supportsTouch) {
+    const bounds = await answerButton.boundingBox();
+    if (!bounds) throw new Error('The visible Human Verification answer has no touch target.');
+    await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  } else {
+    await answerButton.click();
+  }
   await verification.getByRole('status').filter({ hasText: /verified/i }).waitFor({ state: 'visible', timeout: 10_000 });
+  return answer;
+}
+
+/** Solve only the challenge visibly rendered by an explicitly local test app. */
+export async function solveLocalHumanVerification(page: Page) {
+  if (process.env.CERT_LOCAL_HV_SOLVER !== 'true') return;
+  if (!isLoopbackUrl(CERT_BASE_URL)) {
+    throw new Error('CERT_LOCAL_HV_SOLVER requires an explicitly configured loopback CERT_BASE_URL');
+  }
+
+  await answerLocalHumanVerification(page);
 }
 
 /**
@@ -162,19 +181,26 @@ export async function injectToken(page: Page, token: string, user?: Record<strin
 
 export async function isLikelyAuthenticated(page: Page) {
   if (!isLoopbackUrl(CERT_API_BASE)) return false;
-  return page.evaluate(async (apiBase) => {
-    try {
-      const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
-      if (!token) return false;
-      const response = await fetch(`${apiBase.replace(/\/+$/, '')}/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-        credentials: 'omit'
-      });
-      return response.status === 200;
-    } catch {
-      return false;
-    }
-  }, CERT_API_BASE);
+  try {
+    return await page.evaluate(async (apiBase) => {
+      try {
+        const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
+        if (!token) return false;
+        const response = await fetch(`${apiBase.replace(/\/+$/, '')}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+          credentials: 'omit'
+        });
+        return response.status === 200;
+      } catch {
+        return false;
+      }
+    }, CERT_API_BASE);
+  } catch {
+    // A navigation can destroy the execution context while the login approval
+    // exchange redirects to the authenticated route. The caller's poll retries
+    // and still requires an HTTP 200 from the local /auth/me endpoint.
+    return false;
+  }
 }
 
 /**

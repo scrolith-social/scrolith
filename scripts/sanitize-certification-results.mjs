@@ -1,21 +1,25 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 const resultsRoot = resolve(process.env.CERT_RESULTS_DIR || '');
 if (!process.env.CERT_RESULTS_DIR) throw new Error('CERT_RESULTS_DIR is required.');
 const outputRoot = join(resultsRoot, 'sanitized');
-const safeEvidenceRoot = join(resultsRoot, 'safe-evidence');
 mkdirSync(outputRoot, { recursive: true });
 
 const redactText = (value) => String(value || '')
   .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email-redacted]')
+  .replace(/https?:\/\/[^\s"'<>]+/gi, '[url-redacted]')
   .replace(/bearer\s+[^\s"']+/gi, 'Bearer [redacted]')
   .replace(/(token|password|secret|credential)[=: ]+[^\s"']+/gi, '$1=[redacted]')
   .replace(/[A-Za-z]:\\[^\s"']+/g, '[local-path-redacted]')
   .slice(0, 240);
 
 const safeProject = (value) => /^[a-z0-9_-]{1,40}$/i.test(String(value || '')) ? String(value) : 'unknown';
+const safeRunName = (value) => {
+  const normalized = String(value || '').split(sep).filter(Boolean).join('_');
+  return /^[a-z0-9_-]{1,100}$/i.test(normalized) ? normalized : 'unknown';
+};
 const safeStatuses = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted', 'expected', 'unknown']);
 const statusOf = (value) => safeStatuses.has(value) ? value : 'unknown';
 const testStatusOf = (test, finalResult) => {
@@ -26,6 +30,22 @@ const testStatusOf = (test, finalResult) => {
   }
   return statusOf(value);
 };
+
+function findFiles(root, predicate, files = []) {
+  if (!existsSync(root)) return files;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      const excludedDirectory = /^(?:blob-report|html-report|playwright-report|sanitized|test-output)$/i.test(entry.name);
+      if (resolve(path) !== outputRoot && !excludedDirectory) {
+        findFiles(path, predicate, files);
+      }
+    } else if (entry.isFile() && predicate(path)) {
+      files.push(path);
+    }
+  }
+  return files;
+}
 const classifyError = (value) => {
   const text = String(value || '');
   if (/timeout|timed out/i.test(text)) return 'timeout';
@@ -71,16 +91,19 @@ function collectTests(suite, parents = [], output = []) {
   return output;
 }
 
-const rawReportPath = join(resultsRoot, 'cert-results.json');
 let tests = [];
 let reportAvailable = false;
-if (existsSync(rawReportPath)) {
+let validReportCount = 0;
+const rawReportPaths = findFiles(resultsRoot, (path) => basename(path) === 'cert-results.json');
+for (const rawReportPath of rawReportPaths) {
   try {
     const raw = JSON.parse(readFileSync(rawReportPath, 'utf8'));
-    tests = collectTests({ suites: raw.suites || [] });
+    const runName = safeRunName(relative(resultsRoot, dirname(rawReportPath)) || 'default');
+    tests.push(...collectTests({ suites: raw.suites || [] }).map((item) => ({ ...item, run: runName })));
     reportAvailable = true;
+    validReportCount += 1;
   } catch {
-    reportAvailable = false;
+    // Malformed report output is excluded; other isolated runs remain reportable.
   }
 }
 
@@ -103,6 +126,7 @@ const manifest = {
   playwrightVersion,
   runnerOs: ['Linux', 'Windows', 'macOS'].includes(process.env.RUNNER_OS || '') ? process.env.RUNNER_OS : process.platform,
   generatedAtUtc: new Date().toISOString(),
+  isolatedRunCount: validReportCount,
   rawPlaywrightReportAvailable: reportAvailable,
   rawArtifactsUploaded: false
 };
@@ -110,22 +134,26 @@ const manifest = {
 writeFileSync(join(outputRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 writeFileSync(join(outputRoot, 'test-summary.json'), JSON.stringify({ schemaVersion: 1, counts, tests }, null, 2), 'utf8');
 
-const safeEvidenceFiles = existsSync(safeEvidenceRoot) ? readdirSync(safeEvidenceRoot) : [];
+const safeEvidencePaths = findFiles(resultsRoot, (path) => basename(dirname(path)) === 'safe-evidence');
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const allowedRoutes = new Set(['feed', 'login', 'approval_list', 'approval_exchange', 'notifications']);
-const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications']);
+const allowedRoutes = new Set(['feed', 'auth_me', 'login', 'approval_list', 'approval_exchange', 'notifications', 'human_verification']);
+const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications', 'signup_hv']);
 const allowedFailureKinds = new Set(['timeout', 'connection', 'aborted', 'other']);
 const evidenceManifest = [];
 
-for (const name of safeEvidenceFiles) {
+for (const source of safeEvidencePaths) {
+  const name = basename(source);
   if (!/^[a-z0-9_-]{1,100}\.(json|png)$/i.test(name)) continue;
-  const source = join(safeEvidenceRoot, name);
-  const dest = join(outputRoot, name);
+  const evidenceRun = safeRunName(
+    relative(resultsRoot, dirname(source)).split(sep).filter((part) => part !== 'safe-evidence').join('_') || 'default'
+  );
+  const safeName = evidenceRun === 'default' ? name : `${evidenceRun}__${name}`;
+  const dest = join(outputRoot, safeName);
   if (name.endsWith('.png')) {
     const bytes = readFileSync(source);
     if (bytes.length <= 10 * 1024 * 1024 && bytes.subarray(0, 8).equals(pngSignature)) {
       copyFileSync(source, dest);
-      evidenceManifest.push({ name, type: 'masked_screenshot' });
+      evidenceManifest.push({ name: safeName, type: 'masked_screenshot' });
     }
     continue;
   }
@@ -134,10 +162,11 @@ for (const name of safeEvidenceFiles) {
     if (raw.schemaVersion !== 1 || !allowedScenarios.has(raw.scenario)) continue;
     const counts = raw.pageState && typeof raw.pageState === 'object' ? raw.pageState : {};
     const pageState = {
-      route: ['member_home', 'notifications', 'login', 'other', 'unavailable'].includes(counts.route) ? counts.route : 'unavailable',
+      route: ['member_home', 'notifications', 'login', 'signup', 'other', 'unavailable'].includes(counts.route) ? counts.route : 'unavailable',
       readyState: ['loading', 'interactive', 'complete', 'unavailable'].includes(counts.readyState) ? counts.readyState : 'unavailable',
       visibility: ['visible', 'hidden', 'prerender', 'unavailable'].includes(counts.visibility) ? counts.visibility : 'unavailable',
       authenticatedStoragePresent: counts.authenticatedStoragePresent === true,
+      storedUserPresent: counts.storedUserPresent === true,
       postCardCount: Number.isInteger(counts.postCardCount) ? Math.max(0, counts.postCardCount) : 0,
       mainCount: Number.isInteger(counts.mainCount) ? Math.max(0, counts.mainCount) : 0,
       loginFormCount: Number.isInteger(counts.loginFormCount) ? Math.max(0, counts.loginFormCount) : 0,
@@ -165,7 +194,7 @@ for (const name of safeEvidenceFiles) {
       apiEvents
     };
     writeFileSync(dest, JSON.stringify(sanitized, null, 2), 'utf8');
-    evidenceManifest.push({ name, type: 'safe_network_and_dom_diagnostics' });
+    evidenceManifest.push({ name: safeName, type: 'safe_network_and_dom_diagnostics' });
   } catch {
     // Unknown or malformed evidence is excluded rather than copied raw.
   }

@@ -6,10 +6,12 @@ import {
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
   assertPostCardNoOverflow,
+  assertRequiredPostControls,
   assertSurveyEqualButtons,
   assertTypographyScale,
   measureDocumentOverflowX,
   postCards,
+  selectCertificationPostCard,
   skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
@@ -47,9 +49,10 @@ test.describe('Mobile emulation — post card cert', () => {
       return;
     }
 
-    const card = cards.first();
+    const card = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(card);
     await assertTypographyScale(card);
+    await assertRequiredPostControls(card);
     await assertActionRowEqualColumns(card);
     await assertSurveyEqualButtons(card);
     await assertPostCardNoOverflow(card);

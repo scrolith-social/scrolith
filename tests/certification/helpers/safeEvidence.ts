@@ -6,7 +6,7 @@ import type { Page, TestInfo } from '@playwright/test';
 type SafeApiEvent = {
   kind: 'response' | 'request_failed';
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OTHER';
-  route: 'feed' | 'auth_me' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications';
+  route: 'feed' | 'auth_me' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications' | 'human_verification';
   status?: number;
   durationMs?: number;
   failure?: 'timeout' | 'connection' | 'aborted' | 'other';
@@ -20,7 +20,8 @@ const SAFE_ROUTES = new Map<string, SafeApiEvent['route']>([
   ['/api/auth/login', 'login'],
   ['/api/security/login-approvals/pending', 'approval_list'],
   ['/api/auth/login/approval/exchange', 'approval_exchange'],
-  ['/api/notifications', 'notifications']
+  ['/api/notifications', 'notifications'],
+  ['/api/human-verification/create', 'human_verification']
 ]);
 
 const safeMethod = (method: string): SafeApiEvent['method'] =>
@@ -111,7 +112,7 @@ export function watchSafeApiEvents(page: Page): SafeApiWatch {
 export async function writeSafeBrowserEvidence(
   page: Page,
   testInfo: TestInfo,
-  scenario: 'device_approval' | 'member_home_feed' | 'notifications',
+  scenario: 'device_approval' | 'member_home_feed' | 'notifications' | 'signup_hv',
   apiEvents: SafeApiEvent[]
 ) {
   const outputRoot = process.env.CERT_RESULTS_DIR;
@@ -142,7 +143,8 @@ export async function writeSafeBrowserEvidence(
       const path = location.pathname;
       const route = path === '/' ? 'member_home' :
         path === '/notifications' ? 'notifications' :
-          path === '/auth/login' ? 'login' : 'other';
+          path === '/auth/login' ? 'login' :
+            path === '/auth/signup' ? 'signup' : 'other';
       return {
         route,
         readyState: document.readyState,

@@ -6,8 +6,10 @@ import {
   assertDesignTokenOnPage,
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
+  assertRequiredPostControls,
   collectFeedInventory,
   postCards,
+  selectCertificationPostCard,
   skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
@@ -36,8 +38,9 @@ test.describe('Community — authenticated post card cert', () => {
       return;
     }
 
-    const first = cards.first();
+    const first = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(first);
+    await assertRequiredPostControls(first);
     await assertActionRowEqualColumns(first);
     await assertLayoutNoProductOverflow(page, first);
 

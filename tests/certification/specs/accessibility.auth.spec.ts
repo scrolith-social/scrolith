@@ -9,7 +9,7 @@ import {
   assertTouchTargets,
   runCardA11yChecks
 } from '../helpers/a11y';
-import { postCards, skipOrFailWhenFeedFixtureMissing, waitForFeed } from '../helpers/postCard';
+import { assertRequiredPostControls, postCards, selectCertificationPostCard, skipOrFailWhenFeedFixtureMissing, waitForFeed } from '../helpers/postCard';
 import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 test.describe('Accessibility — authenticated cert', () => {
@@ -35,7 +35,8 @@ test.describe('Accessibility — authenticated cert', () => {
       });
       return;
     }
-    const card = cards.first();
+    const card = await selectCertificationPostCard(page, cards.first());
+    await assertRequiredPostControls(card);
     await assertFocusableActions(card);
     await assertTouchTargets(card);
     await runCardA11yChecks(page);

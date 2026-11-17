@@ -7,12 +7,15 @@ import {
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
   assertPostCardNoOverflow,
+  assertRequiredPostControls,
   assertSurveyEqualButtons,
   assertTypographyScale,
   collectFeedInventory,
   expandFirstMoreIfPresent,
   measureDocumentOverflowX,
   postCards,
+  REQUIRED_LONG_CONTENT_MARKER,
+  selectCertificationPostCard,
   skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH,
@@ -57,9 +60,10 @@ test.describe('Member Home — authenticated post card cert', () => {
       return;
     }
 
-    const first = cards.first();
+    const first = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(first);
     await assertTypographyScale(first);
+    await assertRequiredPostControls(first);
     await assertActionRowEqualColumns(first);
     await assertSurveyEqualButtons(first);
     await assertLayoutNoProductOverflow(page, first);
@@ -100,14 +104,18 @@ test.describe('Member Home — authenticated post card cert', () => {
       });
       return;
     }
-    const card = cards.first();
+    const card = await selectCertificationPostCard(page, cards.first());
     const body = card.locator(TRANSLATABLE).first();
-    if ((await body.count()) > 0) {
-      const cardBox = await card.boundingBox();
-      const bodyBox = await body.boundingBox();
-      if (cardBox && bodyBox) {
-        expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 8);
-      }
+    if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+      await expect(card).toContainText(REQUIRED_LONG_CONTENT_MARKER);
+      await expect(body).toBeVisible();
+      await expandFirstMoreIfPresent(card);
+      expect((await body.innerText()).length, 'the seeded long-content fixture must remain intact in the rendered post').toBeGreaterThan(500);
+    }
+    const cardBox = await card.boundingBox();
+    const bodyBox = await body.boundingBox();
+    if (cardBox && bodyBox) {
+      expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 8);
     }
     await assertPostCardNoOverflow(card);
     await assertLayoutNoProductOverflow(page, card);

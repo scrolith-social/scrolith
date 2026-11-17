@@ -32,6 +32,23 @@ const hasCredentials = Boolean(
   (process.env.CERT_PASSWORD || process.env.SCROLITH_CERT_PASSWORD)
 );
 const authConfigured = hasStorage || hasCredentials;
+const setupProjectName = process.env.CERT_BROWSER_PROJECT || 'desktop-chrome';
+const setupProjectUse = {
+  'desktop-chrome': { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+  'pixel-7': { ...devices['Pixel 7'] },
+  'iphone-15': { ...devices['iPhone 15'] },
+  'mobile-390': {
+    ...devices['Desktop Chrome'],
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    userAgent:
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+  }
+};
+if (!Object.hasOwn(setupProjectUse, setupProjectName)) {
+  throw new Error('CERT_BROWSER_PROJECT must name a configured certification browser project.');
+}
 
 const baseURL = requireLoopbackTestUrl(process.env.CERT_BASE_URL, 'CERT_BASE_URL');
 requireLoopbackTestUrl(process.env.CERT_API_BASE, 'CERT_API_BASE');
@@ -65,7 +82,8 @@ export default defineConfig({
     {
       name: 'setup',
       testMatch: /auth\.setup\.ts/,
-      testDir: join(here, 'fixtures')
+      testDir: join(here, 'fixtures'),
+      use: { ...setupProjectUse[setupProjectName as keyof typeof setupProjectUse] }
     },
     {
       name: 'desktop-chrome',
