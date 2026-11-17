@@ -218,7 +218,7 @@ jobs:
           cleanup() {
             kill "$web_pid" "$api_pid" 2>/dev/null || true
             wait "$web_pid" "$api_pid" 2>/dev/null || true
-            rm -f "$RUNNER_TEMP/scrolith-certification-account-a.json" "$RUNNER_TEMP/scrolith-certification-account-b.json"
+            rm -f "$RUNNER_TEMP/scrolith-certification-account-a.json" "$RUNNER_TEMP/scrolith-certification-account-b.json" "$RUNNER_TEMP/scrolith-certification-logout.json"
           }
           trap cleanup EXIT
 
@@ -309,6 +309,18 @@ jobs:
                 --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
                 --grep-invert 'local signup|Logout revokes the current authenticated session'
           )
+          logout_email="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-logout@example.invalid"
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-logout.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$logout_email" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
+          )
           (
             cd ../geezle
             env -i \
@@ -316,8 +328,8 @@ jobs:
               CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
               CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
               CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
-              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
-              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-logout.json" \
+              CERT_EMAIL="$logout_email" CERT_PASSWORD="$signup_password" \
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
           )
