@@ -206,7 +206,9 @@ jobs:
           mkdir -p "$CERT_RESULTS_DIR"
           api_log="$RUNNER_TEMP/scrolith-browser-api.log"
           web_log="$RUNNER_TEMP/scrolith-browser-frontend.log"
-          node dist/server.js >"$api_log" 2>&1 &
+          # This isolated browser API serves eight synthetic signups across four viewport projects.
+          # Keep the normal five-per-hour registration limit unchanged everywhere else.
+          AUTH_REGISTER_RATE_MAX=12 node dist/server.js >"$api_log" 2>&1 &
           api_pid=$!
           (
             cd ../geezle
