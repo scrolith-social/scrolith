@@ -6,7 +6,7 @@ import type { Page, TestInfo } from '@playwright/test';
 type SafeApiEvent = {
   kind: 'response' | 'request_failed';
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OTHER';
-  route: 'feed' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications';
+  route: 'feed' | 'auth_me' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications';
   status?: number;
   durationMs?: number;
   failure?: 'timeout' | 'connection' | 'aborted' | 'other';
@@ -16,6 +16,7 @@ type SafeApiEvent = {
 
 const SAFE_ROUTES = new Map<string, SafeApiEvent['route']>([
   ['/api/discovery/v2/member-feed', 'feed'],
+  ['/api/auth/me', 'auth_me'],
   ['/api/auth/login', 'login'],
   ['/api/security/login-approvals/pending', 'approval_list'],
   ['/api/auth/login/approval/exchange', 'approval_exchange'],
@@ -131,6 +132,13 @@ export async function writeSafeBrowserEvidence(
           return false;
         }
       });
+      const storedUserPresent = (() => {
+        try {
+          return Boolean(localStorage.getItem('user'));
+        } catch {
+          return false;
+        }
+      })();
       const path = location.pathname;
       const route = path === '/' ? 'member_home' :
         path === '/notifications' ? 'notifications' :
@@ -140,6 +148,7 @@ export async function writeSafeBrowserEvidence(
         readyState: document.readyState,
         visibility: document.visibilityState,
         authenticatedStoragePresent: localAuthPresent,
+        storedUserPresent,
         postCardCount: count('[data-testid="enterprise-post-card"], [data-post-card-design="21.1.5"], article.scrolith-post-card'),
         mainCount: count('main, [role="main"]'),
         loginFormCount: count('form input[type="password"]'),
@@ -149,7 +158,7 @@ export async function writeSafeBrowserEvidence(
         documentBodyPresent: Boolean(document.body)
       };
     })
-    .catch(() => ({ route: 'unavailable', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
+    .catch(() => ({ route: 'unavailable', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
 
   const sanitizedEvents = apiEvents.slice(-120).map((event) => ({ ...event }));
   const evidencePath = join(safeDir, `${stem}.json`);

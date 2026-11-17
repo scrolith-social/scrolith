@@ -1,5 +1,5 @@
 import { expect, type Page, type APIRequestContext } from '@playwright/test';
-import { CERT_BASE_URL, CERT_EMAIL, CERT_PASSWORD } from './env';
+import { CERT_API_BASE, CERT_BASE_URL, CERT_EMAIL, CERT_PASSWORD } from './env';
 
 const isLoopbackUrl = (value: string) => {
   try {
@@ -160,15 +160,21 @@ export async function injectToken(page: Page, token: string, user?: Record<strin
   );
 }
 
-export function isLikelyAuthenticated(page: Page) {
-  return page.evaluate(() => {
+export async function isLikelyAuthenticated(page: Page) {
+  if (!isLoopbackUrl(CERT_API_BASE)) return false;
+  return page.evaluate(async (apiBase) => {
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
-      return Boolean(token);
+      if (!token) return false;
+      const response = await fetch(`${apiBase.replace(/\/+$/, '')}/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'omit'
+      });
+      return response.status === 200;
     } catch {
       return false;
     }
-  });
+  }, CERT_API_BASE);
 }
 
 export { CERT_BASE_URL };
