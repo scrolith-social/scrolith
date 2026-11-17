@@ -68,7 +68,7 @@ jobs:
             shift 2
             echo "Building $role from source $SOURCE_SHA"
             BUILDX_METADATA_PROVENANCE=max BUILDX_METADATA_WARNINGS=true \
-              docker buildx build --load --pull --no-cache --provenance=mode=max \
+              docker buildx build --load --pull --no-cache \
                 --metadata-file "$evidence/build-metadata/${role}.json" \
                 --progress=plain "$@" --tag "$tag" . 2>&1 | tee "$evidence/${role}-build.log"
             local image_id
