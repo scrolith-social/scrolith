@@ -343,7 +343,9 @@ jobs:
           CERT_RESULTS_DIR: ${{ runner.temp }}/scrolith-authenticated-browser-results
           SCROLITH_ROOT_SHA: ${{ github.event.pull_request.head.sha }}
           RUNNER_OS: ${{ runner.os }}
-        run: node scripts/sanitize-certification-results.mjs
+        run: |
+          node --test scripts/sanitize-certification-results.test.mjs
+          node scripts/sanitize-certification-results.mjs
 
       - name: Upload sanitized authenticated browser evidence
         if: always()
