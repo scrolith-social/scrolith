@@ -314,7 +314,7 @@ jobs:
             SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
             CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
               CERT_STORAGE_STATE="$state_b" node scripts/verify-certification-feed.mjs
-            (
+            scroll_fixture_output="$(
               cd ../geezle
               env -i \
                 PATH="$PATH" HOME="$HOME" NODE_ENV=test \
@@ -322,7 +322,13 @@ jobs:
                 CERT_STORAGE_STATE="$state_a" SCROLITH_E2E_VIEWER_STORAGE_STATE="$state_b" \
                 SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" CERT_BROWSER_PROJECT="$project" \
                 node scripts/seed-certification-scroll.mjs
-            )
+            )"
+            printf '%s\n' "$scroll_fixture_output"
+            scroll_fixture_id="$(printf '%s\n' "$scroll_fixture_output" | sed -n 's/^CERTIFICATION_SCROLL_FIXTURE_ID=//p')"
+            if [[ ! "$scroll_fixture_id" =~ ^[[:alnum:]_-]{1,64}$ ]]; then
+              echo 'The synthetic Scroll fixture did not return a valid fixture ID.' >&2
+              exit 1
+            fi
 
             (
               cd ../geezle
@@ -343,6 +349,7 @@ jobs:
                 CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
                 CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
                 CERT_REQUIRE_FEED_FIXTURES="$CERT_REQUIRE_FEED_FIXTURES" \
+                CERT_SCROLL_FIXTURE_ID="$scroll_fixture_id" \
                 CERT_RESULTS_DIR="$authenticated_results_dir" CERT_STORAGE_STATE="$state_b" \
                 CERT_BROWSER_PROJECT="$project" CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
                 ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
