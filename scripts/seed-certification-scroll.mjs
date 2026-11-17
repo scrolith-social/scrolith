@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from '@playwright/test';
-import { parseLoopbackHttpUrl, readStorageStateToken } from './verify-certification-feed.mjs';
+import { parseLoopbackHttpUrl, readStorageStateToken } from '../../geezle-backend/scripts/verify-certification-feed.mjs';
 
 const allowedProjects = new Set(['desktop-chrome', 'pixel-7', 'iphone-15', 'mobile-390']);
 const project = String(process.env.CERT_BROWSER_PROJECT || '');
