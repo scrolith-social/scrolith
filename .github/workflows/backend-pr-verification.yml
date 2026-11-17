@@ -284,7 +284,6 @@ jobs:
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
           )
-          SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
           (
             cd ../geezle
             env -i \
@@ -296,6 +295,7 @@ jobs:
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
           )
+          SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
           (
             cd ../geezle
             env -i \
