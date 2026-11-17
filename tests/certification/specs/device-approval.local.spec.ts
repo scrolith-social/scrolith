@@ -81,7 +81,9 @@ test('a trusted local session approves a signed-in login from a new device', asy
       if (response.status() !== 200) return true;
       const payload = await response.json().catch(() => null);
       const pending = payload?.data?.pendingApprovals;
-      return Array.isArray(pending) && pending.some((item: { attemptId?: unknown }) => item?.attemptId === loginAttemptId);
+      // The pending-list contract maps the database identifier as `id`;
+      // `attemptId` is used only by the login response and realtime events.
+      return Array.isArray(pending) && pending.some((item: { id?: unknown }) => item?.id === loginAttemptId);
     }, { timeout: 30_000 });
     await page.bringToFront();
     const trustedApprovalRefresh = await trustedApprovalRefreshPromise;
