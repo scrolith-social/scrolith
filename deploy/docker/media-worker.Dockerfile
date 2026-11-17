@@ -19,13 +19,16 @@ RUN find dist -type f -name '*.map' -delete
 
 # Use an immutable, timestamped official Debian archive for ffmpeg and its
 # transitive packages. This avoids resolving against the mutable live mirror.
+# The minimal Node image has no OS CA bundle before this install. Debian apt
+# verifies signed Release/index metadata and package hashes over HTTP, so use
+# the snapshot's supported HTTP endpoint without disabling signature checks.
 FROM node:22.23.2-bookworm-slim@sha256:43aeff40f4afc22e83f7589a2f37e111cff5ca84529571f1c8415bcc5fcc21b2 AS runtime
 RUN set -eux; \
   rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; \
   printf '%s\n' \
-    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261117T000000Z bookworm main' \
-    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261117T000000Z bookworm-updates main' \
-    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20261117T000000Z bookworm-security main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261117T000000Z bookworm main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261117T000000Z bookworm-updates main' \
+    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20261117T000000Z bookworm-security main' \
     > /etc/apt/sources.list.d/scrolith-snapshot.list; \
   apt-get update; \
   apt-get install -y --no-install-recommends ffmpeg ca-certificates; \
