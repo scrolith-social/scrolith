@@ -74,7 +74,9 @@ async function makeSyntheticVideo() {
       draw();
       const timer = window.setInterval(draw, 100);
       recorder.start(100);
-      await new Promise((resolveDelay) => window.setTimeout(resolveDelay, 1_200));
+      // The Scroll route auto-advances when playback ends. Keep this local
+      // fixture alive long enough for the authenticated UI assertions to run.
+      await new Promise((resolveDelay) => window.setTimeout(resolveDelay, 8_000));
       window.clearInterval(timer);
       recorder.stop();
       await stopped;
@@ -144,6 +146,7 @@ async function main() {
   }
 
   console.log(`Synthetic playable Scroll fixture ready for ${project}; upload=${uploadResponse.status}, create=${createResponse.status}, viewerFeed=${feedResponse.status}.`);
+  console.log(`CERTIFICATION_SCROLL_FIXTURE_ID=${scrollId}`);
 }
 
 main().catch((error) => {
