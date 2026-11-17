@@ -1,0 +1,165 @@
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { basename, join, resolve } from 'node:path';
+
+const resultsRoot = resolve(process.env.CERT_RESULTS_DIR || '');
+if (!process.env.CERT_RESULTS_DIR) throw new Error('CERT_RESULTS_DIR is required.');
+const outputRoot = join(resultsRoot, 'sanitized');
+const safeEvidenceRoot = join(resultsRoot, 'safe-evidence');
+mkdirSync(outputRoot, { recursive: true });
+
+const redactText = (value) => String(value || '')
+  .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email-redacted]')
+  .replace(/bearer\s+[^\s"']+/gi, 'Bearer [redacted]')
+  .replace(/(token|password|secret|credential)[=: ]+[^\s"']+/gi, '$1=[redacted]')
+  .replace(/[A-Za-z]:\\[^\s"']+/g, '[local-path-redacted]')
+  .slice(0, 240);
+
+const safeProject = (value) => /^[a-z0-9_-]{1,40}$/i.test(String(value || '')) ? String(value) : 'unknown';
+const safeStatuses = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted', 'expected', 'unknown']);
+const statusOf = (value) => safeStatuses.has(value) ? value : 'unknown';
+const classifyError = (value) => {
+  const text = String(value || '');
+  if (/timeout|timed out/i.test(text)) return 'timeout';
+  if (/expected:|received:|toBe|toEqual|assert/i.test(text)) return 'assertion';
+  return 'test_error';
+};
+const skipCategory = (value) => {
+  const text = String(value || '');
+  if (/post cards|feed fixture|scroll item|survey/i.test(text)) return 'fixture_unavailable';
+  if (/requires|must be configured|credential|storage state/i.test(text)) return 'environment_prerequisite';
+  return 'test_declared';
+};
+
+function collectTests(suite, parents = [], output = []) {
+  for (const spec of suite?.specs || []) {
+    const title = redactText(spec.title);
+    for (const test of spec.tests || []) {
+      const results = Array.isArray(test.results) ? test.results : [];
+      const finalResult = results.at(-1) || {};
+      const failedEarlier = results.slice(0, -1).some((item) => ['failed', 'timedOut'].includes(item.status));
+      const rawStatus = test.status || finalResult.status || (test.expectedStatus === 'skipped' ? 'skipped' : 'unknown');
+      const status = rawStatus === 'flaky' || (failedEarlier && finalResult.status === 'passed') ? 'flaky' : statusOf(rawStatus);
+      const annotations = [...(test.annotations || []), ...(finalResult.annotations || [])];
+      const rawSkip = annotations.find((item) => /skip/i.test(String(item.type || '')))?.description || '';
+      const rawError = (finalResult.errors || [])[0];
+      output.push({
+        title: [...parents, title].filter(Boolean).join(' › '),
+        file: basename(String(spec.file || 'unknown')),
+        line: Number.isInteger(spec.line) ? spec.line : undefined,
+        project: safeProject(test.projectName),
+        status,
+        expectedStatus: statusOf(test.expectedStatus),
+        durationMs: Number.isFinite(finalResult.duration) ? Math.max(0, Math.round(finalResult.duration)) : undefined,
+        retry: Number.isInteger(finalResult.retry) ? finalResult.retry : 0,
+        skipCategory: status === 'skipped' ? skipCategory(rawSkip || rawError?.message) : undefined,
+        failureKind: ['failed', 'timedOut', 'interrupted'].includes(status) ? classifyError(rawError?.message) : undefined
+      });
+    }
+  }
+  for (const child of suite?.suites || []) collectTests(child, [...parents, redactText(child.title)], output);
+  return output;
+}
+
+const rawReportPath = join(resultsRoot, 'cert-results.json');
+let tests = [];
+let reportAvailable = false;
+if (existsSync(rawReportPath)) {
+  try {
+    const raw = JSON.parse(readFileSync(rawReportPath, 'utf8'));
+    tests = collectTests({ suites: raw.suites || [] });
+    reportAvailable = true;
+  } catch {
+    reportAvailable = false;
+  }
+}
+
+const counts = { passed: 0, failed: 0, flaky: 0, skipped: 0, timedOut: 0, interrupted: 0, unknown: 0 };
+for (const item of tests) {
+  if (Object.hasOwn(counts, item.status)) counts[item.status] += 1;
+  else counts.unknown += 1;
+}
+
+const safeRootSha = process.env.SCROLITH_ROOT_SHA || execFileSync('git', ['-C', '..', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const frontendSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const lock = JSON.parse(readFileSync(join(process.cwd(), 'package-lock.json'), 'utf8'));
+const playwrightVersion = lock.packages?.['node_modules/@playwright/test']?.version || lock.packages?.['node_modules/playwright']?.version || 'unknown';
+const manifest = {
+  schemaVersion: 1,
+  rootSourceSha: safeRootSha,
+  frontendSourceSha: frontendSha,
+  browserConfig: 'tests/certification/playwright.config.ts',
+  nodeVersion: process.version,
+  playwrightVersion,
+  runnerOs: ['Linux', 'Windows', 'macOS'].includes(process.env.RUNNER_OS || '') ? process.env.RUNNER_OS : process.platform,
+  generatedAtUtc: new Date().toISOString(),
+  rawPlaywrightReportAvailable: reportAvailable,
+  rawArtifactsUploaded: false
+};
+
+writeFileSync(join(outputRoot, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+writeFileSync(join(outputRoot, 'test-summary.json'), JSON.stringify({ schemaVersion: 1, counts, tests }, null, 2), 'utf8');
+
+const safeEvidenceFiles = existsSync(safeEvidenceRoot) ? readdirSync(safeEvidenceRoot) : [];
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const allowedRoutes = new Set(['feed', 'login', 'approval_list', 'approval_exchange', 'notifications']);
+const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications']);
+const allowedFailureKinds = new Set(['timeout', 'connection', 'aborted', 'other']);
+const evidenceManifest = [];
+
+for (const name of safeEvidenceFiles) {
+  if (!/^[a-z0-9_-]{1,100}\.(json|png)$/i.test(name)) continue;
+  const source = join(safeEvidenceRoot, name);
+  const dest = join(outputRoot, name);
+  if (name.endsWith('.png')) {
+    const bytes = readFileSync(source);
+    if (bytes.length <= 10 * 1024 * 1024 && bytes.subarray(0, 8).equals(pngSignature)) {
+      copyFileSync(source, dest);
+      evidenceManifest.push({ name, type: 'masked_screenshot' });
+    }
+    continue;
+  }
+  try {
+    const raw = JSON.parse(readFileSync(source, 'utf8'));
+    if (raw.schemaVersion !== 1 || !allowedScenarios.has(raw.scenario)) continue;
+    const counts = raw.pageState && typeof raw.pageState === 'object' ? raw.pageState : {};
+    const pageState = {
+      route: ['member_home', 'notifications', 'login', 'other', 'unavailable'].includes(counts.route) ? counts.route : 'unavailable',
+      readyState: ['loading', 'interactive', 'complete', 'unavailable'].includes(counts.readyState) ? counts.readyState : 'unavailable',
+      visibility: ['visible', 'hidden', 'prerender', 'unavailable'].includes(counts.visibility) ? counts.visibility : 'unavailable',
+      authenticatedStoragePresent: counts.authenticatedStoragePresent === true,
+      postCardCount: Number.isInteger(counts.postCardCount) ? Math.max(0, counts.postCardCount) : 0,
+      mainCount: Number.isInteger(counts.mainCount) ? Math.max(0, counts.mainCount) : 0,
+      loginFormCount: Number.isInteger(counts.loginFormCount) ? Math.max(0, counts.loginFormCount) : 0,
+      loadingIndicatorCount: Number.isInteger(counts.loadingIndicatorCount) ? Math.max(0, counts.loadingIndicatorCount) : 0,
+      alertCount: Number.isInteger(counts.alertCount) ? Math.max(0, counts.alertCount) : 0,
+      approvalDialogCount: Number.isInteger(counts.approvalDialogCount) ? Math.max(0, counts.approvalDialogCount) : 0,
+      documentBodyPresent: counts.documentBodyPresent === true
+    };
+    const apiEvents = (Array.isArray(raw.apiEvents) ? raw.apiEvents : []).slice(-120).flatMap((event) => {
+      if (!allowedRoutes.has(event.route) || !['response', 'request_failed'].includes(event.kind)) return [];
+      const item = { kind: event.kind, route: event.route, method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(event.method) ? event.method : 'OTHER' };
+      if (Number.isInteger(event.status) && event.status >= 100 && event.status <= 599) item.status = event.status;
+      if (Number.isFinite(event.durationMs)) item.durationMs = Math.max(0, Math.round(event.durationMs));
+      if (allowedFailureKinds.has(event.failure)) item.failure = event.failure;
+      if (Number.isInteger(event.itemCount)) item.itemCount = Math.max(0, event.itemCount);
+      if (['items_array', 'missing_items', 'invalid_json'].includes(event.responseShape)) item.responseShape = event.responseShape;
+      return [item];
+    });
+    const sanitized = {
+      schemaVersion: 1,
+      scenario: raw.scenario,
+      project: safeProject(raw.project),
+      testIdHash: /^[a-f0-9]{12}$/.test(raw.testIdHash) ? raw.testIdHash : undefined,
+      pageState,
+      apiEvents
+    };
+    writeFileSync(dest, JSON.stringify(sanitized, null, 2), 'utf8');
+    evidenceManifest.push({ name, type: 'safe_network_and_dom_diagnostics' });
+  } catch {
+    // Unknown or malformed evidence is excluded rather than copied raw.
+  }
+}
+
+writeFileSync(join(outputRoot, 'evidence-manifest.json'), JSON.stringify({ schemaVersion: 1, files: evidenceManifest }, null, 2), 'utf8');
+console.log(`Sanitized browser evidence prepared: ${tests.length} tests, ${evidenceManifest.length} allow-listed evidence files.`);

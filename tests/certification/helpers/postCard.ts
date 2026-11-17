@@ -26,6 +26,19 @@ export function postCards(page: Page): Locator {
   return page.locator(POST_CARD);
 }
 
+/** CI uses explicitly seeded public fixtures; absence is a failure there, not a pass-by-skip. */
+export function skipOrFailWhenFeedFixtureMissing(
+  test: { skip: (condition: boolean, description?: string) => void },
+  count: number,
+  reason: string
+) {
+  if (count > 0) return;
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    throw new Error('Required synthetic feed fixture did not render on the authenticated test surface.');
+  }
+  test.skip(true, reason);
+}
+
 export async function waitForFeed(page: Page, timeout = 45_000) {
   await page.waitForLoadState('domcontentloaded');
   // Either post cards appear or an empty-state / login gate is visible

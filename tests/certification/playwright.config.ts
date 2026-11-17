@@ -52,9 +52,11 @@ export default defineConfig({
   outputDir: join(resultsDir, 'test-output'),
   use: {
     baseURL,
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    // CI uploads only the explicit allow-listed diagnostics produced by safeEvidence.ts.
+    // Native Playwright traces/videos can contain auth headers, storage and response bodies.
+    trace: process.env.CI ? 'off' : 'retain-on-failure',
+    screenshot: process.env.CI ? 'off' : 'only-on-failure',
+    video: process.env.CI ? 'off' : 'retain-on-failure',
     actionTimeout: 20_000,
     navigationTimeout: 60_000,
     ...(hasStorage ? { storageState: storageStatePath } : {})

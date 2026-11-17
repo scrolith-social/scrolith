@@ -9,7 +9,7 @@ import {
   assertTouchTargets,
   runCardA11yChecks
 } from '../helpers/a11y';
-import { postCards, waitForFeed } from '../helpers/postCard';
+import { postCards, skipOrFailWhenFeedFixtureMissing, waitForFeed } from '../helpers/postCard';
 
 test.describe('Accessibility — authenticated cert', () => {
   test.beforeEach(() => {
@@ -27,7 +27,7 @@ test.describe('Accessibility — authenticated cert', () => {
 
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      test.skip(true, 'No post cards for a11y controls');
+      skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards for a11y controls outside seeded CI runs');
       return;
     }
     const card = cards.first();

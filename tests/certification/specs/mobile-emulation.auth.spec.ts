@@ -10,6 +10,7 @@ import {
   assertTypographyScale,
   measureDocumentOverflowX,
   postCards,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
 } from '../helpers/postCard';
@@ -37,7 +38,7 @@ test.describe('Mobile emulation — post card cert', () => {
 
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      test.skip(true, 'No post cards on mobile surface');
+      skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards on mobile outside seeded CI runs');
       return;
     }
 

@@ -8,6 +8,7 @@ import {
   assertPostCardGeometry,
   collectFeedInventory,
   postCards,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
 } from '../helpers/postCard';
@@ -26,7 +27,7 @@ test.describe('Community — authenticated post card cert', () => {
     const count = await cards.count();
     testInfo.annotations.push({ type: 'postCards', description: String(count) });
     if (count === 0) {
-      test.skip(true, 'No community post cards visible');
+      skipOrFailWhenFeedFixtureMissing(test, count, 'No community post cards visible outside seeded CI runs');
       return;
     }
 

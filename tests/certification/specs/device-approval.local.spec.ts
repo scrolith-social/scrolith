@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { CERT_BASE_URL, CERT_EMAIL, CERT_PASSWORD } from '../helpers/env';
 import { isLikelyAuthenticated, solveLocalHumanVerification } from '../helpers/auth';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 const isLoopback = (value: string | undefined) => {
   if (!value) return false;
@@ -16,11 +17,20 @@ test('a trusted local session approves a signed-in login from a new device', asy
   test.skip(!isLoopback(CERT_BASE_URL), 'Requires an explicitly configured loopback CERT_BASE_URL');
   test.skip(!CERT_EMAIL || !CERT_PASSWORD, 'Requires a synthetic local certification account');
 
+  const trustedApiWatch = watchSafeApiEvents(page);
+  const trustedInitialApprovalListPromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET' &&
+      url.pathname.endsWith('/api/security/login-approvals/pending');
+  }, { timeout: 30_000 });
+
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
   await expect.poll(() => isLikelyAuthenticated(page), {
     message: 'The trusted device must have a real authenticated synthetic session.'
   }).toBe(true);
+  const trustedInitialApprovalList = await trustedInitialApprovalListPromise;
+  expect(trustedInitialApprovalList.status(), 'the trusted session must load its authenticated pending-approval list').toBe(200);
 
   const projectUse = testInfo.project.use as Record<string, unknown>;
   const viewport = projectUse.viewport as { width: number; height: number } | undefined;
@@ -34,8 +44,11 @@ test('a trusted local session approves a signed-in login from a new device', asy
     hasTouch: projectUse.hasTouch === true
   });
 
+  let newDevicePage: Awaited<ReturnType<typeof deviceContext.newPage>> | undefined;
+  let newDeviceApiWatch: ReturnType<typeof watchSafeApiEvents> | undefined;
   try {
-    const newDevicePage = await deviceContext.newPage();
+    newDevicePage = await deviceContext.newPage();
+    newDeviceApiWatch = watchSafeApiEvents(newDevicePage);
     await newDevicePage.goto('/auth/login', { waitUntil: 'domcontentloaded' });
     await solveLocalHumanVerification(newDevicePage);
 
@@ -55,7 +68,7 @@ test('a trusted local session approves a signed-in login from a new device', asy
     const trustedApprovalRefreshPromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return response.request().method() === 'GET' &&
-        url.pathname.endsWith('/api/security/login-approvals/pending') && response.status() === 200;
+        url.pathname.endsWith('/api/security/login-approvals/pending');
     }, { timeout: 30_000 });
     await newDevicePage
       .locator('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in")')
@@ -69,10 +82,11 @@ test('a trusted local session approves a signed-in login from a new device', asy
     expect(loginOutcome.code).toBe('LOGIN_APPROVAL_REQUIRED');
     await expect(newDevicePage.getByText('Waiting for trusted-device approval', { exact: true })).toBeVisible();
 
-    // The authenticated page must refresh its pending-request list even if the
-    // realtime notification is delayed or unavailable on this browser engine.
+    // WebKit correctly suspends polling in a background page. Return to the
+    // trusted device so its visibility handler refreshes the authenticated list.
+    await page.bringToFront();
     const trustedApprovalRefresh = await trustedApprovalRefreshPromise;
-    expect(trustedApprovalRefresh.status()).toBe(200);
+    expect(trustedApprovalRefresh.status(), 'the foreground trusted session must refresh the approval list successfully').toBe(200);
 
     const approvalDialog = page.getByRole('dialog', { name: 'New sign-in request' });
     await expect(approvalDialog).toBeVisible({ timeout: 45_000 });
@@ -85,7 +99,7 @@ test('a trusted local session approves a signed-in login from a new device', asy
     const exchangeResponse = await exchangeResponsePromise;
     expect(exchangeResponse.status()).toBe(200);
     await expect(newDevicePage).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/, { timeout: 30_000 });
-    await expect.poll(() => isLikelyAuthenticated(newDevicePage)).toBe(true);
+    await expect.poll(() => isLikelyAuthenticated(newDevicePage!)).toBe(true);
     const apiBase = String(process.env.CERT_API_BASE || '');
     expect(isLoopback(apiBase), 'Authenticated verification must use the explicit loopback API origin').toBe(true);
     const currentUserStatus = await newDevicePage.evaluate(async (base) => {
@@ -99,6 +113,14 @@ test('a trusted local session approves a signed-in login from a new device', asy
     }, apiBase);
     expect(currentUserStatus).toBe(200);
   } finally {
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await trustedApiWatch.settle();
+      await newDeviceApiWatch?.settle();
+      await writeSafeBrowserEvidence(page, testInfo, 'device_approval', [
+        ...trustedApiWatch.events,
+        ...(newDeviceApiWatch?.events || [])
+      ]).catch(() => undefined);
+    }
     await deviceContext.close();
   }
 });

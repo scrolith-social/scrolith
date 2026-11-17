@@ -13,6 +13,7 @@ import {
   expandFirstMoreIfPresent,
   measureDocumentOverflowX,
   postCards,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH,
   SURVEY,
@@ -47,7 +48,7 @@ test.describe('Member Home — authenticated post card cert', () => {
     }
 
     if (count === 0) {
-      test.skip(true, 'No post cards visible — empty feed or auth gate');
+      skipOrFailWhenFeedFixtureMissing(test, count, 'No post cards visible outside seeded CI runs');
       return;
     }
 
@@ -87,7 +88,7 @@ test.describe('Member Home — authenticated post card cert', () => {
     await waitForFeed(page);
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      test.skip(true, 'No post cards');
+      skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards outside seeded CI runs');
       return;
     }
     const card = cards.first();
