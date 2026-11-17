@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+export const REQUIRED_CERTIFICATION_POST_MARKER = 'SCROLITH_CI_LONG_CONTENT_FIXTURE';
 
 export const parseLoopbackHttpUrl = (value) => {
   let url;
@@ -31,6 +32,16 @@ export const readStorageStateToken = (storageState, expectedOrigin) => {
 export const countFeedItems = (body) => {
   const items = Array.isArray(body?.data?.items) ? body.data.items : body?.items;
   return Array.isArray(items) ? items.length : null;
+};
+
+export const hasRequiredCertificationPost = (body) => {
+  const items = Array.isArray(body?.data?.items) ? body.data.items : body?.items;
+  if (!Array.isArray(items)) return false;
+  return items.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const content = item?.payload?.content ?? item?.content;
+    return typeof content === 'string' && content.includes(REQUIRED_CERTIFICATION_POST_MARKER);
+  });
 };
 
 const requireEnv = (name) => {
@@ -94,8 +105,9 @@ export async function verifyCertificationFeed({
   const itemCount = countFeedItems(body);
   if (itemCount === null) throw new Error('feed_items_missing');
   if (itemCount < 1) throw new Error('feed_fixture_missing');
+  if (!hasRequiredCertificationPost(body)) throw new Error('required_feed_fixture_missing');
 
-  return { authStatus: authResponse.status, feedStatus: feedResponse.status, itemCount };
+  return { authStatus: authResponse.status, feedStatus: feedResponse.status, itemCount, fixtureFound: true };
 }
 
 async function main() {

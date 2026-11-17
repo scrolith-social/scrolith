@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   countFeedItems,
+  hasRequiredCertificationPost,
   parseLoopbackHttpUrl,
   readStorageStateToken,
   verifyCertificationFeed
@@ -33,12 +34,19 @@ test('feed item counter accepts the documented nested and direct response shapes
   assert.equal(countFeedItems({ data: { results: [] } }), null);
 });
 
+test('required feed fixture check recognizes only the seeded post marker', () => {
+  assert.equal(hasRequiredCertificationPost({ data: { items: [{ type: 'POST', payload: { content: 'prefix SCROLITH_CI_LONG_CONTENT_FIXTURE suffix' } }] } }), true);
+  assert.equal(hasRequiredCertificationPost({ items: [{ content: 'SCROLITH_CI_LONG_CONTENT_FIXTURE' }] }), true);
+  assert.equal(hasRequiredCertificationPost({ data: { items: [{ type: 'POST', payload: { content: 'ordinary post' } }] } }), false);
+  assert.equal(hasRequiredCertificationPost({ data: { items: [] } }), false);
+});
+
 test('preflight checks auth and seeded feed without logging or returning credentials', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url: new URL(url).pathname, authorization: options.headers.Authorization });
     if (url.endsWith('/auth/me')) return { status: 200 };
-    return { status: 200, json: async () => ({ success: true, data: { items: [{ type: 'post' }] } }) };
+    return { status: 200, json: async () => ({ success: true, data: { items: [{ type: 'POST', payload: { content: 'SCROLITH_CI_LONG_CONTENT_FIXTURE' } }] } }) };
   };
   const result = await verifyCertificationFeed({
     baseUrl: 'http://127.0.0.1:5173',
@@ -49,7 +57,7 @@ test('preflight checks auth and seeded feed without logging or returning credent
     }),
     fetchImpl
   });
-  assert.deepEqual(result, { authStatus: 200, feedStatus: 200, itemCount: 1 });
+  assert.deepEqual(result, { authStatus: 200, feedStatus: 200, itemCount: 1, fixtureFound: true });
   assert.equal(calls.length, 2);
   assert.ok(calls.every((call) => call.authorization === 'Bearer synthetic-token'));
 });
@@ -72,4 +80,8 @@ test('preflight fails closed when authentication, feed status, or seeded items a
   await assert.rejects(resultFor([401, 200], {}), /auth_status_401/);
   await assert.rejects(resultFor([200, 503], {}), /feed_status_503/);
   await assert.rejects(resultFor([200, 200], { success: true, data: { items: [] } }), /feed_fixture_missing/);
+  await assert.rejects(
+    resultFor([200, 200], { success: true, data: { items: [{ type: 'POST', payload: { content: 'not-the-seeded-fixture' } }] } }),
+    /required_feed_fixture_missing/
+  );
 });
