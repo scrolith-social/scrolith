@@ -31,9 +31,21 @@ RUN DATABASE_URL=postgresql://127.0.0.1:5432/prisma_build \
 RUN npm run build:prod
 RUN find dist -type f -name '*.map' -delete
 
-FROM builder AS migrator
+FROM node-base AS migrator
+WORKDIR /app/geezle-backend
+COPY geezle-backend/package*.json ./
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
+RUN npm ci --omit=dev --no-audit --no-fund --replace-registry-host=always \
+  --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 \
+  && node -e "const cli=require('./node_modules/prisma/package.json').version; const client=require('./node_modules/@prisma/client/package.json').version; if(cli!==client) throw new Error('Prisma CLI/client version mismatch')" \
+  && test ! -e node_modules/jest \
+  && test ! -e node_modules/ts-jest \
+  && test ! -e node_modules/ts-node-dev \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm
+COPY geezle-backend/prisma ./prisma
+COPY geezle-backend/prisma.config.ts ./
 ENV NODE_ENV=production
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm
 RUN addgroup -S migrator \
   && adduser -S -G migrator migrator
 USER migrator
