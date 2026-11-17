@@ -1,0 +1,270 @@
+name: Container image PR verification
+
+on:
+  pull_request:
+    branches:
+      - backend/main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-image-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan-smoke:
+    name: Build, scan, and smoke-test local images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      IMAGE_PREFIX: scrolith-pr-${{ github.event.pull_request.number }}
+      VITE_API_URL: https://api-staging.invalid/api
+      VITE_BACKEND_URL: https://api-staging.invalid
+      VITE_SCROLITH_ENV: ci
+      VITE_PUBLIC_APP_DOMAIN: staging.invalid
+
+    steps:
+      - name: Checkout the exact PR source and frontend submodule
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record source and runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/scrolith-image-evidence"
+          docker buildx version | tee "$RUNNER_TEMP/scrolith-image-evidence/buildx-version.txt"
+          {
+            printf 'root_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'frontend_gitlink=%s\n' "$(git ls-tree HEAD geezle | awk '{print $3}')"
+            printf 'frontend_sha=%s\n' "$(git -C geezle rev-parse HEAD)"
+            printf 'docker_server=%s\n' "$(docker version --format '{{.Server.Version}}')"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+          } | tee "$RUNNER_TEMP/scrolith-image-evidence/source-and-runner.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git ls-tree HEAD geezle | awk '{print $3}')" = "$(git -C geezle rev-parse HEAD)"
+
+      - name: Build all images without cache, one at a time
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/scrolith-image-evidence"
+          mkdir -p "$evidence/build-metadata"
+          build_image() {
+            local role="$1"
+            local tag="$2"
+            shift 2
+            echo "Building $role from source $SOURCE_SHA"
+            BUILDX_METADATA_PROVENANCE=max BUILDX_METADATA_WARNINGS=true \
+              docker buildx build --load --pull --no-cache --provenance=mode=max \
+                --metadata-file "$evidence/build-metadata/${role}.json" \
+                --progress=plain "$@" --tag "$tag" . 2>&1 | tee "$evidence/${role}-build.log"
+            local image_id
+            image_id="$(docker image inspect --format '{{.Id}}' "$tag")"
+            local manifest_digest
+            manifest_digest="$(jq -r '.["containerimage.digest"] // empty' "$evidence/build-metadata/${role}.json")"
+            if [[ ! "$manifest_digest" =~ ^sha256:[[:xdigit:]]{64}$ ]]; then
+              echo "Buildx did not produce a valid manifest digest for $role." >&2
+              exit 1
+            fi
+            jq -e 'has("buildx.build.provenance")' "$evidence/build-metadata/${role}.json" >/dev/null
+            printf '%s\t%s\t%s\t%s\n' "$role" "$tag" "$image_id" "$manifest_digest" | tee -a "$evidence/image-ids.tsv"
+          }
+
+          build_image frontend "$IMAGE_PREFIX-frontend" \
+            --build-arg "VITE_API_URL=$VITE_API_URL" \
+            --build-arg "VITE_BACKEND_URL=$VITE_BACKEND_URL" \
+            --build-arg "VITE_SCROLITH_ENV=$VITE_SCROLITH_ENV" \
+            --build-arg "VITE_PUBLIC_APP_DOMAIN=$VITE_PUBLIC_APP_DOMAIN" \
+            --file deploy/docker/frontend.Dockerfile
+          build_image api-runtime "$IMAGE_PREFIX-api-runtime" \
+            --target runtime --file deploy/docker/backend.Dockerfile
+          build_image migrator "$IMAGE_PREFIX-migrator" \
+            --target migrator --file deploy/docker/backend.Dockerfile
+          build_image media-worker "$IMAGE_PREFIX-media-worker" \
+            --file deploy/docker/media-worker.Dockerfile
+
+          for dockerfile in deploy/docker/frontend.Dockerfile deploy/docker/backend.Dockerfile deploy/docker/media-worker.Dockerfile; do
+            {
+              printf '\n[%s]\n' "$dockerfile"
+              grep -E '^FROM ' "$dockerfile"
+            } >> "$evidence/base-image-sources.txt"
+          done
+
+          while IFS=$'\t' read -r role tag image_id manifest_digest; do
+            [ -n "$role" ] || continue
+            {
+              printf '\n[%s]\n' "$role"
+              printf 'tag=%s\nlocal_config_id=%s\nmanifest_digest=%s\n' "$tag" "$image_id" "$manifest_digest"
+              docker image inspect --format 'os={{.Os}} arch={{.Architecture}} repo_digests={{json .RepoDigests}}' "$image_id"
+            } >> "$evidence/image-metadata.ini"
+          done < "$evidence/image-ids.tsv"
+
+      - name: Install the pinned Trivy scanner
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+
+      - name: Scan exact local image IDs and generate SBOMs
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/scrolith-trivy-cache
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/scrolith-image-evidence"
+          private_scan="$RUNNER_TEMP/scrolith-private-image-scan"
+          mkdir -p "$evidence/scans" "$TRIVY_CACHE_DIR" "$private_scan"
+          trivy --version | tee "$evidence/trivy-version.txt"
+          trivy image --cache-dir "$TRIVY_CACHE_DIR" --download-db-only 2>&1 | tee "$evidence/trivy-db-update.log"
+          while IFS=$'\t' read -r role tag image_id manifest_digest; do
+            [ -n "$role" ] || continue
+            echo "Scanning $role exact local image ID $image_id and manifest $manifest_digest"
+            trivy image --quiet --cache-dir "$TRIVY_CACHE_DIR" --scanners vuln \
+              --format json --output "$evidence/scans/${role}.trivy.json" "$image_id"
+            trivy image --cache-dir "$TRIVY_CACHE_DIR" --scanners vuln \
+              --format cyclonedx --output "$evidence/scans/${role}.sbom.cdx.json" "$image_id"
+            secret_raw="$private_scan/${role}.secret.raw.json"
+            secret_stderr="$private_scan/${role}.secret.stderr"
+            if ! trivy image --quiet --cache-dir "$TRIVY_CACHE_DIR" --scanners secret \
+              --format json --output "$secret_raw" "$image_id" > /dev/null 2>"$secret_stderr"; then
+              echo "Trivy secret scan failed for $role; private raw diagnostics were retained only in the runner temp directory." >&2
+              exit 1
+            fi
+            jq '{schemaVersion, results: [.Results[]? | {target: .Target, secrets: [.Secrets[]? | {ruleId: .RuleID, category: .Category, severity: .Severity, startLine: .StartLine, endLine: .EndLine}]} | select((.secrets | length) > 0)]}' \
+              "$secret_raw" > "$evidence/scans/${role}.secrets.sanitized.json"
+            secret_count="$(jq '[.Results[]?.Secrets[]?] | length' "$secret_raw")"
+            printf '%s\t%s\t%s\n' "$role" "$image_id" "$secret_count" | tee -a "$evidence/scans/secret-scan-counts.tsv"
+            if [[ "$secret_count" != '0' ]]; then
+              echo "Trivy found $secret_count potential secret(s) in $role; inspect the private runner result before release." >&2
+              exit 1
+            fi
+            cp "$secret_raw" "$evidence/scans/${role}.secrets.raw.json"
+            trivy image --quiet --cache-dir "$TRIVY_CACHE_DIR" --scanners vuln \
+              --severity HIGH,CRITICAL --exit-code 1 "$image_id" 2>&1 \
+              | tee "$evidence/scans/${role}.policy.log"
+          done < "$evidence/image-ids.tsv"
+
+      - name: Smoke-test frontend and API against disposable PostgreSQL and Redis
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/scrolith-image-evidence"
+          network="${IMAGE_PREFIX}-network"
+          pg="${IMAGE_PREFIX}-postgres"
+          redis="${IMAGE_PREFIX}-redis"
+          api="${IMAGE_PREFIX}-api"
+          frontend="${IMAGE_PREFIX}-frontend-smoke"
+          worker="${IMAGE_PREFIX}-media-worker"
+          docker network create "$network"
+          docker run --detach --name "$pg" --network "$network" --network-alias postgres \
+            --env POSTGRES_USER=scrolith_test --env POSTGRES_PASSWORD=local-image-only \
+            --env POSTGRES_DB=scrolith_test \
+            postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
+          docker run --detach --name "$redis" --network "$network" --network-alias redis \
+            redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+
+          for attempt in $(seq 1 60); do
+            if docker exec "$pg" pg_isready -U scrolith_test -d scrolith_test >/dev/null 2>&1 \
+              && docker exec "$redis" redis-cli ping 2>/dev/null | grep -q PONG; then break; fi
+            if [ "$attempt" -eq 60 ]; then echo 'Disposable PostgreSQL or Redis did not become ready.' >&2; exit 1; fi
+            sleep 2
+          done
+
+          api_image="$(awk -F '\t' '$1=="api-runtime" {print $3}' "$evidence/image-ids.tsv")"
+          migrator_image="$(awk -F '\t' '$1=="migrator" {print $3}' "$evidence/image-ids.tsv")"
+          frontend_image="$(awk -F '\t' '$1=="frontend" {print $3}' "$evidence/image-ids.tsv")"
+          worker_image="$(awk -F '\t' '$1=="media-worker" {print $3}' "$evidence/image-ids.tsv")"
+          printf '%s\n' 'DATABASE_URL=postgresql://scrolith_test:local-image-only@postgres:5432/scrolith_test' \
+            'NODE_ENV=production' 'PORT=5000' \
+            'JWT_SECRET=scrolith_local_image_validation_synthetic_secret_only' \
+            'REDIS_URL=redis://redis:6379' 'REDIS_RATE_LIMIT_FAIL_CLOSED=true' \
+            'FRONTEND_ORIGIN=http://127.0.0.1:18080' 'FRONTEND_URL=http://127.0.0.1:18080' \
+            'PUBLIC_API_URL=http://127.0.0.1:15000' 'CORS_ALLOWED_ORIGINS=http://127.0.0.1:18080' \
+            'UPLOAD_DRIVER=local' 'SCROLITH_MONEY_MOVEMENT_ENABLED=false' \
+            'EXTERNAL_PLATFORM_API_ENABLED=false' 'DISABLE_BACKGROUND_WORKERS=true' \
+            'SCROLITHA_PROVIDER=disabled' > "$RUNNER_TEMP/scrolith-api-smoke.env"
+          printf '%s\n' 'DATABASE_URL=postgresql://scrolith_test:local-image-only@postgres:5432/scrolith_test' \
+            'NODE_ENV=production' 'PORT=8080' 'MEDIA_PROCESSING_MODE=disabled' \
+            'MEDIA_WORKER_READY_REQUIRE_DB=true' > "$RUNNER_TEMP/scrolith-worker-smoke.env"
+
+          docker run --rm --network "$network" --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" "$migrator_image" \
+            2>&1 | tee "$evidence/migrator-disposable-replay.log"
+          docker run --detach --name "$api" --network "$network" --publish 127.0.0.1:15000:5000 \
+            --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" "$api_image"
+          docker run --detach --name "$frontend" --network "$network" --publish 127.0.0.1:18080:8080 "$frontend_image"
+          docker run --detach --name "$worker" --network "$network" --publish 127.0.0.1:18081:8080 \
+            --env-file "$RUNNER_TEMP/scrolith-worker-smoke.env" "$worker_image"
+
+          wait_http() {
+            local url="$1"
+            local expected="$2"
+            for attempt in $(seq 1 60); do
+              local status
+              status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url" || true)"
+              if [ "$status" = "$expected" ]; then printf '%s %s\n' "$expected" "$url"; return 0; fi
+              sleep 2
+            done
+            echo "Expected HTTP $expected from local smoke endpoint: $url" >&2
+            docker logs "$api" 2>&1 | tail -n 80 | sed -E 's#(postgres(ql)?://)[^[:space:]" ]+#\1[DATABASE_URL_REDACTED]#g' >&2 || true
+            return 1
+          }
+          wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health.txt"
+          wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness.txt"
+          wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health.txt"
+          wait_http http://127.0.0.1:18081/health 200 | tee "$evidence/media-worker-health.txt"
+          wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness.txt"
+          docker exec "$api" node --version | tee "$evidence/api-node-version.txt"
+          docker exec "$frontend" sh -c 'grep -R -F "https://api-staging.invalid/api" /usr/share/nginx/html/assets >/dev/null'
+          docker exec "$worker" node --version | tee "$evidence/media-worker-node-version.txt"
+          docker exec "$worker" ffmpeg -version 2>&1 | sed -n '1,2p' | tee "$evidence/media-worker-ffmpeg-version.txt"
+
+          stop_and_verify() {
+            local container="$1"
+            local label="$2"
+            docker stop --time 30 "$container" | tee "$evidence/${label}-graceful-stop.txt"
+            docker inspect --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$container" \
+              | tee "$evidence/${label}-exit-state.txt"
+            grep -qx 'exit=0 oom=false' "$evidence/${label}-exit-state.txt"
+          }
+
+          stop_and_verify "$api" api
+          stop_and_verify "$frontend" frontend
+          stop_and_verify "$worker" media-worker
+
+          docker start "$api" | tee "$evidence/api-restart.txt"
+          docker start "$frontend" | tee "$evidence/frontend-restart.txt"
+          docker start "$worker" | tee "$evidence/media-worker-restart.txt"
+          wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health-after-restart.txt"
+          wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness-after-restart.txt"
+          wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health-after-restart.txt"
+          wait_http http://127.0.0.1:18081/health 200 | tee "$evidence/media-worker-health-after-restart.txt"
+          wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness-after-restart.txt"
+
+          stop_and_verify "$api" api-after-restart
+          stop_and_verify "$frontend" frontend-after-restart
+          stop_and_verify "$worker" media-worker-after-restart
+
+      - name: Remove only this run's disposable containers and network
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          prefix="scrolith-pr-${{ github.event.pull_request.number }}"
+          docker rm -f "${prefix}-api" "${prefix}-frontend-smoke" "${prefix}-media-worker" "${prefix}-redis" "${prefix}-postgres" >/dev/null 2>&1
+          docker network rm "${prefix}-network" >/dev/null 2>&1
+
+      - name: Upload image IDs, raw scans, SBOMs, and smoke evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.2
+        with:
+          name: scrolith-image-verification-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/scrolith-image-evidence/
+          if-no-files-found: warn
+          retention-days: 7

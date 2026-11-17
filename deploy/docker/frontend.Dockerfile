@@ -15,14 +15,15 @@ RUN npm ci --include=dev --no-audit --no-fund --replace-registry-host=always \
 
 COPY geezle/ ./
 
-ARG VITE_API_URL=https://api.scrolith.com/api
-ARG VITE_BACKEND_URL=https://api.scrolith.com
-ARG VITE_SCROLITH_ENV=production
-ARG VITE_PUBLIC_APP_DOMAIN=scrolith.com
+ARG VITE_API_URL
+ARG VITE_BACKEND_URL
+ARG VITE_SCROLITH_ENV
+ARG VITE_PUBLIC_APP_DOMAIN
 ARG VITE_MESSAGES_TRACE_DEBUG=false
 ARG VITE_INSTANT_GRAPH_ENABLED=false
 
-RUN npm run build -- --base=/
+RUN node -e 'const fail=(m)=>{console.error(`Invalid frontend image build configuration: ${m}`);process.exit(1)};const required=["VITE_API_URL","VITE_BACKEND_URL","VITE_SCROLITH_ENV","VITE_PUBLIC_APP_DOMAIN"];for(const key of required)if(!process.env[key]?.trim())fail(`${key} must be supplied explicitly`);const env=process.env.VITE_SCROLITH_ENV;let api,backend;try{api=new URL(process.env.VITE_API_URL);backend=new URL(process.env.VITE_BACKEND_URL)}catch{fail("API URLs must be valid absolute URLs")}const domain=process.env.VITE_PUBLIC_APP_DOMAIN.toLowerCase();if(!["ci","staging","production"].includes(env))fail("VITE_SCROLITH_ENV must be ci, staging, or production");if(!["http:","https:"].includes(api.protocol)||!["http:","https:"].includes(backend.protocol))fail("API URLs must use HTTP or HTTPS");if(api.username||api.password||backend.username||backend.password)fail("API URLs must not contain credentials");if(env==="production"){if(api.origin!=="https://api.scrolith.com"||api.pathname.replace(/\/$/,"")!=="/api"||backend.origin!=="https://api.scrolith.com"||backend.pathname!=="/"||domain!=="scrolith.com")fail("production requires the canonical HTTPS API and app host");}else if([api.hostname,backend.hostname,domain].some((host)=>host==="scrolith.com"||host.endsWith(".scrolith.com")))fail("nonproduction builds must not target the public Scrolith domain");' \
+  && npm run build -- --base=/
 
 # Nginx 1.30.6 stable Alpine 3.24.4; amd64 immutable runtime digest.
 FROM nginx:stable-alpine3.24@sha256:bb8f722b4be005fcd7827816a136ab779fd40185d85b5171be915cc7fc0575c7 AS runtime

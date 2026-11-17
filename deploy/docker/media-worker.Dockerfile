@@ -1,8 +1,13 @@
-# Node 20.19.5 Bookworm slim; amd64 immutable builder/runtime base digest.
-FROM node:20.19.5-bookworm-slim@sha256:d08621e478133b0492bd661ceee5d13a22b8c55297f3dbbb57f1c15d0c214942 AS builder
+# Node 22.23.2 Bookworm slim; amd64 immutable base digest. The backend package
+# requires Node >=22.18.0 <23, so the worker must use the same supported major.
+FROM node:22.23.2-bookworm-slim@sha256:43aeff40f4afc22e83f7589a2f37e111cff5ca84529571f1c8415bcc5fcc21b2 AS builder
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
-RUN npm ci --include=dev && npm cache clean --force
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
+RUN npm ci --include=dev --no-audit --no-fund --replace-registry-host=always \
+  --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 \
+  && npm cache clean --force
 COPY geezle-backend/src ./src
 COPY geezle-backend/prisma ./prisma
 COPY geezle-backend/prisma.config.ts ./
@@ -12,13 +17,25 @@ RUN npm run prisma:generate
 RUN npm run build:prod
 RUN find dist -type f -name '*.map' -delete
 
-FROM node:20.19.5-bookworm-slim@sha256:d08621e478133b0492bd661ceee5d13a22b8c55297f3dbbb57f1c15d0c214942 AS runtime
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+# Use an immutable, timestamped official Debian archive for ffmpeg and its
+# transitive packages. This avoids resolving against the mutable live mirror.
+FROM node:22.23.2-bookworm-slim@sha256:43aeff40f4afc22e83f7589a2f37e111cff5ca84529571f1c8415bcc5fcc21b2 AS runtime
+RUN set -eux; \
+  rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; \
+  printf '%s\n' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261117T000000Z bookworm main' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261117T000000Z bookworm-updates main' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20261117T000000Z bookworm-security main' \
+    > /etc/apt/sources.list.d/scrolith-snapshot.list; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends ffmpeg ca-certificates; \
+  rm -rf /var/lib/apt/lists/*
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
-RUN npm ci --omit=dev \
+ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REPLACE_REGISTRY_HOST=always
+RUN npm ci --omit=dev --no-audit --no-fund --replace-registry-host=always \
+  --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000 \
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
     node_modules/prisma node_modules/@prisma/dev node_modules/@prisma/config \
     node_modules/@prisma/studio-core node_modules/@visx node_modules/mysql2 \

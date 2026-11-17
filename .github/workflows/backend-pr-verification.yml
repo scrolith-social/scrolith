@@ -186,6 +186,10 @@ jobs:
             echo 'Refusing to start browser validation with an unexpected database target.' >&2
             exit 1
           fi
+          if [[ "${CERT_REQUIRE_FEED_FIXTURES:-}" != 'true' ]]; then
+            echo 'Refusing to run authenticated browser certification without required synthetic feed fixtures.' >&2
+            exit 1
+          fi
 
           node --input-type=module <<'NODE'
           import pg from 'pg';
@@ -348,7 +352,7 @@ jobs:
                 PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
                 CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
                 CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
-                CERT_REQUIRE_FEED_FIXTURES="$CERT_REQUIRE_FEED_FIXTURES" \
+                CERT_REQUIRE_FEED_FIXTURES=true \
                 CERT_SCROLL_FIXTURE_ID="$scroll_fixture_id" \
                 CERT_RESULTS_DIR="$authenticated_results_dir" CERT_STORAGE_STATE="$state_b" \
                 CERT_BROWSER_PROJECT="$project" CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
