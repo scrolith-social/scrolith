@@ -177,4 +177,23 @@ export async function isLikelyAuthenticated(page: Page) {
   }, CERT_API_BASE);
 }
 
+/**
+ * Confirms the application auth bootstrap has hydrated its own client state.
+ * A valid bearer token alone is insufficient: route guards also depend on the
+ * UserContext user record being loaded from the authenticated API response.
+ */
+export async function isClientAuthenticated(page: Page) {
+  return page.evaluate(() => {
+    try {
+      const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
+      const rawUser = localStorage.getItem('user');
+      if (!token || !rawUser) return false;
+      const user = JSON.parse(rawUser);
+      return Boolean(user && typeof user.id === 'string' && user.id.trim());
+    } catch {
+      return false;
+    }
+  });
+}
+
 export { CERT_BASE_URL };

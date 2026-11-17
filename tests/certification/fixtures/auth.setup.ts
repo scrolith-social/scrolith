@@ -11,6 +11,7 @@ import {
 } from '../helpers/env';
 import {
   completeFollowOnboardingIfRequired,
+  isClientAuthenticated,
   isLikelyAuthenticated,
   loginViaUi
 } from '../helpers/auth';
@@ -33,12 +34,24 @@ setup('authenticate for certification suite', async ({ page }, testInfo) => {
     // session left to approve it.
     if (hasAuthStorage()) {
       await page.goto('/', { waitUntil: 'domcontentloaded' });
+      await expect.poll(() => isLikelyAuthenticated(page), {
+        timeout: 30_000,
+        message: 'CERT_STORAGE_STATE must contain a server-validated Scrolith session; /api/auth/me must return HTTP 200'
+      }).toBe(true);
+      await expect.poll(() => isClientAuthenticated(page), {
+        timeout: 30_000,
+        message: 'The Scrolith UserContext must finish loading the authenticated user before state is saved.'
+      }).toBe(true);
       await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 15_000 });
-      expect(
-        await isLikelyAuthenticated(page),
-        'CERT_STORAGE_STATE must contain a server-validated Scrolith session; /api/auth/me must return HTTP 200'
-      ).toBe(true);
       await completeFollowOnboardingIfRequired(page);
+      await expect.poll(() => isLikelyAuthenticated(page), {
+        timeout: 15_000,
+        message: 'The server session must remain valid after Follow Onboarding.'
+      }).toBe(true);
+      await expect.poll(() => isClientAuthenticated(page), {
+        timeout: 15_000,
+        message: 'Follow Onboarding must preserve the hydrated authenticated user.'
+      }).toBe(true);
       await page.context().storageState({ path: CERT_STORAGE_STATE });
       return;
     }
@@ -50,11 +63,17 @@ setup('authenticate for certification suite', async ({ page }, testInfo) => {
 
     // Never save an anonymous state as a successful authentication fixture.
     await expect(page).not.toHaveURL(/\/auth\/login/, { timeout: 15_000 });
-    expect(
-      await isLikelyAuthenticated(page),
-      'Certification login must establish a server-validated Scrolith session; /api/auth/me must return HTTP 200'
-    ).toBe(true);
+    await expect.poll(() => isLikelyAuthenticated(page), {
+      timeout: 30_000,
+      message: 'Certification login must establish a server-validated Scrolith session; /api/auth/me must return HTTP 200'
+    }).toBe(true);
+    await expect.poll(() => isClientAuthenticated(page), {
+      timeout: 30_000,
+      message: 'The Scrolith UserContext must finish loading before authenticated state is saved.'
+    }).toBe(true);
     await completeFollowOnboardingIfRequired(page);
+    await expect.poll(() => isLikelyAuthenticated(page)).toBe(true);
+    await expect.poll(() => isClientAuthenticated(page)).toBe(true);
     await page.context().storageState({ path: CERT_STORAGE_STATE });
   } catch (error) {
     await apiWatch.settle();

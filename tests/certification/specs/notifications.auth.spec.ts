@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { requireAuthOrSkip } from '../helpers/env';
 import { CERT_ROUTES, isValidAuthDestination } from '../helpers/routes';
+import { isClientAuthenticated, isLikelyAuthenticated } from '../helpers/auth';
 import { assertLayoutNoProductOverflow } from '../helpers/postCard';
 import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
@@ -13,11 +14,24 @@ test.describe('Notifications — authenticated cert', () => {
     const apiWatch = watchSafeApiEvents(page);
     try {
       await page.goto(CERT_ROUTES.notifications, { waitUntil: 'domcontentloaded' });
+      await expect.poll(() => isClientAuthenticated(page), {
+        timeout: 30_000,
+        message: 'Notifications certification requires the hydrated authenticated user.'
+      }).toBe(true);
+      await expect.poll(() => isLikelyAuthenticated(page), {
+        timeout: 15_000,
+        message: 'Notifications certification requires a server-validated session.'
+      }).toBe(true);
+      await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
       await expect
         .poll(
           async () => {
-            const text = (await page.locator('body').innerText().catch(() => '')) || '';
-            return /notification|inbox|no new|nothing|all caught up/i.test(text);
+            const inbox = page.getByRole('list', { name: 'Notification inbox' });
+            if (!(await inbox.isVisible().catch(() => false))) return false;
+            if ((await inbox.getAttribute('aria-busy')) !== 'false') return false;
+            const text = (await inbox.innerText().catch(() => '')) || '';
+            const itemCount = await inbox.getByRole('listitem').count();
+            return itemCount > 0 || /all caught up/i.test(text);
           },
           { timeout: 30_000, message: 'wait for the authenticated notifications screen to finish loading' }
         )

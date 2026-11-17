@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
+import { isClientAuthenticated, isLikelyAuthenticated } from './auth';
 
 export const POST_CARD = '[data-testid="enterprise-post-card"], [data-post-card-design="21.1.5"], article.scrolith-post-card';
 export const POST_HEADER = '[data-testid="post-header"]';
@@ -43,14 +44,30 @@ export async function skipOrFailWhenFeedFixtureMissing(
 
 export async function waitForFeed(page: Page, timeout = 45_000) {
   await page.waitForLoadState('domcontentloaded');
-  // Either post cards appear or an empty-state / login gate is visible
-  await Promise.race([
-    page.locator(POST_CARD).first().waitFor({ state: 'visible', timeout }),
-    page.getByText(/log in|sign in|no posts|caught up|create your first/i).first().waitFor({
-      state: 'visible',
-      timeout
-    })
-  ]).catch(() => undefined);
+  await expect.poll(() => isClientAuthenticated(page), {
+    timeout: 30_000,
+    message: 'Authenticated feed tests require the client UserContext to contain a hydrated user.'
+  }).toBe(true);
+  await expect.poll(() => isLikelyAuthenticated(page), {
+    timeout: 15_000,
+    message: 'Authenticated feed tests require /api/auth/me to accept the stored session.'
+  }).toBe(true);
+  await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/, {
+    timeout: 15_000,
+    message: 'The authenticated feed route must not redirect to login.'
+  });
+
+  const cardWait = page.locator(POST_CARD).first().waitFor({ state: 'visible', timeout });
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    // CI seeds an authenticated synthetic post; do not let a guest/login UI or
+    // generic navigation text satisfy this wait.
+    await cardWait;
+  } else {
+    await Promise.race([
+      cardWait,
+      page.getByText(/no posts|caught up|create your first/i).first().waitFor({ state: 'visible', timeout })
+    ]).catch(() => undefined);
+  }
   // Phase 21.1.7 — allow orchestrator + mobile shared lifecycle to settle so
   // cache/network races do not shift the session head under the identity probe.
   await page.waitForTimeout(2500);
