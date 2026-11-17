@@ -109,7 +109,23 @@ test('a trusted local session approves a signed-in login from a new device', asy
       message: 'The trusted browser session must remain server-validated after the app remounts.'
     }).toBe(true);
     await Promise.allSettled(pendingListReads);
-    const matchingApprovalResponse = pendingListObservations.find((observation) => observation.ids.includes(loginAttemptId));
+    // A mobile page can have an older pending-list poll in flight when it is
+    // reloaded. A successful response without this newly-created ID is not the
+    // authorization evidence this test needs; wait for a fresh list response
+    // that contains this exact pending attempt.
+    await expect.poll(
+      () => pendingListObservations.some(
+        (observation) => observation.status === 200 && observation.ids.includes(loginAttemptId)
+      ),
+      {
+        timeout: 30_000,
+        intervals: [250, 500, 1_000],
+        message: 'The authenticated pending-approval list must include the exact new-device attempt.'
+      }
+    ).toBe(true);
+    const matchingApprovalResponse = pendingListObservations.find(
+      (observation) => observation.status === 200 && observation.ids.includes(loginAttemptId)
+    );
     expect(matchingApprovalResponse?.status, 'the exact pending approval must appear in the successful authenticated list response').toBe(200);
 
     const approvalDialog = page.getByRole('dialog', { name: 'New sign-in request' });
