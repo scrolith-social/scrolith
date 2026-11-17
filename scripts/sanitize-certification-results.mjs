@@ -18,6 +18,14 @@ const redactText = (value) => String(value || '')
 const safeProject = (value) => /^[a-z0-9_-]{1,40}$/i.test(String(value || '')) ? String(value) : 'unknown';
 const safeStatuses = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted', 'expected', 'unknown']);
 const statusOf = (value) => safeStatuses.has(value) ? value : 'unknown';
+const testStatusOf = (test, finalResult) => {
+  const value = test.status || finalResult.status || (test.expectedStatus === 'skipped' ? 'skipped' : 'unknown');
+  if (value === 'expected') return test.expectedStatus === 'skipped' ? 'skipped' : 'passed';
+  if (value === 'unexpected') {
+    return ['timedOut', 'interrupted'].includes(finalResult.status) ? finalResult.status : 'failed';
+  }
+  return statusOf(value);
+};
 const classifyError = (value) => {
   const text = String(value || '');
   if (/timeout|timed out/i.test(text)) return 'timeout';
@@ -38,8 +46,10 @@ function collectTests(suite, parents = [], output = []) {
       const results = Array.isArray(test.results) ? test.results : [];
       const finalResult = results.at(-1) || {};
       const failedEarlier = results.slice(0, -1).some((item) => ['failed', 'timedOut'].includes(item.status));
-      const rawStatus = test.status || finalResult.status || (test.expectedStatus === 'skipped' ? 'skipped' : 'unknown');
-      const status = rawStatus === 'flaky' || (failedEarlier && finalResult.status === 'passed') ? 'flaky' : statusOf(rawStatus);
+      const normalizedStatus = testStatusOf(test, finalResult);
+      const status = normalizedStatus === 'flaky' || (failedEarlier && finalResult.status === 'passed')
+        ? 'flaky'
+        : normalizedStatus;
       const annotations = [...(test.annotations || []), ...(finalResult.annotations || [])];
       const rawSkip = annotations.find((item) => /skip/i.test(String(item.type || '')))?.description || '';
       const rawError = (finalResult.errors || [])[0];

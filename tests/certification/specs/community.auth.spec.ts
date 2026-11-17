@@ -12,6 +12,7 @@ import {
   waitForFeed,
   AI_COACH
 } from '../helpers/postCard';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 test.describe('Community — authenticated post card cert', () => {
   test.beforeEach(() => {
@@ -19,6 +20,7 @@ test.describe('Community — authenticated post card cert', () => {
   });
 
   test('community feed post cards share enterprise design markers', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.community, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     await assertDesignTokenOnPage(page);
@@ -27,7 +29,10 @@ test.describe('Community — authenticated post card cert', () => {
     const count = await cards.count();
     testInfo.annotations.push({ type: 'postCards', description: String(count) });
     if (count === 0) {
-      skipOrFailWhenFeedFixtureMissing(test, count, 'No community post cards visible outside seeded CI runs');
+      await skipOrFailWhenFeedFixtureMissing(test, count, 'No community post cards visible outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
 

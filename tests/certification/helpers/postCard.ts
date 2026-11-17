@@ -27,13 +27,15 @@ export function postCards(page: Page): Locator {
 }
 
 /** CI uses explicitly seeded public fixtures; absence is a failure there, not a pass-by-skip. */
-export function skipOrFailWhenFeedFixtureMissing(
+export async function skipOrFailWhenFeedFixtureMissing(
   test: { skip: (condition: boolean, description?: string) => void },
   count: number,
-  reason: string
-) {
+  reason: string,
+  captureEvidence?: () => Promise<void>
+): Promise<void> {
   if (count > 0) return;
   if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    if (captureEvidence) await captureEvidence().catch(() => undefined);
     throw new Error('Required synthetic feed fixture did not render on the authenticated test surface.');
   }
   test.skip(true, reason);

@@ -19,6 +19,7 @@ import {
   SURVEY,
   TRANSLATABLE
 } from '../helpers/postCard';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 test.describe('Member Home — authenticated post card cert', () => {
   test.beforeEach(() => {
@@ -26,6 +27,7 @@ test.describe('Member Home — authenticated post card cert', () => {
   });
 
   test('renders enterprise post cards with design system geometry', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     await assertDesignTokenOnPage(page);
@@ -48,7 +50,10 @@ test.describe('Member Home — authenticated post card cert', () => {
     }
 
     if (count === 0) {
-      skipOrFailWhenFeedFixtureMissing(test, count, 'No post cards visible outside seeded CI runs');
+      await skipOrFailWhenFeedFixtureMissing(test, count, 'No post cards visible outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
 
@@ -83,12 +88,16 @@ test.describe('Member Home — authenticated post card cert', () => {
     });
   });
 
-  test('long content does not overflow post card bounds', async ({ page }) => {
+  test('long content does not overflow post card bounds', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards outside seeded CI runs');
+      await skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
     const card = cards.first();

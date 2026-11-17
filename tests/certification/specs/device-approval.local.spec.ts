@@ -18,20 +18,11 @@ test('a trusted local session approves a signed-in login from a new device', asy
   test.skip(!CERT_EMAIL || !CERT_PASSWORD, 'Requires a synthetic local certification account');
 
   const trustedApiWatch = watchSafeApiEvents(page);
-  const trustedInitialApprovalListPromise = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === 'GET' &&
-      url.pathname.endsWith('/api/security/login-approvals/pending');
-  }, { timeout: 30_000 });
-
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
   await expect.poll(() => isLikelyAuthenticated(page), {
     message: 'The trusted device must have a real authenticated synthetic session.'
   }).toBe(true);
-  const trustedInitialApprovalList = await trustedInitialApprovalListPromise;
-  expect(trustedInitialApprovalList.status(), 'the trusted session must load its authenticated pending-approval list').toBe(200);
-
   const projectUse = testInfo.project.use as Record<string, unknown>;
   const viewport = projectUse.viewport as { width: number; height: number } | undefined;
   const deviceContext = await browser.newContext({

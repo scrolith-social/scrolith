@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { FEED_IDENTITY_MS, requireAuthOrSkip } from '../helpers/env';
 import { CERT_ROUTES } from '../helpers/routes';
-import { runFeedIdentityProbe } from '../helpers/feedIdentity';
+import { assertFeedIdentityStable, runFeedIdentityProbe } from '../helpers/feedIdentity';
 import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 /**
