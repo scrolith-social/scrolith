@@ -148,6 +148,10 @@ jobs:
         working-directory: geezle
         run: npx playwright install --with-deps chromium webkit
 
+      - name: Test loopback-only authenticated feed preflight
+        working-directory: geezle-backend
+        run: node --test scripts/verify-certification-feed.test.mjs
+
       - name: Run local signup, Human Verification, authenticated suite, and logout regressions
         shell: bash
         working-directory: geezle-backend
@@ -296,7 +300,22 @@ jobs:
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
           )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
+              CERT_EMAIL="$signup_a" CERT_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
+                tests/certification/specs/device-approval.local.spec.ts
+          )
           SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" node scripts/seed-certification-feed.mjs
+          CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+            CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+            node scripts/verify-certification-feed.mjs
           (
             cd ../geezle
             env -i \
@@ -309,7 +328,7 @@ jobs:
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
-                --grep-invert 'local signup|Logout revokes the current authenticated session'
+                --grep-invert 'local signup|Logout revokes the current authenticated session|a trusted local session approves a signed-in login from a new device'
           )
           logout_email="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-logout@example.invalid"
           (
