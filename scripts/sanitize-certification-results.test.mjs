@@ -59,7 +59,20 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     scenario: 'member_home_feed',
     project: 'desktop-chrome',
     testIdHash: '012345abcdef',
-    pageState: { route: 'member_home', postCardCount: 2, storedUserPresent: true, token: 'SYNTHETIC_TOKEN' },
+    pageState: {
+      route: 'member_home',
+      safePath: '/',
+      postCardCount: 2,
+      storedUserPresent: true,
+      storedUserIdPresent: true,
+      storedUserOnboardingFlagPresent: true,
+      storedUserOnboardingRequired: true,
+      followOnboardingRoute: false,
+      memberHomeMarkerCount: 0,
+      mobileHomeMarkerCount: 0,
+      userId: 'SENSITIVE_SYNTHETIC_USER_ID',
+      token: 'SYNTHETIC_TOKEN'
+    },
     diagnostics: {
       approvalPolling: {
         responseCount: 3,
@@ -82,6 +95,16 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       responseShape: 'items_array',
       url: 'http://127.0.0.1/private?token=SYNTHETIC_TOKEN',
       body: 'SYNTHETIC_BODY'
+    }, {
+      kind: 'response',
+      route: 'auth_me',
+      method: 'GET',
+      status: 200,
+      authUserRecordPresent: true,
+      authOnboardingFlagPresent: true,
+      authOnboardingRequired: true,
+      userId: 'SENSITIVE_SYNTHETIC_USER_ID',
+      email: 'person@example.invalid'
     }]
   }));
   writeFileSync(join(secondRunRoot, 'cert-results.json'), JSON.stringify({
@@ -134,8 +157,18 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       unknown: 0
     });
     assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
-    assert.equal(JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8')).pageState.storedUserPresent, true);
     const sanitizedSynthetic = JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8'));
+    assert.equal(sanitizedSynthetic.pageState.storedUserPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.storedUserIdPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.storedUserOnboardingRequired, true);
+    assert.equal(sanitizedSynthetic.pageState.memberHomeMarkerCount, 0);
+    const sanitizedAuthEvent = sanitizedSynthetic.apiEvents.find((event) => event.route === 'auth_me');
+    assert.deepEqual({
+      authUserRecordPresent: sanitizedAuthEvent.authUserRecordPresent,
+      authOnboardingFlagPresent: sanitizedAuthEvent.authOnboardingFlagPresent,
+      authOnboardingRequired: sanitizedAuthEvent.authOnboardingRequired
+    }, { authUserRecordPresent: true, authOnboardingFlagPresent: true, authOnboardingRequired: true });
+    assert.equal(Object.hasOwn(sanitizedAuthEvent, 'userId'), false);
     assert.deepEqual(sanitizedSynthetic.diagnostics.approvalPolling.statusCounts, [
       { status: 200, count: 2 },
       { status: 429, count: 1 }
@@ -156,6 +189,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       'SYNTHETIC_TOKEN',
       'SENSITIVE_SYNTHETIC_ATTEMPT_ID',
       'SYNTHETIC_BODY',
+      'SENSITIVE_SYNTHETIC_USER_ID',
       'RAW_TEST_OUTPUT_MUST_NOT_BE_READ',
       'RAW_HTML_REPORT_MUST_NOT_BE_READ',
       'http://127.0.0.1/private'

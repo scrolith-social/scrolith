@@ -163,10 +163,17 @@ for (const source of safeEvidencePaths) {
     const counts = raw.pageState && typeof raw.pageState === 'object' ? raw.pageState : {};
     const pageState = {
       route: ['member_home', 'notifications', 'login', 'signup', 'other', 'unavailable'].includes(counts.route) ? counts.route : 'unavailable',
+      safePath: ['/', '/member-home', '/m/home', '/auth/follow-onboarding', '/auth/login', '/auth/signup', 'other'].includes(counts.safePath) ? counts.safePath : 'other',
       readyState: ['loading', 'interactive', 'complete', 'unavailable'].includes(counts.readyState) ? counts.readyState : 'unavailable',
       visibility: ['visible', 'hidden', 'prerender', 'unavailable'].includes(counts.visibility) ? counts.visibility : 'unavailable',
       authenticatedStoragePresent: counts.authenticatedStoragePresent === true,
       storedUserPresent: counts.storedUserPresent === true,
+      storedUserIdPresent: counts.storedUserIdPresent === true,
+      storedUserOnboardingFlagPresent: counts.storedUserOnboardingFlagPresent === true,
+      storedUserOnboardingRequired: counts.storedUserOnboardingRequired === true,
+      followOnboardingRoute: counts.followOnboardingRoute === true,
+      memberHomeMarkerCount: Number.isInteger(counts.memberHomeMarkerCount) ? Math.max(0, counts.memberHomeMarkerCount) : 0,
+      mobileHomeMarkerCount: Number.isInteger(counts.mobileHomeMarkerCount) ? Math.max(0, counts.mobileHomeMarkerCount) : 0,
       postCardCount: Number.isInteger(counts.postCardCount) ? Math.max(0, counts.postCardCount) : 0,
       mainCount: Number.isInteger(counts.mainCount) ? Math.max(0, counts.mainCount) : 0,
       loginFormCount: Number.isInteger(counts.loginFormCount) ? Math.max(0, counts.loginFormCount) : 0,
@@ -181,6 +188,9 @@ for (const source of safeEvidencePaths) {
       if (Number.isInteger(event.status) && event.status >= 100 && event.status <= 599) item.status = event.status;
       if (Number.isFinite(event.durationMs)) item.durationMs = Math.max(0, Math.round(event.durationMs));
       if (allowedFailureKinds.has(event.failure)) item.failure = event.failure;
+      if (typeof event.authUserRecordPresent === 'boolean') item.authUserRecordPresent = event.authUserRecordPresent;
+      if (typeof event.authOnboardingFlagPresent === 'boolean') item.authOnboardingFlagPresent = event.authOnboardingFlagPresent;
+      if (typeof event.authOnboardingRequired === 'boolean') item.authOnboardingRequired = event.authOnboardingRequired;
       if (Number.isInteger(event.itemCount)) item.itemCount = Math.max(0, event.itemCount);
       if (['items_array', 'missing_items', 'invalid_json'].includes(event.responseShape)) item.responseShape = event.responseShape;
       return [item];

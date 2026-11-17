@@ -12,6 +12,9 @@ type SafeApiEvent = {
   failure?: 'timeout' | 'connection' | 'aborted' | 'other';
   itemCount?: number;
   responseShape?: 'items_array' | 'missing_items' | 'invalid_json';
+  authUserRecordPresent?: boolean;
+  authOnboardingFlagPresent?: boolean;
+  authOnboardingRequired?: boolean;
 };
 
 const SAFE_ROUTES = new Map<string, SafeApiEvent['route']>([
@@ -100,6 +103,31 @@ export function watchSafeApiEvents(page: Page): SafeApiWatch {
           event.responseShape = 'invalid_json';
         }));
     }
+    if (route === 'auth_me' && response.ok()) {
+      pending.push(response
+        .json()
+        .then((body: unknown) => {
+          const root = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+          const data = root.data && typeof root.data === 'object' ? root.data as Record<string, unknown> : {};
+          const nestedData = data.data && typeof data.data === 'object' ? data.data as Record<string, unknown> : {};
+          const candidates = [root.user, data.user, nestedData.user, data, root];
+          const user = candidates.find((candidate) =>
+            candidate && typeof candidate === 'object' && typeof (candidate as Record<string, unknown>).id === 'string'
+          ) as Record<string, unknown> | undefined;
+          if (!user) {
+            event.authUserRecordPresent = false;
+            return;
+          }
+          const camelFlagPresent = Object.prototype.hasOwnProperty.call(user, 'followOnboardingRequired');
+          const snakeFlagPresent = Object.prototype.hasOwnProperty.call(user, 'follow_onboarding_required');
+          event.authUserRecordPresent = true;
+          event.authOnboardingFlagPresent = camelFlagPresent || snakeFlagPresent;
+          event.authOnboardingRequired = Boolean(user.followOnboardingRequired ?? user.follow_onboarding_required);
+        })
+        .catch(() => {
+          // Response bodies and parse errors are deliberately never retained.
+        }));
+    }
   });
   page.on('requestfailed', (request) => {
     let route: SafeApiEvent['route'] | undefined;
@@ -153,17 +181,38 @@ export async function writeSafeBrowserEvidence(
           return false;
         }
       })();
+      const storedUser = (() => {
+        try {
+          const raw = localStorage.getItem('user');
+          return raw ? JSON.parse(raw) as Record<string, unknown> : null;
+        } catch {
+          return null;
+        }
+      })();
       const path = location.pathname;
+      const safePath = ['/', '/member-home', '/m/home', '/auth/follow-onboarding', '/auth/login', '/auth/signup'].includes(path)
+        ? path
+        : 'other';
       const route = path === '/' ? 'member_home' :
         path === '/notifications' ? 'notifications' :
           path === '/auth/login' ? 'login' :
             path === '/auth/signup' ? 'signup' : 'other';
       return {
         route,
+        safePath,
         readyState: document.readyState,
         visibility: document.visibilityState,
         authenticatedStoragePresent: localAuthPresent,
         storedUserPresent,
+        storedUserIdPresent: Boolean(storedUser && typeof storedUser.id === 'string' && storedUser.id.trim()),
+        storedUserOnboardingFlagPresent: Boolean(storedUser && (
+          Object.prototype.hasOwnProperty.call(storedUser, 'followOnboardingRequired') ||
+          Object.prototype.hasOwnProperty.call(storedUser, 'follow_onboarding_required')
+        )),
+        storedUserOnboardingRequired: Boolean(storedUser?.followOnboardingRequired ?? storedUser?.follow_onboarding_required),
+        followOnboardingRoute: path.startsWith('/auth/follow-onboarding'),
+        memberHomeMarkerCount: count('[data-testid="scrolith-member-home"]'),
+        mobileHomeMarkerCount: count('[data-testid="scrolith-mobile-home"]'),
         postCardCount: count('[data-testid="enterprise-post-card"], [data-post-card-design="21.1.5"], article.scrolith-post-card'),
         mainCount: count('main, [role="main"]'),
         loginFormCount: count('form input[type="password"]'),
@@ -173,7 +222,7 @@ export async function writeSafeBrowserEvidence(
         documentBodyPresent: Boolean(document.body)
       };
     })
-    .catch(() => ({ route: 'unavailable', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
+    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
 
   const sanitizedEvents = apiEvents.slice(-120).map((event) => ({ ...event }));
   const evidencePath = join(safeDir, `${stem}.json`);
