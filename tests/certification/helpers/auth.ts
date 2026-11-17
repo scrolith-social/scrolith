@@ -30,9 +30,9 @@ export async function answerLocalHumanVerification(
   await expect(answerButton).toBeEnabled();
   const supportsTouch = await page.evaluate(() => navigator.maxTouchPoints > 0);
   if (supportsTouch) {
-    const bounds = await answerButton.boundingBox();
-    if (!bounds) throw new Error('The visible Human Verification answer has no touch target.');
-    await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    // Locator.tap revalidates and scrolls the target at dispatch time; a raw
+    // coordinate tap can miss after mobile viewport/layout movement.
+    await answerButton.tap();
   } else {
     await answerButton.click();
   }
