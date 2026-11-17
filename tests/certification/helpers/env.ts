@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 export const CERT_BASE_URL = process.env.CERT_BASE_URL || '';
+export const CERT_API_BASE = process.env.CERT_API_BASE || '';
 
 export const CERT_STORAGE_STATE =
   process.env.CERT_STORAGE_STATE || join(tmpdir(), 'scrolith-certification', 'storage-state.json');
