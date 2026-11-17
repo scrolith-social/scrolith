@@ -19,21 +19,12 @@ const isLoopback = (value: string) => {
 
 async function signOutFromVisibleNavigation(page: Page) {
   const desktopAccountMenu = page.getByRole('button', { name: 'Open account menu', exact: true });
-  const mobileQuickMenu = page.getByRole('button', { name: 'Open menu', exact: true });
   const mobileProfile = page.getByRole('button', { name: 'Open profile', exact: true });
 
   await expect(
-    desktopAccountMenu.or(mobileQuickMenu).or(mobileProfile).first(),
+    desktopAccountMenu.or(mobileProfile).first(),
     'the authenticated app must expose its responsive account navigation'
   ).toBeVisible({ timeout: 30_000 });
-
-  if (await mobileQuickMenu.isVisible()) {
-    await mobileQuickMenu.click();
-    const quickMenu = page.getByRole('dialog', { name: 'Quick menu' });
-    await expect(quickMenu).toBeVisible();
-    await quickMenu.getByRole('button', { name: 'Logout', exact: true }).click();
-    return;
-  }
 
   if (await mobileProfile.isVisible()) {
     await mobileProfile.click();
@@ -43,6 +34,7 @@ async function signOutFromVisibleNavigation(page: Page) {
     return;
   }
 
+  await expect(desktopAccountMenu, 'desktop logout must use the account menu').toBeVisible();
   await desktopAccountMenu.click();
   await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
 }

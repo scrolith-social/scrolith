@@ -63,6 +63,11 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       route: 'member_home',
       safePath: '/',
       postCardCount: 2,
+      authenticatedStoragePresent: true,
+      localTokenKeyPresent: true,
+      localAccessTokenKeyPresent: false,
+      localScrolithTokenKeyPresent: false,
+      tokenCookiePresent: false,
       storedUserPresent: true,
       storedUserIdPresent: true,
       storedUserOnboardingFlagPresent: true,
@@ -166,6 +171,11 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     });
     assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
     const sanitizedSynthetic = JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8'));
+    assert.equal(sanitizedSynthetic.pageState.authenticatedStoragePresent, true);
+    assert.equal(sanitizedSynthetic.pageState.localTokenKeyPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.localAccessTokenKeyPresent, false);
+    assert.equal(sanitizedSynthetic.pageState.localScrolithTokenKeyPresent, false);
+    assert.equal(sanitizedSynthetic.pageState.tokenCookiePresent, false);
     assert.equal(sanitizedSynthetic.pageState.storedUserPresent, true);
     assert.equal(sanitizedSynthetic.pageState.storedUserIdPresent, true);
     assert.equal(sanitizedSynthetic.pageState.storedUserOnboardingRequired, true);

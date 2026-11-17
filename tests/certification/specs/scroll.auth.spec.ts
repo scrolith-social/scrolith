@@ -22,6 +22,9 @@ test.describe('Scroll — authenticated surface cert', () => {
   test('interest survey controls are rendered for an available cross-account scroll', async ({ page }) => {
     const fixtureId = String(process.env.CERT_SCROLL_FIXTURE_ID || '').trim();
     const fixtureRequired = process.env.CERT_REQUIRE_FEED_FIXTURES === 'true';
+    if (process.env.CI === 'true' && !fixtureRequired) {
+      throw new Error('CI authenticated Scroll certification requires CERT_REQUIRE_FEED_FIXTURES=true.');
+    }
     if (fixtureRequired && !/^[a-zA-Z0-9_-]{1,64}$/.test(fixtureId)) {
       throw new Error('The required synthetic Scroll fixture ID is missing or invalid.');
     }
@@ -37,9 +40,10 @@ test.describe('Scroll — authenticated surface cert', () => {
     if ((await survey.count()) === 0) {
       if (fixtureRequired) {
         await expect(survey, 'the required authenticated Scroll fixture must expose its interest survey').toHaveCount(1, { timeout: 15_000 });
+      } else {
+        test.skip(true, 'No interest survey on current scroll item');
+        return;
       }
-      test.skip(true, 'No interest survey on current scroll item');
-      return;
     }
     await expect(survey.first()).toBeVisible();
     const yes = survey.first().locator('[data-testid="content-interest-yes"]');

@@ -168,13 +168,24 @@ export async function writeSafeBrowserEvidence(
   const pageState = await page
     .evaluate(() => {
       const count = (selector: string) => document.querySelectorAll(selector).length;
-      const localAuthPresent = ['token', 'accessToken', 'scrolith_token'].some((key) => {
+      const hasLocalStorageValue = (key: string) => {
         try {
           return Boolean(localStorage.getItem(key));
         } catch {
           return false;
         }
-      });
+      };
+      const localTokenKeyPresent = hasLocalStorageValue('token');
+      const localAccessTokenKeyPresent = hasLocalStorageValue('accessToken');
+      const localScrolithTokenKeyPresent = hasLocalStorageValue('scrolith_token');
+      const tokenCookiePresent = (() => {
+        try {
+          return document.cookie.split(';').some((part) => part.trim().startsWith('Scrolith_token='));
+        } catch {
+          return false;
+        }
+      })();
+      const localAuthPresent = localTokenKeyPresent || localAccessTokenKeyPresent || localScrolithTokenKeyPresent || tokenCookiePresent;
       const storedUserPresent = (() => {
         try {
           return Boolean(localStorage.getItem('user'));
@@ -204,6 +215,10 @@ export async function writeSafeBrowserEvidence(
         readyState: document.readyState,
         visibility: document.visibilityState,
         authenticatedStoragePresent: localAuthPresent,
+        localTokenKeyPresent,
+        localAccessTokenKeyPresent,
+        localScrolithTokenKeyPresent,
+        tokenCookiePresent,
         storedUserPresent,
         storedUserIdPresent: Boolean(storedUser && typeof storedUser.id === 'string' && storedUser.id.trim()),
         storedUserOnboardingFlagPresent: Boolean(storedUser && (
@@ -233,7 +248,7 @@ export async function writeSafeBrowserEvidence(
         documentBodyPresent: Boolean(document.body)
       };
     })
-    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, clientAuthState: 'unavailable', clientFollowOnboardingRequired: 'unavailable', followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
+    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, localTokenKeyPresent: false, localAccessTokenKeyPresent: false, localScrolithTokenKeyPresent: false, tokenCookiePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, clientAuthState: 'unavailable', clientFollowOnboardingRequired: 'unavailable', followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
 
   const sanitizedEvents = apiEvents.slice(-120).map((event) => ({ ...event }));
   const evidencePath = join(safeDir, `${stem}.json`);
