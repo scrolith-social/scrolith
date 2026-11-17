@@ -109,6 +109,10 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       try {
         const token = await AuthService.getToken();
+        // React StrictMode may clean up and replay this effect while the token
+        // store is still resolving. A stale run must not clear a session or
+        // overwrite the state produced by the current run.
+        if (!mounted) return;
         const cachedUser = token ? AuthService.getStoredUser() : null;
 
         if (!token) {
@@ -130,10 +134,12 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
           AUTH_BOOTSTRAP_TIMEOUT_MS,
           { user: cachedUser, unauthorized: false }
         );
+        if (!mounted) return;
         if (me && mounted) {
           setUser(me);
           setIsAuthenticated(true);
         } else if (unauthorized) {
+          // Only the active bootstrap may invalidate the shared token store.
           setUser(null);
           setIsAuthenticated(false);
           await AuthService.clearToken();
@@ -146,6 +152,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsAuthenticated(false);
         }
       } catch (error) {
+        if (!mounted) return;
         console.error('Auth initialization error:', error);
         const cachedUser = AuthService.getStoredUser();
         if (cachedUser && mounted) {
