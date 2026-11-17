@@ -87,15 +87,30 @@ export async function completeFollowOnboardingIfRequired(page: Page) {
   // Do not inspect the pathname immediately after navigation: at that point it
   // can still be `/` before the server-reported onboarding requirement redirects.
   await page.waitForFunction(
-    () =>
-      window.location.pathname.startsWith('/auth/follow-onboarding') ||
-      Boolean(document.querySelector(
-        '[data-testid="scrolith-member-home"], [data-testid="scrolith-mobile-home"]'
-      )),
+    () => {
+      const root = document.querySelector('[data-testid="scrolith-auth-state"]');
+      const authState = root?.getAttribute('data-auth-state');
+      const onboardingRequired = root?.getAttribute('data-follow-onboarding-required');
+      return window.location.pathname.startsWith('/auth/follow-onboarding') ||
+        Boolean(document.querySelector(
+          '[data-testid="scrolith-member-home"], [data-testid="scrolith-mobile-home"]'
+        )) ||
+        authState === 'anonymous' ||
+        (authState === 'authenticated' && onboardingRequired === 'false');
+    },
     undefined,
     { timeout: 30_000 }
   );
-  if (!new URL(page.url()).pathname.startsWith('/auth/follow-onboarding')) return;
+  const clientAuthState = await page.getByTestId('scrolith-auth-state').getAttribute('data-auth-state');
+  if (clientAuthState !== 'authenticated') {
+    throw new Error(`React authentication state is ${clientAuthState || 'unavailable'} after the local server validated the stored session`);
+  }
+  const onboardingRequired = await page.getByTestId('scrolith-auth-state').getAttribute('data-follow-onboarding-required');
+  const isOnboardingRoute = new URL(page.url()).pathname.startsWith('/auth/follow-onboarding');
+  if (onboardingRequired === 'true' && !isOnboardingRoute) {
+    throw new Error('The authenticated client still requires Follow Onboarding but did not navigate to its route');
+  }
+  if (!isOnboardingRoute) return;
 
   const languages = page.getByRole('group', { name: 'Available languages' });
   await expect(languages, 'Follow Onboarding must render its language selector').toBeVisible();
@@ -211,17 +226,10 @@ export async function isLikelyAuthenticated(page: Page) {
  * UserContext user record being loaded from the authenticated API response.
  */
 export async function isClientAuthenticated(page: Page) {
-  return page.evaluate(() => {
-    try {
-      const token = localStorage.getItem('token') || localStorage.getItem('accessToken');
-      const rawUser = localStorage.getItem('user');
-      if (!token || !rawUser) return false;
-      const user = JSON.parse(rawUser);
-      return Boolean(user && typeof user.id === 'string' && user.id.trim());
-    } catch {
-      return false;
-    }
-  });
+  return page.getByTestId('scrolith-auth-state')
+    .getAttribute('data-auth-state')
+    .then((state) => state === 'authenticated')
+    .catch(() => false);
 }
 
 export { CERT_BASE_URL };

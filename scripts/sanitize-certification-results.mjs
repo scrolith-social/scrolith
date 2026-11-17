@@ -136,7 +136,7 @@ writeFileSync(join(outputRoot, 'test-summary.json'), JSON.stringify({ schemaVers
 
 const safeEvidencePaths = findFiles(resultsRoot, (path) => basename(dirname(path)) === 'safe-evidence');
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const allowedRoutes = new Set(['feed', 'auth_me', 'login', 'approval_list', 'approval_exchange', 'notifications', 'human_verification']);
+const allowedRoutes = new Set(['feed', 'auth_me', 'follow_onboarding', 'login', 'approval_list', 'approval_exchange', 'notifications', 'human_verification']);
 const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications', 'signup_hv']);
 const allowedFailureKinds = new Set(['timeout', 'connection', 'aborted', 'other']);
 const evidenceManifest = [];
@@ -171,6 +171,8 @@ for (const source of safeEvidencePaths) {
       storedUserIdPresent: counts.storedUserIdPresent === true,
       storedUserOnboardingFlagPresent: counts.storedUserOnboardingFlagPresent === true,
       storedUserOnboardingRequired: counts.storedUserOnboardingRequired === true,
+      clientAuthState: ['loading', 'authenticated', 'anonymous', 'unavailable'].includes(counts.clientAuthState) ? counts.clientAuthState : 'unavailable',
+      clientFollowOnboardingRequired: ['true', 'false', 'unknown', 'unavailable'].includes(counts.clientFollowOnboardingRequired) ? counts.clientFollowOnboardingRequired : 'unavailable',
       followOnboardingRoute: counts.followOnboardingRoute === true,
       memberHomeMarkerCount: Number.isInteger(counts.memberHomeMarkerCount) ? Math.max(0, counts.memberHomeMarkerCount) : 0,
       mobileHomeMarkerCount: Number.isInteger(counts.mobileHomeMarkerCount) ? Math.max(0, counts.mobileHomeMarkerCount) : 0,

@@ -1542,7 +1542,14 @@ const AppContent = () => {
     );
   
   return (
-    <div className="flex flex-col min-h-screen relative">
+    <div
+      className="flex flex-col min-h-screen relative"
+      data-testid="scrolith-auth-state"
+      data-auth-state={isLoading ? 'loading' : isAuthenticated && user ? 'authenticated' : 'anonymous'}
+      data-follow-onboarding-required={isAuthenticated && user
+        ? String(hasPendingFollowOnboarding(user))
+        : 'unknown'}
+    >
       <SkipLink />
       <RouteAnnouncer />
       {nonCriticalUiReady && (

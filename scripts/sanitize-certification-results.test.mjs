@@ -67,6 +67,8 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       storedUserIdPresent: true,
       storedUserOnboardingFlagPresent: true,
       storedUserOnboardingRequired: true,
+      clientAuthState: 'anonymous',
+      clientFollowOnboardingRequired: 'true',
       followOnboardingRoute: false,
       memberHomeMarkerCount: 0,
       mobileHomeMarkerCount: 0,
@@ -105,6 +107,12 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       authOnboardingRequired: true,
       userId: 'SENSITIVE_SYNTHETIC_USER_ID',
       email: 'person@example.invalid'
+    }, {
+      kind: 'response',
+      route: 'follow_onboarding',
+      method: 'GET',
+      status: 200,
+      body: 'SYNTHETIC_PRIVATE_ONBOARDING_PAYLOAD'
     }]
   }));
   writeFileSync(join(secondRunRoot, 'cert-results.json'), JSON.stringify({
@@ -161,6 +169,8 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     assert.equal(sanitizedSynthetic.pageState.storedUserPresent, true);
     assert.equal(sanitizedSynthetic.pageState.storedUserIdPresent, true);
     assert.equal(sanitizedSynthetic.pageState.storedUserOnboardingRequired, true);
+    assert.equal(sanitizedSynthetic.pageState.clientAuthState, 'anonymous');
+    assert.equal(sanitizedSynthetic.pageState.clientFollowOnboardingRequired, 'true');
     assert.equal(sanitizedSynthetic.pageState.memberHomeMarkerCount, 0);
     const sanitizedAuthEvent = sanitizedSynthetic.apiEvents.find((event) => event.route === 'auth_me');
     assert.deepEqual({
@@ -168,6 +178,11 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       authOnboardingFlagPresent: sanitizedAuthEvent.authOnboardingFlagPresent,
       authOnboardingRequired: sanitizedAuthEvent.authOnboardingRequired
     }, { authUserRecordPresent: true, authOnboardingFlagPresent: true, authOnboardingRequired: true });
+    const sanitizedOnboardingEvent = sanitizedSynthetic.apiEvents.find((event) => event.route === 'follow_onboarding');
+    assert.deepEqual({ route: sanitizedOnboardingEvent.route, method: sanitizedOnboardingEvent.method, status: sanitizedOnboardingEvent.status }, {
+      route: 'follow_onboarding', method: 'GET', status: 200
+    });
+    assert.equal(JSON.stringify(sanitizedSynthetic).includes('SYNTHETIC_PRIVATE_ONBOARDING_PAYLOAD'), false);
     assert.equal(Object.hasOwn(sanitizedAuthEvent, 'userId'), false);
     assert.deepEqual(sanitizedSynthetic.diagnostics.approvalPolling.statusCounts, [
       { status: 200, count: 2 },

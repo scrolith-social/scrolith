@@ -6,7 +6,7 @@ import type { Page, TestInfo } from '@playwright/test';
 type SafeApiEvent = {
   kind: 'response' | 'request_failed';
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OTHER';
-  route: 'feed' | 'auth_me' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications' | 'human_verification';
+  route: 'feed' | 'auth_me' | 'follow_onboarding' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications' | 'human_verification';
   status?: number;
   durationMs?: number;
   failure?: 'timeout' | 'connection' | 'aborted' | 'other';
@@ -20,6 +20,7 @@ type SafeApiEvent = {
 const SAFE_ROUTES = new Map<string, SafeApiEvent['route']>([
   ['/api/discovery/v2/member-feed', 'feed'],
   ['/api/auth/me', 'auth_me'],
+  ['/api/auth/follow-onboarding', 'follow_onboarding'],
   ['/api/auth/login', 'login'],
   ['/api/security/login-approvals/pending', 'approval_list'],
   ['/api/auth/login/approval/exchange', 'approval_exchange'],
@@ -210,6 +211,16 @@ export async function writeSafeBrowserEvidence(
           Object.prototype.hasOwnProperty.call(storedUser, 'follow_onboarding_required')
         )),
         storedUserOnboardingRequired: Boolean(storedUser?.followOnboardingRequired ?? storedUser?.follow_onboarding_required),
+        clientAuthState: ['loading', 'authenticated', 'anonymous'].includes(
+          document.querySelector('[data-testid="scrolith-auth-state"]')?.getAttribute('data-auth-state') || ''
+        )
+          ? document.querySelector('[data-testid="scrolith-auth-state"]')?.getAttribute('data-auth-state')
+          : 'unavailable',
+        clientFollowOnboardingRequired: ['true', 'false', 'unknown'].includes(
+          document.querySelector('[data-testid="scrolith-auth-state"]')?.getAttribute('data-follow-onboarding-required') || ''
+        )
+          ? document.querySelector('[data-testid="scrolith-auth-state"]')?.getAttribute('data-follow-onboarding-required')
+          : 'unavailable',
         followOnboardingRoute: path.startsWith('/auth/follow-onboarding'),
         memberHomeMarkerCount: count('[data-testid="scrolith-member-home"]'),
         mobileHomeMarkerCount: count('[data-testid="scrolith-mobile-home"]'),
@@ -222,7 +233,7 @@ export async function writeSafeBrowserEvidence(
         documentBodyPresent: Boolean(document.body)
       };
     })
-    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
+    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, clientAuthState: 'unavailable', clientFollowOnboardingRequired: 'unavailable', followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
 
   const sanitizedEvents = apiEvents.slice(-120).map((event) => ({ ...event }));
   const evidencePath = join(safeDir, `${stem}.json`);
