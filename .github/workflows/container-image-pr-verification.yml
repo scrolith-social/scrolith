@@ -235,12 +235,19 @@ jobs:
           wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health.txt"
           wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness.txt"
           wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health.txt"
-          wait_http http://127.0.0.1:18081/health 200 | tee "$evidence/media-worker-health.txt"
+          wait_http http://127.0.0.1:18081/healthz 200 | tee "$evidence/media-worker-health.txt"
           wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness.txt"
           docker exec "$api" node --version | tee "$evidence/api-node-version.txt"
           docker exec "$frontend" sh -c 'grep -R -F "https://api-staging.invalid/api" /usr/share/nginx/html/assets >/dev/null'
           docker exec "$worker" node --version | tee "$evidence/media-worker-node-version.txt"
           docker exec "$worker" ffmpeg -version 2>&1 | sed -n '1,2p' | tee "$evidence/media-worker-ffmpeg-version.txt"
+
+          docker exec -i "$worker" node - < deploy/docker/media-worker-smoke.cjs \
+            | tee "$evidence/media-worker-synthetic-processing.txt"
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://127.0.0.1:18081/internal/media/jobs \
+            --header 'Content-Type: application/json' --data '{}')"
+          test "$status" = '401'
 
           stop_and_verify() {
             local container="$1"
@@ -261,7 +268,7 @@ jobs:
           wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health-after-restart.txt"
           wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness-after-restart.txt"
           wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health-after-restart.txt"
-          wait_http http://127.0.0.1:18081/health 200 | tee "$evidence/media-worker-health-after-restart.txt"
+          wait_http http://127.0.0.1:18081/healthz 200 | tee "$evidence/media-worker-health-after-restart.txt"
           wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness-after-restart.txt"
 
           stop_and_verify "$api" api-after-restart

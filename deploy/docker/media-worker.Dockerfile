@@ -1,6 +1,5 @@
-# Node 22.23.2 Trixie slim; immutable official multi-arch base digest. The backend package
-# requires Node >=22.18.0 <23, so the worker must use the same supported major.
-FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS builder
+# Use the same pinned Alpine/musl base as the API for the generated Prisma client and Sharp.
+FROM node:22-alpine3.24@sha256:947e5454e08bfe0b8ddda604915ad76275276c774f47da90d0137252c793a778 AS builder
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
 ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
@@ -19,22 +18,22 @@ RUN DATABASE_URL=postgresql://127.0.0.1:5432/prisma_build \
 RUN npm run build:prod
 RUN find dist -type f -name '*.map' -delete
 
-# Use an immutable, timestamped official Debian archive for FFmpeg and its
-# transitive packages. This avoids resolving against the mutable live mirror.
-# The minimal Node image has no OS CA bundle before this install. Debian apt
-# verifies signed Release/index metadata and package hashes over HTTP, so use
-# the snapshot's supported HTTP endpoint without disabling signature checks.
-FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS runtime
-RUN set -eux; \
-  rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; \
-  printf '%s\n' \
-    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261117T000000Z trixie main' \
-    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261117T000000Z trixie-updates main' \
-    'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20261117T000000Z trixie-security main' \
-    > /etc/apt/sources.list.d/scrolith-snapshot.list; \
-  apt-get update; \
-  apt-get install -y --no-install-recommends ffmpeg ca-certificates; \
-  rm -rf /var/lib/apt/lists/*
+# Install only the official signed APKs in the reviewed codec dependency closure.
+FROM node:22-alpine3.24@sha256:947e5454e08bfe0b8ddda604915ad76275276c774f47da90d0137252c793a778 AS runtime
+COPY deploy/docker/media-worker-alpine-apks.lock /tmp/media-worker-alpine-apks.lock
+RUN set -eu; \
+  test "$(apk --print-arch)" = x86_64; \
+  mkdir /tmp/media-apks; \
+  cd /tmp/media-apks; \
+  while read -r checksum url; do \
+    case "$checksum" in ''|\#*) continue ;; esac; \
+    case "$url" in https://dl-cdn.alpinelinux.org/alpine/v3.24/*/x86_64/*.apk) ;; *) exit 1 ;; esac; \
+    name="${url##*/}"; \
+    wget -q -O "$name" "$url"; \
+    printf '%s  %s\n' "$checksum" "$name" | sha512sum -c -; \
+  done < /tmp/media-worker-alpine-apks.lock; \
+  apk --repositories-file /dev/null --no-network add --no-cache ./*.apk; \
+  rm -rf /tmp/media-apks /tmp/media-worker-alpine-apks.lock
 WORKDIR /app/geezle-backend
 COPY geezle-backend/package*.json ./
 ENV NPM_CONFIG_REGISTRY=https://registry.npmjs.org
@@ -44,11 +43,12 @@ RUN npm ci --omit=dev --no-audit --no-fund --replace-registry-host=always \
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
     node_modules/prisma node_modules/@prisma/dev node_modules/@prisma/config \
     node_modules/@prisma/studio-core node_modules/@visx node_modules/mysql2 \
-    node_modules/deepmerge-ts node_modules/typescript
+    node_modules/deepmerge-ts node_modules/typescript \
+    /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* /sbin/apk
 COPY --from=builder /app/geezle-backend/dist ./dist
 COPY --from=builder /app/geezle-backend/node_modules/.prisma ./node_modules/.prisma
-RUN groupadd --system appgroup \
-  && useradd --system --gid appgroup --create-home appuser \
+RUN addgroup -S appgroup \
+  && adduser -S -G appgroup appuser \
   && mkdir -p uploads \
   && chown appuser:appgroup uploads
 ENV NODE_ENV=production
@@ -60,5 +60,5 @@ ENV PORT=8080
 USER appuser
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 CMD ["node", "dist/mediaWorker.server.js"]

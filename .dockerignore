@@ -30,6 +30,8 @@ geezle/*
 
 # Backend deploy inputs.
 !deploy/docker/backend.Dockerfile
+!deploy/docker/media-worker.Dockerfile
+!deploy/docker/media-worker-alpine-apks.lock
 !geezle-backend/
 geezle-backend/*
 !geezle-backend/package.json
