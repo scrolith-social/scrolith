@@ -272,9 +272,9 @@ jobs:
             grep -qx 'exit=0 oom=false' "$evidence/${label}-exit-state.txt"
           }
 
-          stop_and_verify "$api" api
-          stop_and_verify "$frontend" frontend
           stop_and_verify "$worker" media-worker
+          stop_and_verify "$frontend" frontend
+          stop_and_verify "$api" api
 
           docker start "$api" | tee "$evidence/api-restart.txt"
           docker start "$frontend" | tee "$evidence/frontend-restart.txt"

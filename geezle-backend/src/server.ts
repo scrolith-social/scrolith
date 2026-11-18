@@ -5123,6 +5123,40 @@ app.use((err: Error, req: Request, res: Response, next: any) => {
 const PORT = parseInt(process.env.PORT!) || 5000;
 const allowTestServerListen = shouldListenForTestServer();
 if (!runtimePolicy.isTest || allowTestServerListen) {
+  let shuttingDown = false;
+  const shutdown = (signal: 'SIGINT' | 'SIGTERM') => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.info('[shutdown] Draining API connections', { signal });
+    if (voiceCallSweepInterval) clearInterval(voiceCallSweepInterval);
+    clearInterval(authSessionCleanupInterval);
+
+    const deadline = setTimeout(() => {
+      console.error('[shutdown] Deadline exceeded');
+      process.exit(1);
+    }, 25_000);
+    void (async () => {
+      // Socket.IO closes its clients and the attached HTTP server. The callback
+      // waits for HTTP connections to drain before database teardown.
+      await new Promise<void>((resolve, reject) => {
+        void Promise.resolve(io.close((error?: Error) => {
+          if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
+          else resolve();
+        })).catch(reject);
+      });
+      await Promise.all([prisma.$disconnect(), apiRateLimitStore?.shutdown()]);
+      clearTimeout(deadline);
+      console.info('[shutdown] API stopped');
+      process.exit(0);
+    })().catch(() => {
+      clearTimeout(deadline);
+      console.error('[shutdown] API cleanup failed');
+      process.exit(1);
+    });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
+
   void (async () => {
     let prismaReady = false;
     try {
@@ -5132,6 +5166,8 @@ if (!runtimePolicy.isTest || allowTestServerListen) {
     } catch (error) {
       console.error('[prisma] initial connect failed; continuing in degraded mode', error);
     }
+
+    if (shuttingDown) return;
 
     const startupPlan = getRuntimeStartupPlan({
       backgroundWorkersEnabled: runtimePolicy.backgroundWorkersEnabled,
