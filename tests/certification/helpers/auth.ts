@@ -101,6 +101,19 @@ export async function completeFollowOnboardingIfRequired(page: Page) {
     undefined,
     { timeout: 30_000 }
   );
+  // The route can switch to Follow Onboarding before UserContext finishes its
+  // server-backed hydration. Wait for the auth state itself to settle before
+  // interpreting the onboarding route or saving browser state.
+  await page.waitForFunction(
+    () => {
+      const authState = document
+        .querySelector('[data-testid="scrolith-auth-state"]')
+        ?.getAttribute('data-auth-state');
+      return authState === 'authenticated' || authState === 'anonymous';
+    },
+    undefined,
+    { timeout: 30_000 }
+  );
   const clientAuthState = await page.getByTestId('scrolith-auth-state').getAttribute('data-auth-state');
   if (clientAuthState !== 'authenticated') {
     throw new Error(`React authentication state is ${clientAuthState || 'unavailable'} after the local server validated the stored session`);
