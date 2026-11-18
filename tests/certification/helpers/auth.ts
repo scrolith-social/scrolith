@@ -59,7 +59,6 @@ export async function loginViaUi(page: Page, email = CERT_EMAIL, password = CERT
     throw new Error('CERT_EMAIL and CERT_PASSWORD are required for UI login');
   }
   await page.goto('/auth/login', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(800);
   await solveLocalHumanVerification(page);
 
   const emailInput = page
@@ -78,52 +77,52 @@ export async function loginViaUi(page: Page, email = CERT_EMAIL, password = CERT
   await submit.click();
 
   await page.waitForURL((url) => !url.pathname.includes('/auth/login'), { timeout: 45_000 });
-  await page.waitForTimeout(1500);
+}
+
+type AuthenticatedRoute = 'onboarding' | 'ready';
+
+/** Read auth, onboarding and URL together so a render cannot change the decision between reads. */
+export async function waitForAuthenticatedRoute(
+  page: Page,
+  options: { requireOnboardingComplete?: boolean } = {}
+): Promise<AuthenticatedRoute> {
+  const snapshot: { route?: AuthenticatedRoute } = {};
+  await expect.poll(async () => {
+    snapshot.route = await page.evaluate((requireOnboardingComplete) => {
+      const root = document.querySelector('[data-testid="scrolith-auth-state"]');
+      if (root?.getAttribute('data-auth-state') !== 'authenticated') return undefined;
+
+      const path = window.location.pathname;
+      const onboardingRoute = /^\/auth\/follow-onboarding(?:\/|$)/.test(path);
+      const onboardingRequired = root.getAttribute('data-follow-onboarding-required');
+
+      if (onboardingRequired === 'true' && onboardingRoute && !requireOnboardingComplete) {
+        return 'onboarding' as const;
+      }
+      if (onboardingRequired === 'false' && !onboardingRoute && !/^\/auth\/(?:login|signup)(?:\/|$)/.test(path)) {
+        return 'ready' as const;
+      }
+      return undefined;
+    }, options.requireOnboardingComplete ?? false).catch(error => {
+      // Navigation can replace the execution context between samples.
+      if (error instanceof Error && /Execution context was destroyed|Cannot find context/i.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    });
+    return snapshot.route;
+  }, {
+    timeout: 30_000,
+    message: 'The validated session must hydrate and reach the route required by Follow Onboarding.'
+  }).toBeDefined();
+
+  if (!snapshot.route) throw new Error('Authenticated certification route did not settle');
+  return snapshot.route;
 }
 
 /** Complete the real Follow Onboarding flow before a certification state is saved. */
 export async function completeFollowOnboardingIfRequired(page: Page) {
-  // The app restores the stored session and fetches the user asynchronously.
-  // Do not inspect the pathname immediately after navigation: at that point it
-  // can still be `/` before the server-reported onboarding requirement redirects.
-  await page.waitForFunction(
-    () => {
-      const root = document.querySelector('[data-testid="scrolith-auth-state"]');
-      const authState = root?.getAttribute('data-auth-state');
-      const onboardingRequired = root?.getAttribute('data-follow-onboarding-required');
-      return window.location.pathname.startsWith('/auth/follow-onboarding') ||
-        Boolean(document.querySelector(
-          '[data-testid="scrolith-member-home"], [data-testid="scrolith-mobile-home"]'
-        )) ||
-        authState === 'anonymous' ||
-        (authState === 'authenticated' && onboardingRequired === 'false');
-    },
-    undefined,
-    { timeout: 30_000 }
-  );
-  // The route can switch to Follow Onboarding before UserContext finishes its
-  // server-backed hydration. Wait for the auth state itself to settle before
-  // interpreting the onboarding route or saving browser state.
-  await page.waitForFunction(
-    () => {
-      const authState = document
-        .querySelector('[data-testid="scrolith-auth-state"]')
-        ?.getAttribute('data-auth-state');
-      return authState === 'authenticated' || authState === 'anonymous';
-    },
-    undefined,
-    { timeout: 30_000 }
-  );
-  const clientAuthState = await page.getByTestId('scrolith-auth-state').getAttribute('data-auth-state');
-  if (clientAuthState !== 'authenticated') {
-    throw new Error(`React authentication state is ${clientAuthState || 'unavailable'} after the local server validated the stored session`);
-  }
-  const onboardingRequired = await page.getByTestId('scrolith-auth-state').getAttribute('data-follow-onboarding-required');
-  const isOnboardingRoute = new URL(page.url()).pathname.startsWith('/auth/follow-onboarding');
-  if (onboardingRequired === 'true' && !isOnboardingRoute) {
-    throw new Error('The authenticated client still requires Follow Onboarding but did not navigate to its route');
-  }
-  if (!isOnboardingRoute) return;
+  if (await waitForAuthenticatedRoute(page) === 'ready') return;
 
   const languages = page.getByRole('group', { name: 'Available languages' });
   await expect(languages, 'Follow Onboarding must render its language selector').toBeVisible();
@@ -159,7 +158,7 @@ export async function completeFollowOnboardingIfRequired(page: Page) {
   const continueButton = page.getByRole('button', { name: 'Continue to feed', exact: true });
   await expect(continueButton).toBeEnabled();
   await continueButton.click();
-  await expect(page).not.toHaveURL(/\/auth\/follow-onboarding(?:[/?#]|$)/, { timeout: 30_000 });
+  await waitForAuthenticatedRoute(page, { requireOnboardingComplete: true });
 }
 
 /**
