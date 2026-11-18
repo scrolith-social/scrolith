@@ -1,7 +1,6 @@
 // src/controllers/auth.controller.ts
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { Role as PrismaRole, KYCStatus as PrismaKYCStatus } from '@prisma/client'; // Import Prisma Client, Role, and KYCStatus enums
 import { resolveUserProStatus } from '../utils/proStatus';
@@ -16,7 +15,12 @@ import { toAbsoluteFrontendUrl } from '../services/notificationActionUrl.service
 import prisma from '../utils/prismaClient';
 import { jwtSecret } from '../utils/security/requiredSecret';
 import { getTrustedClientIp } from '../utils/security/clientIdentity';
-import { buildAuthClaims } from '../services/authClaims';
+import {
+  AuthSessionIssueError,
+  issueAuthSessionToken,
+  revokeAllAuthSessionsInTransaction,
+  revokeAuthSession
+} from '../services/authSession.service';
 import {
   consumeApprovedLogin,
   evaluateLoginDevice,
@@ -27,6 +31,7 @@ import {
 
 const minimalLoginSelect = {
   id: true,
+  authSessionVersion: true,
   email: true,
   name: true,
   username: true,
@@ -50,6 +55,7 @@ const minimalMeSelect = {
 
 const baseLoginSelect = {
   id: true,
+  authSessionVersion: true,
   email: true,
   name: true,
   username: true,
@@ -79,6 +85,7 @@ const baseMeSelect = {
 
 const fullUserSelect = {
   ...baseMeSelect,
+  authSessionVersion: true,
   freelancerPlanId: true,
   freelancerPlanName: true,
   freelancerPlanInterval: true,
@@ -355,11 +362,7 @@ export const register = async (req: Request, res: Response) => {
     });
 
     // Generate JWT token
-    const token = (jwt as any).sign(
-      buildAuthClaims({ id: user.id, email: user.email, role: user.role }),
-      JWT_SECRET!,
-      { expiresIn: JWT_EXPIRES_IN as string }
-    );
+    const token = await issueAuthSessionToken(user.id);
 
     // Send success response with user data and token
     return res.status(201).json({
@@ -386,7 +389,6 @@ export const login = async (req: Request, res: Response) => {
     const email = typeof rawEmail === 'string' ? normalizeEmail(rawEmail) : '';
     const password = typeof rawPassword === 'string' ? rawPassword : '';
 
-    console.log('[auth.login] attempt');
 
     // Validate input
     if (isMissingLoginField(rawEmail) || isMissingLoginField(rawPassword)) {
@@ -402,11 +404,9 @@ export const login = async (req: Request, res: Response) => {
 
     // Find user by normalized email (safe select with fallback for older schemas)
     const user = await safeFindUserByEmail(email);
-    console.log('[auth.login] lookup_completed', { found: Boolean(user) });
 
     // Check if user exists and password is correct
     if (!user) {
-      console.log('[auth.login] no user');
       return invalidCredentialsResponse(res);
     }
     if (user.isActive === false) {
@@ -418,7 +418,6 @@ export const login = async (req: Request, res: Response) => {
       });
     }
     if (typeof user.passwordHash !== 'string' || user.passwordHash.trim().length === 0) {
-      console.log('[auth.login] password_unavailable');
       return invalidCredentialsResponse(res);
     }
     let pwMatch = false;
@@ -428,7 +427,6 @@ export const login = async (req: Request, res: Response) => {
       logAuthFailure('password_compare_failed', compareError);
       return invalidCredentialsResponse(res);
     }
-    console.log('[auth.login] password match?', pwMatch);
     if (!pwMatch) {
       return invalidCredentialsResponse(res);
     }
@@ -488,6 +486,7 @@ export const login = async (req: Request, res: Response) => {
         where: { id: user.id },
         select: {
           id: true,
+          authSessionVersion: true,
           role: true,
           twoFactorEnabled: true,
           twoFactorSecret: true,
@@ -519,7 +518,12 @@ export const login = async (req: Request, res: Response) => {
     // Step-up approval for a new browser/mobile identity. Legacy clients that
     // do not send device metadata keep the existing login behavior.
     const deviceMetadata = normalizeLoginDeviceMetadata(req.body?.device);
-    const deviceApproval = await evaluateLoginDevice(user.id, deviceMetadata, getClientMeta(req));
+    const deviceApproval = await evaluateLoginDevice(
+      user.id,
+      Number(user.authSessionVersion),
+      deviceMetadata,
+      getClientMeta(req)
+    );
     if (deviceApproval.required) {
       return res.status(200).json({
         success: true,
@@ -549,12 +553,15 @@ export const login = async (req: Request, res: Response) => {
     // Generate JWT token
     let token = '';
     try {
-      token = (jwt as any).sign(
-        buildAuthClaims({ id: user.id, email: user.email, role: user.role }),
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN as string }
-      );
+      token = await issueAuthSessionToken(user.id, Number(user.authSessionVersion));
     } catch (signError) {
+      if (signError instanceof AuthSessionIssueError) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication context expired. Please sign in again.',
+          code: 'AUTH_CONTEXT_EXPIRED'
+        });
+      }
       logAuthFailure('jwt_signing_failed', signError);
       return res.status(500).json({
         success: false,
@@ -581,6 +588,13 @@ export const login = async (req: Request, res: Response) => {
       forcePasswordReset: Boolean(staffProfile?.forcePasswordReset),
     });
   } catch (error) {
+    if (error instanceof AuthSessionIssueError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication context expired. Please sign in again.',
+        code: 'AUTH_CONTEXT_EXPIRED'
+      });
+    }
     logAuthFailure('login_failed', error);
     return res.status(500).json({
       success: false,
@@ -606,11 +620,7 @@ export const exchangeApprovedLogin = async (req: Request, res: Response) => {
 
     await registerTrustedDevice(user.id, getLoginApprovalMetadata(row));
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-    const token = (jwt as any).sign(
-      buildAuthClaims({ id: user.id, email: user.email, role: user.role }),
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN as string }
-    );
+    const token = row.token;
     res.cookie('Scrolith_token', token, {
       httpOnly: true,
       sameSite: 'lax',
@@ -699,15 +709,56 @@ export const completeFollowOnboardingController = async (req: Request, res: Resp
   }
 };
 
-// Logout Controller (typically handled client-side by clearing the token, but can add server-side logic like blacklisting if needed)
 export const logout = async (req: Request, res: Response) => {
-  // Logout is typically handled client-side by clearing the stored JWT token (e.g., from localStorage or sessionStorage).
-  // Server-side logic might involve blacklisting the token if using refresh tokens or implementing a token revocation list.
-  // For now, just send a confirmation response.
+  const clearSessionCookie = () => res.clearCookie('Scrolith_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE),
+    path: '/'
+  });
   try {
-    res.clearCookie('Scrolith_token', { path: '/' });
-  } catch {}
-  res.status(200).json({ message: 'Logged out successfully' });
+    const userId = String(req.user?.id || '');
+    const sessionId = String(req.user?.authSessionId || '');
+    if (!userId || !sessionId) {
+      clearSessionCookie();
+      return res.status(401).json({ success: false, error: 'Authenticated session required', code: 'SESSION_REQUIRED' });
+    }
+    await revokeAuthSession({ sessionId, userId, reason: 'logout' });
+    clearSessionCookie();
+    disconnectRevokedSockets(req, `auth-session:${sessionId}`);
+    return res.status(200).json({ success: true, message: 'Logged out successfully' });
+  } catch {
+    clearSessionCookie();
+    return res.status(503).json({ success: false, error: 'Logout could not be confirmed. Retry when the service is available.', code: 'SESSION_STORE_UNAVAILABLE' });
+  }
+};
+
+const disconnectRevokedSockets = (req: Request, room: string) => {
+  for (const namespace of [req.app.get('io'), req.app.get('communityIo')]) {
+    try { namespace?.in(room)?.disconnectSockets?.(true); } catch { /* durable DB revocation remains authoritative */ }
+  }
+};
+
+export const logoutAllDevices = async (req: Request, res: Response) => {
+  const clearSessionCookie = () => res.clearCookie('Scrolith_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE),
+    path: '/'
+  });
+  try {
+    const userId = String(req.user?.id || '');
+    if (!userId) return res.status(401).json({ success: false, error: 'Authenticated user required' });
+    const count = await prisma.$transaction((tx) =>
+      revokeAllAuthSessionsInTransaction(tx, userId, 'logout_all_devices')
+    );
+    clearSessionCookie();
+    disconnectRevokedSockets(req, `auth-user:${userId}`);
+    return res.status(200).json({ success: true, message: 'Logged out on all devices', revokedSessions: count });
+  } catch {
+    clearSessionCookie();
+    return res.status(503).json({ success: false, error: 'Logout could not be confirmed. Retry when the service is available.', code: 'SESSION_STORE_UNAVAILABLE' });
+  }
 };
 
 export const forgotPassword = async (req: Request, res: Response) => {
@@ -807,16 +858,15 @@ export const resetPassword = async (req: Request, res: Response) => {
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    await prisma.$transaction([
-      prisma.user.update({
-        where: { id: record.userId },
-        data: { passwordHash: hashedPassword }
-      }),
-      prisma.passwordResetToken.update({
-        where: { id: record.id },
-        data: { usedAt: new Date() }
-      })
-    ]);
+    await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      await tx.user.update({ where: { id: record.userId }, data: { passwordHash: hashedPassword } });
+      await revokeAllAuthSessionsInTransaction(tx, record.userId, 'password_reset', now);
+      await tx.passwordResetToken.updateMany({
+        where: { userId: record.userId, usedAt: null },
+        data: { usedAt: now }
+      });
+    });
 
     await logAuthEvent({ userId: record.userId, email: record.user.email, event: 'password_reset_completed' }, req);
 

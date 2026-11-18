@@ -30,12 +30,15 @@ geezle/*
 
 # Backend deploy inputs.
 !deploy/docker/backend.Dockerfile
+!deploy/docker/media-worker.Dockerfile
+!deploy/docker/media-worker-alpine-apks.lock
 !geezle-backend/
 geezle-backend/*
 !geezle-backend/package.json
 !geezle-backend/package-lock.json
 !geezle-backend/tsconfig.json
 !geezle-backend/tsconfig.production.json
+!geezle-backend/prisma.config.ts
 !geezle-backend/prisma/
 !geezle-backend/prisma/**
 !geezle-backend/scripts/

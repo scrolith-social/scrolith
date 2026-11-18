@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import prisma from '../utils/prismaClient';
 import realtime from '../utils/realtime';
 import { NotificationService } from './notificationCenter/NotificationService';
+import { issueAuthSessionTokenInTransaction } from './authSession.service';
 
 export type LoginDeviceMetadata = {
   deviceId?: string | null;
@@ -215,6 +216,7 @@ export const getLoginApprovalWaiver = async (userId: string) => {
  */
 export const evaluateLoginDevice = async (
   userId: string,
+  authSessionVersion: number,
   metadata: LoginDeviceMetadata,
   request: { ip?: string | null; userAgent?: string | null }
 ) => {
@@ -257,6 +259,7 @@ export const evaluateLoginDevice = async (
     data: {
       userId,
       requestedDeviceId: deviceId,
+      authSessionVersion,
       challenge,
       approvalTokenHash: hashApprovalToken(approvalToken),
       status: LOGIN_APPROVAL_STATUS.pending,
@@ -339,20 +342,46 @@ export const getLoginApprovalStatus = async (id: string, approvalToken: string) 
 };
 
 export const consumeApprovedLogin = async (id: string, approvalToken: string) => {
-  const row = await prisma.loginApprovalAttempt.findUnique({ where: { id } });
   const tokenHash = hashApprovalToken(approvalToken);
-  if (!row || !crypto.timingSafeEqual(Buffer.from(row.approvalTokenHash), Buffer.from(tokenHash))) {
-    throw new Error('Login approval request is invalid');
-  }
-  if (row.status !== LOGIN_APPROVAL_STATUS.approved || row.expiresAt <= new Date() || row.consumedAt) {
-    throw new Error('Login approval is not available');
-  }
-  const consumed = await prisma.loginApprovalAttempt.updateMany({
-    where: { id, approvalTokenHash: tokenHash, status: LOGIN_APPROVAL_STATUS.approved, consumedAt: null },
-    data: { status: LOGIN_APPROVAL_STATUS.consumed, consumedAt: new Date() }
+  return prisma.$transaction(async (tx) => {
+    // Read the owner id first, then lock User before the attempt. This matches
+    // logout-all/password-change lock order and prevents a stale approved
+    // request from minting a session after those operations commit.
+    const initial = await tx.loginApprovalAttempt.findUnique({ where: { id } });
+    if (!initial || Buffer.from(initial.approvalTokenHash).length !== Buffer.from(tokenHash).length ||
+      !crypto.timingSafeEqual(Buffer.from(initial.approvalTokenHash), Buffer.from(tokenHash))) {
+      throw new Error('Login approval request is invalid');
+    }
+    if (initial.status !== LOGIN_APPROVAL_STATUS.approved || initial.expiresAt <= new Date() || initial.consumedAt) {
+      throw new Error('Login approval is not available');
+    }
+
+    const users = await tx.$queryRaw<Array<{ id: string; isActive: boolean; authSessionVersion: number }>>`
+      SELECT "id", "isActive", "authSessionVersion"
+      FROM "User"
+      WHERE "id" = ${initial.userId}
+      FOR UPDATE
+    `;
+    const user = users[0];
+    if (!user?.isActive || user.authSessionVersion !== initial.authSessionVersion) {
+      throw new Error('Login approval was invalidated');
+    }
+
+    const consumed = await tx.loginApprovalAttempt.updateMany({
+      where: {
+        id,
+        approvalTokenHash: tokenHash,
+        authSessionVersion: user.authSessionVersion,
+        status: LOGIN_APPROVAL_STATUS.approved,
+        consumedAt: null,
+        expiresAt: { gt: new Date() }
+      },
+      data: { status: LOGIN_APPROVAL_STATUS.consumed, consumedAt: new Date() }
+    });
+    if (consumed.count !== 1) throw new Error('Login approval is not available');
+    const token = await issueAuthSessionTokenInTransaction(tx, initial.userId, user.authSessionVersion);
+    return { ...initial, status: LOGIN_APPROVAL_STATUS.consumed, consumedAt: new Date(), token };
   });
-  if (consumed.count !== 1) throw new Error('Login approval is not available');
-  return row;
 };
 
 export const getLoginApprovalMetadata = (row: any): LoginDeviceMetadata => normalizeLoginDeviceMetadata(row?.deviceMetadata || {});

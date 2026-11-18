@@ -3,14 +3,24 @@ import { AddressInfo } from 'net';
 import { io as Client } from 'socket.io-client';
 import app, { server } from '../../server';
 import prisma from '../../utils/prismaClient';
-import jwt from 'jsonwebtoken';
+import { issueAuthSessionToken } from '../../services/authSession.service';
 
 jest.setTimeout(20000);
 
 describe('Socket integration - targeted emits', () => {
   let port: number;
+  let devSocketToken: string;
+  let recipientSocketToken: string;
+  let previousMoneyMovementGate: string | undefined;
+  let previousSocketTestJoin: string | undefined;
 
   beforeAll(async () => {
+    // This integration suite exercises enabled-mode synthetic Gcoin routes
+    // against the guarded disposable database. Hard-off behavior is covered
+    // separately; never change the application default.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+    previousSocketTestJoin = process.env.SOCKET_ALLOW_TEST_JOIN;
     // start the server on ephemeral port
     // enable test-only socket join behavior
     (process.env as any).SOCKET_ALLOW_TEST_JOIN = 'true';
@@ -19,13 +29,12 @@ describe('Socket integration - targeted emits', () => {
     port = addr.port;
 
     // ensure a recipient user and wallets exist for transfer/donate tests
+    await prisma.user.upsert({ where: { id: 'dev-user-id-123' }, update: { email: 'dev@example.com', role: 'FREELANCER', isActive: true }, create: { id: 'dev-user-id-123', email: 'dev@example.com', role: 'FREELANCER', isActive: true, isVerified: true } });
     await prisma.user.upsert({ where: { id: 'recipient-1' }, update: {}, create: { id: 'recipient-1', email: 'recipient-1@local.dev', role: 'USER' } as any });
     await prisma.gcoinWallet.upsert({ where: { userId: 'recipient-1' }, update: {}, create: { userId: 'recipient-1', recipientId: 'GC-RECIP', balance: 10, lifetimeEarned: 10, status: 'active' } as any });
     await prisma.gcoinWallet.upsert({ where: { userId: 'dev-user-id-123' }, update: {}, create: { userId: 'dev-user-id-123', recipientId: 'GC-DEV', balance: 100, lifetimeEarned: 100, status: 'active' } as any });
-    // create JWTs for test users
-    const secret = process.env.JWT_SECRET || 'dev_jwt_secret';
-    (process.env as any).TEST_JWT_DEV = jwt.sign({ id: 'dev-user-id-123' }, secret);
-    (process.env as any).TEST_JWT_RECIP = jwt.sign({ id: 'recipient-1' }, secret);
+    devSocketToken = await issueAuthSessionToken('dev-user-id-123');
+    recipientSocketToken = await issueAuthSessionToken('recipient-1');
   });
 
   beforeEach(async () => {
@@ -37,6 +46,18 @@ describe('Socket integration - targeted emits', () => {
     try {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     } catch (e) {}
+    finally {
+      if (previousMoneyMovementGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+      }
+      if (previousSocketTestJoin === undefined) {
+        delete process.env.SOCKET_ALLOW_TEST_JOIN;
+      } else {
+        process.env.SOCKET_ALLOW_TEST_JOIN = previousSocketTestJoin;
+      }
+    }
   });
 
   const connectClient = (token: string) => new Promise<any>((resolve, reject) => {
@@ -61,7 +82,7 @@ describe('Socket integration - targeted emits', () => {
 
   test('admin credit emits targeted wallet balance update', async () => {
     const USER_ID = 'dev-user-id-123';
-      const client = await connectClient(process.env.TEST_JWT_DEV as string);
+      const client = await connectClient(devSocketToken);
     try {
       client.emit('join:wallet', { userId: USER_ID });
       await waitForEvent(client, 'joined', 2000);
@@ -80,7 +101,7 @@ describe('Socket integration - targeted emits', () => {
 
   test('create ad draft emits to ad room', async () => {
     const USER_ID = 'dev-user-id-123';
-      const adClient = await connectClient(process.env.TEST_JWT_DEV as string);
+      const adClient = await connectClient(devSocketToken);
     try {
       const waiter = waitForEvent(adClient, 'community:ad_created', 5000);
       const res = await request(app)
@@ -110,8 +131,8 @@ describe('Socket integration - targeted emits', () => {
   test('transfer emits targeted transaction and balance updates', async () => {
     const SENDER = 'dev-user-id-123';
     const RECIP = 'recipient-1';
-    const senderClient = await connectClient(process.env.TEST_JWT_DEV as string);
-    const recipClient = await connectClient(process.env.TEST_JWT_RECIP as string);
+    const senderClient = await connectClient(devSocketToken);
+    const recipClient = await connectClient(recipientSocketToken);
     try {
       // Register listeners before emitting so a fast local/CI server cannot
       // deliver either acknowledgement before the test begins waiting.
@@ -144,7 +165,7 @@ describe('Socket integration - targeted emits', () => {
     const RECIP = 'recipient-1';
     // create a post by recipient
     const post = await prisma.communityPost.create({ data: { authorId: RECIP, content: 'Donate target', title: 'Donate me' } });
-      const postClient = await connectClient(process.env.TEST_JWT_DEV as string);
+      const postClient = await connectClient(devSocketToken);
     try {
       postClient.emit('join:post', { postId: post.id });
       await waitForEvent(postClient, 'joined', 2000);
@@ -160,7 +181,7 @@ describe('Socket integration - targeted emits', () => {
 
   test('conversion request emits to user', async () => {
     const USER = 'dev-user-id-123';
-      const uClient = await connectClient(process.env.TEST_JWT_DEV as string);
+      const uClient = await connectClient(devSocketToken);
     try {
       uClient.emit('join:wallet', { userId: USER });
       await waitForEvent(uClient, 'joined', 2000);

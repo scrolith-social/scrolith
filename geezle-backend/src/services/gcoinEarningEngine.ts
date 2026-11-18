@@ -1,6 +1,7 @@
 import prisma from '../utils/prismaClient';
 import { getGcoinSettingsSafe } from '../utils/gcoinSettings';
 import { isVideoMonetizationBlocked } from './videoIntegrity.service';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 type Metric = 'view' | 'like' | 'share' | 'repost';
 
@@ -14,6 +15,7 @@ const isMonetizationEnabledForUser = async (userId: string) => {
 
 // Record an event and evaluate whether awards should be issued to the post author
 export const recordEventAndEvaluate = async (actorId: string, postId: string, metric: Metric) => {
+  assertMoneyMovementEnabled();
   // create pending event
   const ev = await prisma.gcoinEarningEvent.create({ data: { postId, actorId, eventType: `${metric}_pending`, eventKey: `${actorId}:${metric}:${Date.now()}`, value: 0, credited: false } });
 
@@ -123,6 +125,7 @@ export const recordEventAndEvaluate = async (actorId: string, postId: string, me
 
 // Simple deterministic engine: when counts cross thresholds, award coins
 export async function processEarningForPost(postId: string) {
+  assertMoneyMovementEnabled();
   const cfg = await prisma.gcoinConfig.findFirst({ where: { key: 'default' } });
   if (!cfg) return null;
   const data = cfg.data as any;

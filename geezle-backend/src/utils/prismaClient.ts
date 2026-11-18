@@ -131,7 +131,7 @@ const prismaLogConfig = prismaSlowQueryLoggingEnabled
       { emit: 'stdout' as const, level: 'error' as const }
     ];
 
-const databasePool = normalizedDatabaseUrl
+export const databasePool = normalizedDatabaseUrl
   ? new Pool({
       connectionString: normalizedDatabaseUrl,
       max: prismaConnectionLimit,

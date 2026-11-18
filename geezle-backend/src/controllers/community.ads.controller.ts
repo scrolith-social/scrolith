@@ -6,12 +6,14 @@ import { syncFileUsages } from '../utils/fileUsage';
 import { sendSystemEmail } from '../services/email.service';
 import { getStripeClient } from '../services/stripeConfig.service';
 import { buildCommunityAdActivationReadiness } from '../services/communityAdActivation.service';
+import { archiveCommunityAd, removeCommunityAdPreservingPayments } from '../services/communityAdRetention.service';
 import { buildMarketplaceListingBoostPrefill } from '../services/marketplace.service';
 import { resolveDirectMediaUrl, resolveFileBaseUrl } from '../utils/mediaUrl';
 import { resolveEffectiveCurrencies } from '../services/fx.service';
 import { buildAdsConfigCurrencyView } from '../services/currencySurface.service';
 import { getAllowedObjectValue, setSafeObjectValue } from '../utils/security/safeObjectKey';
 import { safeLogLine } from '../utils/security/safeLog';
+import { assertMoneyMovementEnabled, MoneyMovementDisabledError } from '../config/moneyMovement';
 
 const ADS_CONFIG_SCOPE = 'community_ads_config';
 
@@ -2277,6 +2279,10 @@ export const rejectAd = async (req: Request, res: Response) => {
   try {
     const adId = req.params.id;
     const { refund, notes } = req.body || {};
+    // Ad rejection is a non-financial moderation action unless it requests a
+    // provider refund. Check the hard-off before changing ad state or touching
+    // payment records so a disabled refund attempt is side-effect free.
+    if (refund) assertMoneyMovementEnabled();
     await prisma.communityAd.update({ where: { id: adId }, data: { status: 'REJECTED' } });
     // Refund handling: mark existing payments refunded, attempt gateway refund when possible,
     // and record a refund AdPayment entry linking to gateway refund id.
@@ -2319,6 +2325,13 @@ export const rejectAd = async (req: Request, res: Response) => {
     await notifyCreatorAdStatus(adId, 'REJECTED', notes ? String(notes) : null).catch(() => undefined);
     return res.json({ success: true });
   } catch (error: any) {
+    if (error instanceof MoneyMovementDisabledError) {
+      return res.status(error.status).json({
+        success: false,
+        code: error.code,
+        error: 'Money movement is disabled by server policy.'
+      });
+    }
     console.error('Reject ad error:', error);
     return res.status(500).json({ success: false, error: error.message || 'Failed to reject ad' });
   }
@@ -2981,27 +2994,14 @@ export const deleteAd = async (req: Request, res: Response) => {
 
     const io = (req.app as any).get('io');
     if (hardDeletable.includes(status)) {
-      await prisma.communityAd.delete({ where: { id: adId } });
-      try { io?.emit('community:ad_deleted', { adId }); } catch (e) {}
-      try { realtime.emitToAd(adId, 'community:ad_deleted', { adId }); } catch (e) {}
-      return res.json({ success: true, data: { id: adId, deleted: true } });
+      const result = await removeCommunityAdPreservingPayments(adId, userId, 'CREATOR_DELETE');
+      const payload = result.archived ? { adId, archived: true } : { adId };
+      try { io?.emit('community:ad_deleted', payload); } catch (e) {}
+      try { realtime.emitToAd(adId, 'community:ad_deleted', payload); } catch (e) {}
+      return res.json({ success: true, data: { id: adId, deleted: !result.archived, archived: result.archived } });
     }
 
-    const targeting = parseTargeting(ad.targeting);
-    const archivedTargeting = sanitizeJsonValue({
-      ...targeting,
-      userDeleted: true,
-      userDeletedAt: new Date().toISOString(),
-      userDeletedBy: userId
-    }) || {};
-
-    await prisma.communityAd.update({
-      where: { id: adId },
-      data: {
-        status: 'ENDED',
-        targeting: archivedTargeting
-      }
-    });
+    await archiveCommunityAd(adId, userId, 'CREATOR_DELETE');
     try { io?.emit('community:ad_status_updated', { adId, status: 'ENDED' }); } catch (e) {}
     try { realtime.emitToAd(adId, 'community:ad_status_updated', { adId, status: 'ENDED' }); } catch (e) {}
     try { io?.emit('community:ad_deleted', { adId, archived: true }); } catch (e) {}

@@ -13,7 +13,10 @@ import {
 } from '../services/totp.service';
 import { getSystemControls, isAdminRole } from '../services/systemControls.service';
 import { isAnalystMfaRequiredByPolicy } from '../services/analystRole';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import {
+  AuthSessionIssueError,
+  issueAuthSessionTokenInTransaction
+} from '../services/authSession.service';
 
 const isWaived = (user: { twoFactorWaivedUntil?: Date | null }) => {
   if (!user?.twoFactorWaivedUntil) return false;
@@ -22,6 +25,7 @@ const isWaived = (user: { twoFactorWaivedUntil?: Date | null }) => {
 
 type SetupChallengeData = {
   userId?: string;
+  authSessionVersion?: number;
   exp?: number;
   needsSetup?: boolean;
   setupStartedAt?: number;
@@ -94,13 +98,15 @@ const loadSetupChallenge = async (req: Request, requireStarted: boolean) => {
       id: true,
       email: true,
       role: true,
+      authSessionVersion: true,
       isActive: true,
       twoFactorEnabled: true,
       twoFactorSecret: true,
       twoFactorWaivedUntil: true
     }
   });
-  if (!user || user.isActive === false || user.twoFactorEnabled || isWaived(user)) return null;
+  if (!user || user.isActive === false || user.twoFactorEnabled || isWaived(user) ||
+    !Number.isSafeInteger(data.authSessionVersion) || user.authSessionVersion !== data.authSessionVersion) return null;
 
   const mfaDecision = await getEffectiveMfaDecision(user);
   if (mfaDecision.staff && (mfaDecision.staff.status !== 'ACTIVE' || mfaDecision.staff.role?.isActive !== true)) {
@@ -259,28 +265,27 @@ export const begin2FAEnrollmentFromSetup = async (req: Request, res: Response) =
     }
 
     const secret = generateBase32Secret(20);
-    await prisma.user.update({
-      where: { id: context.user.id },
-      data: {
-        twoFactorSecret: secret,
-        twoFactorEnabled: false
-      } as any
-    });
-    await prisma.userSettings
-      .upsert({
+    await prisma.$transaction(async (tx) => {
+      const users = await tx.$queryRaw<Array<{ id: string; authSessionVersion: number; isActive: boolean }>>`
+        SELECT "id", "authSessionVersion", "isActive" FROM "User" WHERE "id" = ${context.user.id} FOR UPDATE
+      `;
+      if (!users[0]?.isActive || users[0].authSessionVersion !== context.data.authSessionVersion) {
+        throw new AuthSessionIssueError('Authentication context expired');
+      }
+      const challenge = await tx.appSetting.updateMany({
+        where: { scope: `2fa_challenge_${context.challengeToken}` },
+        data: { data: { ...context.data, setupStartedAt: Date.now() } }
+      });
+      if (challenge.count !== 1) throw new AuthSessionIssueError('MFA setup challenge expired');
+      await tx.user.update({
+        where: { id: context.user.id },
+        data: { twoFactorSecret: secret, twoFactorEnabled: false } as any
+      });
+      await tx.userSettings.upsert({
         where: { userId: context.user.id },
         create: { userId: context.user.id, twoFactorEnabled: false } as any,
         update: { twoFactorEnabled: false } as any
-      })
-      .catch(() => undefined);
-    await prisma.appSetting.update({
-      where: { scope: `2fa_challenge_${context.challengeToken}` },
-      data: {
-        data: {
-          ...context.data,
-          setupStartedAt: Date.now()
-        }
-      }
+      }).catch(() => undefined);
     });
 
     const otpauthUrl = buildOtpAuthUri({
@@ -319,6 +324,12 @@ export const confirm2FAEnrollmentFromSetup = async (req: Request, res: Response)
     const backupPlain = generateBackupCodes(8);
     const backupHashed = backupPlain.map(hashBackupCode);
     await prisma.$transaction(async (tx: any) => {
+      const users = await tx.$queryRaw<Array<{ id: string; authSessionVersion: number; isActive: boolean }>>`
+        SELECT "id", "authSessionVersion", "isActive" FROM "User" WHERE "id" = ${context.user.id} FOR UPDATE
+      `;
+      if (!users[0]?.isActive || users[0].authSessionVersion !== context.data.authSessionVersion) {
+        throw new AuthSessionIssueError('Authentication context expired');
+      }
       const claimed = await tx.appSetting.deleteMany({
         where: { scope: `2fa_challenge_${context.challengeToken}` }
       });
@@ -553,7 +564,7 @@ export const listAdmin2FADirectory = async (req: Request, res: Response) => {
   }
 };
 
-const createChallenge = async (userId: string, needsSetup: boolean) => {
+const createChallenge = async (userId: string, needsSetup: boolean, authSessionVersion: number) => {
   const challengeToken = crypto.randomBytes(24).toString('hex');
   await prisma.appSetting.upsert({
     where: { scope: `2fa_challenge_${challengeToken}` },
@@ -561,6 +572,7 @@ const createChallenge = async (userId: string, needsSetup: boolean) => {
       scope: `2fa_challenge_${challengeToken}`,
       data: {
         userId,
+        authSessionVersion: authSessionVersion,
         exp: Date.now() + 10 * 60 * 1000,
         needsSetup
       }
@@ -568,6 +580,7 @@ const createChallenge = async (userId: string, needsSetup: boolean) => {
     update: {
       data: {
         userId,
+        authSessionVersion: authSessionVersion,
         exp: Date.now() + 10 * 60 * 1000,
         needsSetup
       }
@@ -580,6 +593,7 @@ const createChallenge = async (userId: string, needsSetup: boolean) => {
 export const evaluateAdmin2FAGate = async (user: {
   id: string;
   role: string;
+  authSessionVersion: number;
   twoFactorEnabled?: boolean | null;
   twoFactorSecret?: string | null;
   twoFactorBackupCodes?: string[] | null;
@@ -595,12 +609,12 @@ export const evaluateAdmin2FAGate = async (user: {
 
   // Enrolled users always challenged at login (unless waived).
   if (userEnrolled) {
-    return { required: true, challengeToken: await createChallenge(user.id, false) };
+    return { required: true, challengeToken: await createChallenge(user.id, false, user.authSessionVersion) };
   }
 
   // Platform Admin 2FA policy: admins must enroll even if not yet enabled.
   if (mfaDecision.required) {
-    return { required: true, challengeToken: await createChallenge(user.id, true) };
+    return { required: true, challengeToken: await createChallenge(user.id, true, user.authSessionVersion) };
   }
 
   return { required: false };
@@ -615,13 +629,15 @@ export const verify2FALogin = async (req: Request, res: Response) => {
     }
     const record = await prisma.appSetting.findUnique({ where: { scope: `2fa_challenge_${challengeToken}` } });
     const data = (record?.data || {}) as any;
-    if (!record || !data.userId || Number(data.exp || 0) < Date.now()) {
+    if (!record || !data.userId || Number(data.exp || 0) < Date.now() ||
+      !Number.isSafeInteger(data.authSessionVersion)) {
       return res.status(400).json({ success: false, error: 'Challenge expired', code: 'CHALLENGE_EXPIRED' });
     }
     const user = await prisma.user.findUnique({
       where: { id: String(data.userId) },
       select: {
         id: true,
+        authSessionVersion: true,
         email: true,
         role: true,
         name: true,
@@ -636,7 +652,7 @@ export const verify2FALogin = async (req: Request, res: Response) => {
         username: true
       }
     });
-    if (!user || user.isActive === false) {
+    if (!user || user.isActive === false || user.authSessionVersion !== data.authSessionVersion) {
       return res.status(403).json({ success: false, error: 'Account unavailable' });
     }
     if (data.needsSetup) {
@@ -648,26 +664,38 @@ export const verify2FALogin = async (req: Request, res: Response) => {
     }
     const okTotp = user.twoFactorSecret && verifyTotp(user.twoFactorSecret, code);
     const hashed = hashBackupCode(code);
-    let okBackup = false;
-    let remaining = user.twoFactorBackupCodes || [];
-    if (!okTotp && remaining.includes(hashed)) {
-      okBackup = true;
-      remaining = remaining.filter((c) => c !== hashed);
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { twoFactorBackupCodes: remaining } as any
-      });
-    }
+    const okBackup = !okTotp && (user.twoFactorBackupCodes || []).includes(hashed);
     if (!okTotp && !okBackup) {
       return res.status(400).json({ success: false, error: 'Invalid authenticator code', code: 'INVALID_TOTP' });
     }
-    await prisma.appSetting.delete({ where: { scope: `2fa_challenge_${challengeToken}` } }).catch(() => undefined);
-
-    const jwt = require('jsonwebtoken');
-    const JWT_SECRET = jwtSecret();
-    const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, {
-      expiresIn: JWT_EXPIRES_IN
+    const token = await prisma.$transaction(async (tx) => {
+      const users = await tx.$queryRaw<Array<{
+        id: string;
+        authSessionVersion: number;
+        isActive: boolean;
+        twoFactorBackupCodes: string[];
+      }>>`
+        SELECT "id", "authSessionVersion", "isActive", "twoFactorBackupCodes"
+        FROM "User" WHERE "id" = ${user.id} FOR UPDATE
+      `;
+      const current = users[0];
+      if (!current?.isActive || current.authSessionVersion !== data.authSessionVersion) {
+        throw new AuthSessionIssueError('Authentication context expired');
+      }
+      const claimed = await tx.appSetting.deleteMany({
+        where: { scope: `2fa_challenge_${challengeToken}` }
+      });
+      if (claimed.count !== 1) throw new AuthSessionIssueError('2FA challenge already used');
+      if (okBackup) {
+        if (!current.twoFactorBackupCodes.includes(hashed)) {
+          throw new AuthSessionIssueError('Backup code already used');
+        }
+        await tx.user.update({
+          where: { id: user.id },
+          data: { twoFactorBackupCodes: current.twoFactorBackupCodes.filter((value) => value !== hashed) } as any
+        });
+      }
+      return issueAuthSessionTokenInTransaction(tx, user.id, data.authSessionVersion);
     });
     res.cookie('Scrolith_token', token, {
       httpOnly: true,
@@ -693,6 +721,9 @@ export const verify2FALogin = async (req: Request, res: Response) => {
       }
     });
   } catch (e: any) {
+    if (e instanceof AuthSessionIssueError) {
+      return res.status(401).json({ success: false, error: 'Authentication challenge is no longer valid', code: 'AUTH_CONTEXT_EXPIRED' });
+    }
     return res.status(500).json({ success: false, error: e?.message || '2FA verification failed' });
   }
 };

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import type { Application } from 'express';
 import prisma from '../../../utils/prismaClient';
 import gcoinService from '../../../services/gcoinService';
+import { assertMoneyMovementEnabled } from '../../../config/moneyMovement';
 import { getCareerStreakSummary } from './careerStreak.service';
 import {
   AFFILIATE_EARNINGS_SCOPE,
@@ -810,6 +811,7 @@ const awardRewardDrop = async (params: {
   drop: RewardDropRecord;
   claimRef: string;
 }) => {
+  assertMoneyMovementEnabled();
   const wallet = await gcoinService.ensureWalletForUser(params.userId);
   return prisma.$transaction(async (prismaTx) => {
     const created = await prismaTx.gcoinTransaction.create({
@@ -929,6 +931,7 @@ export const claimRewardDrop = async (params: {
   dropId: string;
   app?: Application;
 }) => {
+  assertMoneyMovementEnabled();
   const userId = String(params.userId || '').trim();
   const dropId = String(params.dropId || '').trim();
   if (!userId || !dropId) throw new Error('dropId is required');

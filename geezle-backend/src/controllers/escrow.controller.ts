@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import Stripe from 'stripe';
 import { computeCommissionBreakdown } from '../utils/commission';
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_mock_key', {
   apiVersion: '2023-10-16' as any
@@ -21,6 +22,7 @@ const getAdminRevenueUserId = async () => {
 };
 
 export const releaseEscrow = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const { id } = req.params;
 
@@ -131,6 +133,7 @@ export const releaseEscrow = async (req: Request, res: Response) => {
 };
 
 export const refundEscrow = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const { id } = req.params;
 

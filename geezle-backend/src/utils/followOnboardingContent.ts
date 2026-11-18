@@ -23,7 +23,7 @@ export const followOnboardingContentSchema = z.object({
 }).strict().superRefine((content, context) => {
   const ids = content.featureCards.map((card) => card.id);
   if (new Set(ids).size !== ids.length) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['featureCards'], message: 'Feature card IDs must be unique' });
+    context.addIssue({ code: 'custom', path: ['featureCards'], message: 'Feature card IDs must be unique' });
   }
 });
 

@@ -3,6 +3,7 @@
  */
 import {
   getFrontendOrigin,
+  getApiPublicOrigin,
   isProductionRuntime,
   sanitizeInternalRedirect,
   validateAllowedFrontendOrigin
@@ -55,6 +56,18 @@ describe('Phase 25B frontend origin', () => {
     process.env.NODE_ENV = 'production';
     process.env.FRONTEND_ORIGIN = 'https://www.scrolith.com';
     expect(getFrontendOrigin()).toBe('https://www.scrolith.com');
+  });
+
+  test('public app and API origins remain distinct', () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.FRONTEND_ORIGIN;
+    delete process.env.FRONTEND_URL;
+    delete process.env.CLIENT_URL;
+    process.env.PUBLIC_APP_URL = 'https://www.scrolith.com';
+    process.env.PUBLIC_API_URL = 'https://api.scrolith.com';
+
+    expect(getFrontendOrigin()).toBe('https://www.scrolith.com');
+    expect(getApiPublicOrigin()).toBe('https://api.scrolith.com');
   });
 });
 

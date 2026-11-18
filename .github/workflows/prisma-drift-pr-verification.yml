@@ -76,7 +76,7 @@ jobs:
           cache-dependency-path: geezle-backend/package-lock.json
 
       - name: Install locked dependencies without install scripts
-        run: npm ci --ignore-scripts --no-audit --fund=false
+        run: npm ci --registry=https://registry.npmjs.org --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --ignore-scripts --no-audit --fund=false
 
       - name: Create isolated shadow database
         shell: bash
@@ -140,11 +140,11 @@ jobs:
             `);
             const row = result.rows[0];
             const checks = {
-              total: 139,
+              total: 143,
               unfinished: 0,
               rolled_back: 0,
               invalid_steps: 0,
-              distinct_names: 139
+              distinct_names: 143
             };
             for (const [key, expected] of Object.entries(checks)) {
               if (Number(row[key]) !== expected) {
@@ -154,7 +154,7 @@ jobs:
           } finally {
             await client.end();
           }
-          console.log('MIGRATION_LEDGER=139_COMPLETED_UNIQUE_ROWS');
+          console.log('MIGRATION_LEDGER=143_COMPLETED_UNIQUE_ROWS');
           NODE
 
       - name: Compare migrations with the configured database

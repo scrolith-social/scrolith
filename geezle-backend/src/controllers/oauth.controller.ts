@@ -555,9 +555,7 @@ export const handleOAuthCallback = async (req: Request, res: Response) => {
 
     // Phase 25B: one-time exchange code instead of long-lived JWT in the browser URL.
     const exchange = await createOAuthExchangeCode({
-      userId: user.id,
-      email: user.email,
-      role: user.role
+      userId: user.id
     });
 
     // Cookie is scoped to the API host; SPA on scrolith.com still needs exchange.

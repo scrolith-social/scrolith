@@ -58,9 +58,11 @@ const OPTIONAL_KEYS: EnvKey[] = [
   { key: 'STORAGE_DRIVER', description: 'Legacy storage driver fallback (same values as UPLOAD_DRIVER)' },
   { key: 'STORAGE_BUCKET', description: 'GCS media bucket for durable product media (default scrolith-prod-media)' },
   { key: 'GCS_MEDIA_BUCKET', description: 'Optional alias for STORAGE_BUCKET' },
-  { key: 'AZURE_STORAGE_CONNECTION_STRING', description: 'Azure Blob storage connection string' },
+  { key: 'AZURE_STORAGE_ACCOUNT_URL', description: 'Azure Blob account endpoint (https://<account>.blob.core.windows.net)' },
+  { key: 'AZURE_STORAGE_AUTH_MODE', description: 'Azure Blob authentication mode; production requires managed_identity' },
+  { key: 'AZURE_STORAGE_MANAGED_IDENTITY_CLIENT_ID', description: 'Optional user-assigned managed identity client ID' },
   { key: 'AZURE_STORAGE_CONTAINER', description: 'Azure Blob storage container name' },
-  { key: 'AZURE_BLOB_BASE_URL', description: 'Azure Blob base URL for public files' },
+  { key: 'AZURE_BLOB_BASE_URL', description: 'Optional Azure Blob endpoint URL override; not an authorization mechanism' },
   { key: 'FIREBASE_STORAGE_BUCKET', description: 'Firebase Storage bucket name (legacy firebase_storage driver only)' },
   { key: 'API_REQUEST_LOGGING', description: 'Enable verbose API request logs in production' },
   { key: 'API_RATE_LIMIT_WINDOW_MS', description: 'API rate-limit rolling window in ms' },
@@ -152,10 +154,24 @@ export function validateEnv() {
   }
 
   if (['azure_blob', 'azure', 'blob'].includes(storage)) {
-    const keys = ['AZURE_STORAGE_CONNECTION_STRING', 'AZURE_STORAGE_CONTAINER'];
-    const missing = keys.filter((k) => !process.env[k] || process.env[k]!.trim() === '');
+    const missing: string[] = [];
+    if (!process.env.AZURE_STORAGE_CONTAINER?.trim()) missing.push('AZURE_STORAGE_CONTAINER');
+    if (process.env.NODE_ENV === 'production') {
+      if (!process.env.AZURE_STORAGE_ACCOUNT_URL?.trim()) missing.push('AZURE_STORAGE_ACCOUNT_URL');
+      if (process.env.AZURE_STORAGE_AUTH_MODE?.trim().toLowerCase() !== 'managed_identity') {
+        missing.push('AZURE_STORAGE_AUTH_MODE=managed_identity');
+      }
+      if (process.env.AZURE_STORAGE_CONNECTION_STRING?.trim()) {
+        console.error('Azure Blob connection-string authentication is forbidden in production.');
+      }
+    } else if (
+      !process.env.AZURE_STORAGE_ACCOUNT_URL?.trim() &&
+      !process.env.AZURE_STORAGE_CONNECTION_STRING?.trim()
+    ) {
+      missing.push('AZURE_STORAGE_ACCOUNT_URL (or a local-only connection string)');
+    }
     if (missing.length > 0) {
-      console.warn('Azure Blob storage selected but missing:', missing.join(', '));
+      console.warn('Azure Blob storage selected but missing or invalid configuration:', missing.join(', '));
     }
   }
 

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../utils/prismaClient';
+import { revokeAllAuthSessionsInTransaction } from '../services/authSession.service';
 import { resolveUserProStatus } from '../utils/proStatus';
 import realtime from '../utils/realtime';
 import { extractLocationMutation, toLocationResponse } from '../services/location/location.service';
@@ -1068,7 +1069,10 @@ export const changeUserPassword = async (req: Request, res: Response) => {
     if (!isValid) return fail(res, 400, 'Current password is incorrect', 'ERR_INVALID_PASSWORD');
 
     const hashed = await bcrypt.hash(newPassword, 12);
-    await prisma.user.update({ where: { id: userId }, data: { passwordHash: hashed } });
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { passwordHash: hashed } });
+      await revokeAllAuthSessionsInTransaction(tx, userId, 'password_changed');
+    });
 
     return ok(res, { updated: true });
   } catch (error: any) {

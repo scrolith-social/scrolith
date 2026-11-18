@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../utils/prismaClient';
 import { loadCurrencyConfig, getDefaultCurrencyForCountry, convertAmount } from '../utils/currency';
 import { normalizeCommissionSettings } from '../utils/commission';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 interface AuthRequest extends Request {
   user?: {
@@ -454,6 +455,7 @@ export const getAllTransactionsAdmin = async (req: AuthRequest, res: Response) =
 };
 
 export const adjustWalletBalance = async (req: AuthRequest, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     if (!isAdminRole(req.user?.role)) {
       return fail(res, 403, 'Forbidden', 'ERR_FORBIDDEN');
@@ -507,6 +509,7 @@ export const adjustWalletBalance = async (req: AuthRequest, res: Response) => {
 };
 
 export const reverseTransaction = async (req: AuthRequest, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     if (!isAdminRole(req.user?.role)) {
       return fail(res, 403, 'Forbidden', 'ERR_FORBIDDEN');

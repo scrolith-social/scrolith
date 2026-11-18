@@ -27,12 +27,21 @@ describe('Conversion note behavior', () => {
 
   test('admin approve with note creates notification for user', async () => {
     expect(convId).not.toBeNull();
-    const res = await request(app).post(`/api/gcoin/conversions/${convId}`).set('x-dev-role', 'admin').send({ action: 'approve', note: 'Payout processed by admin' });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
-    // notification should exist for user
-    const note = await prisma.notification.findFirst({ where: { userId } });
-    expect(note).not.toBeNull();
-    expect(note?.body).toContain('Admin note');
+    const gate = 'SCROLITH_MONEY_MOVEMENT_ENABLED';
+    const previousGate = process.env[gate];
+    process.env[gate] = 'true';
+
+    try {
+      const res = await request(app).post(`/api/gcoin/conversions/${convId}`).set('x-dev-role', 'admin').send({ action: 'approve', note: 'Payout processed by admin' });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      // notification should exist for user
+      const note = await prisma.notification.findFirst({ where: { userId } });
+      expect(note).not.toBeNull();
+      expect(note?.body).toContain('Admin note');
+    } finally {
+      if (previousGate === undefined) delete process.env[gate];
+      else process.env[gate] = previousGate;
+    }
   }, 20000);
 });

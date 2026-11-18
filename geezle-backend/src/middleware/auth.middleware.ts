@@ -1,9 +1,8 @@
 // C:\Projects\Scrolith-backend\src\middleware\auth.middleware.ts
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
 import { Role } from '@prisma/client';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { setSafeObjectValue } from '../utils/security/safeObjectKey';
 import {
   isAuthoritativeAdminRole,
@@ -18,6 +17,8 @@ declare global {
         id: string;
         email?: string;
         role?: string;
+        authSessionId?: string;
+        authSessionVersion?: number;
       };
     }
   }
@@ -63,61 +64,42 @@ const resolveAuthenticatedUser = async (req: Request) => {
     return { user: null, status: 401, error: 'No token provided', missingToken: true } as const;
   }
 
-  const token = authHeader.split(' ')[1];
-  const JWT_SECRET = jwtSecret();
-
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token) return { user: null, status: 401, error: 'Invalid token', missingToken: false } as const;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-    let user: any = null;
-    try {
-      user = await prisma.user.findUnique({
-        where: { id: decoded.id },
-        select: { id: true, email: true, role: true, isActive: true }
-      });
-    } catch (e) {
-      console.warn('[auth.middleware] Full user select failed. Falling back to minimal select.', (e as any)?.message || e);
-      user = await prisma.user.findUnique({
-        where: { id: decoded.id },
-        select: { id: true, email: true, role: true }
-      });
-    }
-    if (!user) return { user: null, status: 401, error: 'User not found', missingToken: false } as const;
-    if (user.isActive === false) {
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth) return { user: null, status: 401, error: 'Invalid or revoked token', missingToken: false } as const;
+    if (auth.user.isActive === false) {
       return { user: null, status: 403, error: 'Account is deactivated', missingToken: false } as const;
     }
 
-    try {
-      const staff = await prisma.staffUser.findUnique({
-        where: { userId: user.id },
-        include: {
-          role: {
-            select: { name: true, isActive: true }
-          }
-        }
-      });
-      if (staff) {
-        if (staff.status !== 'ACTIVE') {
-          return { user: null, status: 403, error: 'Staff account is not active', missingToken: false } as const;
-        }
-        if (!staff.role?.isActive) {
-          return { user: null, status: 403, error: 'Assigned staff role is inactive', missingToken: false } as const;
-        }
+    const staff = await prisma.staffUser.findUnique({
+      where: { userId: auth.user.id },
+      include: { role: { select: { name: true, isActive: true } } }
+    });
+    if (staff) {
+      if (staff.status !== 'ACTIVE') {
+        return { user: null, status: 403, error: 'Staff account is not active', missingToken: false } as const;
       }
-    } catch (staffError) {
-      const message = String((staffError as any)?.message || '');
-      if (!message.toLowerCase().includes('staffuser')) {
-        console.warn('[auth.middleware] Staff guardrail check failed:', message);
+      if (!staff.role?.isActive) {
+        return { user: null, status: 403, error: 'Assigned staff role is inactive', missingToken: false } as const;
       }
     }
 
     return {
-      user: { id: user.id, email: user.email, role: user.role } as Express.Request['user'],
+      user: {
+        id: auth.user.id,
+        email: auth.user.email,
+        role: auth.user.role,
+        authSessionId: auth.sessionId,
+        authSessionVersion: auth.sessionVersion
+      } as Express.Request['user'],
       status: 200,
       error: null,
       missingToken: false
     } as const;
   } catch {
-    return { user: null, status: 401, error: 'Invalid token', missingToken: false } as const;
+    return { user: null, status: 503, error: 'Authentication temporarily unavailable', missingToken: false } as const;
   }
 };
 
@@ -134,8 +116,13 @@ export const authMiddleware = async (
       return;
     }
 
+    if (resolved.status === 503) {
+      sendAuthFailure(res, 503, resolved.error);
+      return;
+    }
+
     // Optional dev bypass (explicit local-only opt-in); managed runtimes always fail closed.
-    if (process.env.ALLOW_DEV_AUTH_BYPASS === 'true') {
+    if (resolved.missingToken && process.env.ALLOW_DEV_AUTH_BYPASS === 'true') {
       if (!isLocalOnlyDevBypassAllowed()) {
         console.error('[auth] ALLOW_DEV_AUTH_BYPASS rejected outside an explicitly marked local runtime');
         sendAuthFailure(res, 401, 'Authentication failed');
@@ -238,9 +225,9 @@ export const authMiddleware = async (
       return res.status(401).json({ error: 'Invalid token' });
     }
     */
-    } catch (error) {
-    console.error('Auth middleware error:', error);
-    sendAuthFailure(res, 500, 'Authentication failed');
+  } catch {
+    console.error('[auth.middleware] Authentication store unavailable');
+    sendAuthFailure(res, 503, 'Authentication temporarily unavailable');
     return;
   }
 };
@@ -255,8 +242,8 @@ export const optionalAuthMiddleware = async (
     if (resolved.user) {
       req.user = resolved.user;
     }
-  } catch (error) {
-    console.warn('[auth.middleware] Optional auth resolution failed:', error);
+  } catch {
+    // Optional identity is omitted when the shared session store is unavailable.
   }
   next();
 };

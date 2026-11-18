@@ -229,6 +229,21 @@ describe('MediaStorageService provider selection', () => {
     expect(() => resolveWriteStorageProvider()).toThrow(/STORAGE_BUCKET/);
   });
 
+  test('Azure Blob uses disk-backed Multer and fails closed when unconfigured', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.UPLOAD_DRIVER = 'azure_blob';
+    delete process.env.STORAGE_DRIVER;
+    process.env.AZURE_STORAGE_CONNECTION_STRING = 'UseDevelopmentStorage=true';
+    delete process.env.AZURE_STORAGE_ACCOUNT_URL;
+    delete process.env.AZURE_STORAGE_AUTH_MODE;
+
+    expect(resolveWriteStorageProvider()).toBe('azure_blob');
+    expect(shouldUseMemoryUploadMulter()).toBe(false);
+
+    delete process.env.AZURE_STORAGE_CONNECTION_STRING;
+    expect(() => resolveWriteStorageProvider()).toThrow(/AZURE_STORAGE_ACCOUNT_URL/);
+  });
+
   test('buildMediaObjectKey nests under media/yyyy/mm/owner/category', () => {
     const key = buildMediaObjectKey({
       originalName: 'My Photo!.jpg',

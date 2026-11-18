@@ -5,10 +5,30 @@ import { buildCommunityAdActivationReadiness } from '../services/communityAdActi
 import { computeCommissionBreakdownForPayment } from '../utils/commission';
 import prisma from '../utils/prismaClient';
 import { handleFoundingPartnerStripeEvent } from '../services/foundingPartners.service';
+import { assertMoneyMovementEnabled, MoneyMovementDisabledError } from '../config/moneyMovement';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_mock_key', {
-  apiVersion: '2023-10-16' as any
-});
+class PaymentProviderUnavailableError extends Error {
+  readonly code = 'PAYMENT_PROVIDER_UNAVAILABLE';
+}
+
+const createStripeClient = (): Stripe => {
+  const secretKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
+  if (!/^(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+$/.test(secretKey)) {
+    throw new PaymentProviderUnavailableError('Payment provider is not configured.');
+  }
+  return new Stripe(secretKey, { apiVersion: '2023-10-16' as any });
+};
+
+const getStripeWebhookSecret = (): string => {
+  const secret = String(process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+  if (!/^whsec_[A-Za-z0-9]+$/.test(secret)) {
+    throw new PaymentProviderUnavailableError('Payment provider is not configured.');
+  }
+  return secret;
+};
+
+const paymentUnavailable = (res: Response, code: string) =>
+  res.status(503).json({ received: false, code });
 
 const ADS_CONFIG_SCOPE = 'community_ads_config';
 
@@ -46,6 +66,8 @@ const resolveAdActivationStatus = async (
 
 export const createPaymentIntent = async (req: Request, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
+    const stripe = createStripeClient();
     const { orderId, amount, currency = 'usd' } = req.body;
 
     if (!orderId || !amount) {
@@ -92,12 +114,30 @@ export const createPaymentIntent = async (req: Request, res: Response) => {
       totalCharged
     });
   } catch (error: any) {
+    if (error instanceof MoneyMovementDisabledError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    if (error instanceof PaymentProviderUnavailableError) {
+      return paymentUnavailable(res, error.code);
+    }
     console.error('Payment intent error:', error);
     return res.status(500).json({ error: error.message });
   }
 };
 
 export const handleWebhook = async (req: Request, res: Response) => {
+  let stripe: Stripe;
+  let webhookSecret: string;
+  try {
+    assertMoneyMovementEnabled();
+    stripe = createStripeClient();
+    webhookSecret = getStripeWebhookSecret();
+  } catch {
+    const code = String(process.env.SCROLITH_MONEY_MOVEMENT_ENABLED || '').trim().toLowerCase() === 'true'
+      ? 'PAYMENT_PROVIDER_UNAVAILABLE'
+      : 'MONEY_MOVEMENT_DISABLED';
+    return paymentUnavailable(res, code);
+  }
   const sig = req.headers['stripe-signature']!;
   let event;
 
@@ -105,7 +145,7 @@ export const handleWebhook = async (req: Request, res: Response) => {
     event = stripe.webhooks.constructEvent(
       req.body,
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
+      webhookSecret
     );
   } catch (err: any) {
     console.error('Webhook signature verification failed:', err.message);
@@ -326,6 +366,7 @@ export const handleWebhook = async (req: Request, res: Response) => {
 
 export const triggerReconcileAdPayments = async (req: Request, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const user = (req as any).user;
     if (!user || !user.role || !user.role.toString().toLowerCase().includes('admin')) {
       return res.status(403).json({ success: false, error: 'Forbidden' });

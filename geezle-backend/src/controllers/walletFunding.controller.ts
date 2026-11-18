@@ -18,6 +18,7 @@ import { encryptSecret, maybeDecryptSecret } from '../utils/secretCipher';
 import { getStripeClient, getStripeGatewayConfig, invalidateStripeConfigCache } from '../services/stripeConfig.service';
 import { handleStripeConnectWebhookEvent } from './payouts.stripe.controller';
 import { filterActiveGatewaysForUsers } from '../services/currencyPolicy.service';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 interface AuthRequest extends Request {
   user?: {
@@ -636,6 +637,7 @@ const settleWalletFundingIntent = async (
   status: 'succeeded' | 'failed',
   rawEvent: any
 ) => {
+  assertMoneyMovementEnabled();
   return prisma.$transaction(async (tx) => {
     const intent = await tx.walletFundingIntent.findUnique({
       where: { id: intentId },
@@ -764,6 +766,7 @@ export const listWalletTopupProviders = async (req: AuthRequest, res: Response) 
 };
 
 export const initiateWalletTopup = async (req: AuthRequest, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const user = getAuthUser(req);
     if (!user?.id) return fail(res, 401, 'Unauthorized', 'ERR_UNAUTHORIZED');
@@ -1456,6 +1459,7 @@ export const getWalletTopupStatus = async (req: AuthRequest, res: Response) => {
 };
 
 export const handleStripeWalletWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   const sig = req.headers['stripe-signature'] as string;
   let event: Stripe.Event;
 
@@ -1536,6 +1540,7 @@ export const handleStripeWalletWebhook = async (req: Request, res: Response) => 
 };
 
 export const handlePaystackWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const reference = event?.data?.reference || event?.data?.metadata?.walletFundingIntentId;
@@ -1574,6 +1579,7 @@ export const handlePaystackWebhook = async (req: Request, res: Response) => {
 };
 
 export const handleFlutterwaveWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const txRef = event?.data?.tx_ref;
@@ -1615,6 +1621,7 @@ export const handleFlutterwaveWebhook = async (req: Request, res: Response) => {
 };
 
 export const handlePaypalWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const resource = event?.resource;
@@ -1669,6 +1676,7 @@ export const handlePaypalWebhook = async (req: Request, res: Response) => {
 };
 
 export const handlePaymongoWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const referenceId = event?.data?.id;
@@ -1700,6 +1708,7 @@ export const handlePaymongoWebhook = async (req: Request, res: Response) => {
 };
 
 export const handleXenditWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const token = req.headers['x-callback-token'] as string | undefined;
     const settings = await getOrCreateSettings();
@@ -1738,6 +1747,7 @@ export const handleXenditWebhook = async (req: Request, res: Response) => {
 };
 
 export const handleMonnifyWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const paymentReference = event?.eventData?.paymentReference;
@@ -1771,6 +1781,7 @@ export const handleMonnifyWebhook = async (req: Request, res: Response) => {
 };
 
 export const handleOpayWebhook = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const event = req.body;
     const referenceId = event?.reference || event?.data?.reference;
@@ -1802,6 +1813,7 @@ export const handleOpayWebhook = async (req: Request, res: Response) => {
 };
 
 export const handleDragonpayCallback = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const { txnid, status } = req.query as { txnid?: string; status?: string };
     if (!txnid) return res.status(400).json({ success: false, error: 'Missing txnid' });
@@ -1832,6 +1844,7 @@ export const handleDragonpayCallback = async (req: Request, res: Response) => {
 };
 
 export const handlePayoneerNotify = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const settings = await getOrCreateSettings();
     const config = getProviderConfig('payoneer', settings);
@@ -1866,6 +1879,7 @@ export const handlePayoneerNotify = async (req: Request, res: Response) => {
  * unless the configured public key and complete signature envelope are present.
  */
 export const handleAntomNotify = async (req: Request, res: Response) => {
+  assertMoneyMovementEnabled();
   try {
     const settings = await getOrCreateSettings();
     const config = getProviderConfig('antom', settings);

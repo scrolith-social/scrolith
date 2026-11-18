@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import * as jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
 import realtime from '../utils/realtime';
 import {
@@ -8,7 +7,7 @@ import {
   sendPushToUsers
 } from '../services/pushNotifications';
 import { buildNotificationActionUrl } from '../services/notificationActionUrl.service';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { getTrustedClientIp } from '../utils/security/clientIdentity';
 import { isSafeObjectKey, setSafeObjectValue } from '../utils/security/safeObjectKey';
 
@@ -36,6 +35,7 @@ const KNOWN_EVENTS = new Set([
   'push_notification_opened',
   'push_notification_open_failed',
   'push_token_sync_failed',
+  'notification_sync_failed',
   'socket_connect_error',
   'socket_reconnected',
   'app_backgrounded',
@@ -240,19 +240,14 @@ const getTokenFromRequest = (req: Request) => {
   return asString(cookieToken);
 };
 
-const resolveOptionalRequester = (req: Request) => {
+const resolveOptionalRequester = async (req: Request) => {
   if (req.user?.id) return req.user;
   const token = getTokenFromRequest(req);
   if (!token) return null;
   try {
-    const decoded = jwt.verify(token, jwtSecret()) as any;
-    const id = asString(decoded?.id);
-    if (!id) return null;
-    return {
-      id,
-      email: asString(decoded?.email),
-      role: asString(decoded?.role)
-    };
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth || !auth.user.isActive) return null;
+    return auth.user;
   } catch {
     return null;
   }
@@ -490,7 +485,7 @@ export const getPublicAppDistributionConfig = async (_req: Request, res: Respons
 
 export const trackAppDistributionEvent = async (req: Request, res: Response) => {
   try {
-    const requester = resolveOptionalRequester(req);
+    const requester = await resolveOptionalRequester(req);
     const event = toTrackingEvent(req.body?.event);
     if (!event) {
       return res.status(400).json({

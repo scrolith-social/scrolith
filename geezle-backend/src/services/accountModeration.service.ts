@@ -2,6 +2,7 @@ import prisma from '../utils/prismaClient';
 import { notifyUser } from '../utils/notify';
 import { sendSystemEmail } from './email.service';
 import { recomputeTrustProfile } from './trust.service';
+import { revokeAllAuthSessionsInTransaction } from './authSession.service';
 
 export type AccountModerationAction = 'warning' | 'strike' | 'restriction' | 'ban';
 export type AccountModerationFeature = 'post' | 'comment' | 'react';
@@ -377,6 +378,7 @@ export const applyAccountModerationAction = async (input: ApplyAccountModeration
         where: { id: userId },
         data: { isActive: false }
       });
+      await revokeAllAuthSessionsInTransaction(tx, userId, 'account_banned');
     }
 
     return createdViolation;
