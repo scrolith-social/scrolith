@@ -37,7 +37,7 @@ export enum SkillLevel {
 }
 
 // ==================== TYPE UNIONS ====================
-export type UserStatus = 'active' | 'suspended' | 'inactive';
+export type UserStatus = 'active' | 'suspended' | 'inactive' | 'restricted' | 'banned';
 export type KYCDocumentType = 'ID Card' | 'Passport' | 'Driving License';
 export type KYCDocumentStatus = 'Pending' | 'Approved' | 'Rejected';
 export type KYCStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'verified' | 'under_review';
@@ -151,6 +151,14 @@ export interface User {
   email: string;
   role: UserRole;
   username?: string;
+  createdAt?: string;
+  created_at?: string;
+  title?: string;
+  bio?: string;
+  timezone?: string;
+  profileCompleteness?: number;
+  profile_completion?: number;
+  lastLoginAt?: string | null;
   avatar?: string;
   isActive?: boolean; // Replaces status
   status?: UserStatus; // Keep for compatibility if needed, but map from isActive
@@ -205,6 +213,7 @@ export interface User {
   followersCount?: number; // camelCase
   followingCount?: number; // camelCase
   profilePhotoFileId?: string; // camelCase
+  profile_photo_file_id?: string;
   callCapabilities?: {
     videoCallsEnabled?: boolean;
     videoCallsUpdatedAt?: string | null;
@@ -269,6 +278,7 @@ export interface LocationSuggestion extends StructuredLocationFields {
 export interface UserProfile extends StructuredLocationFields {
   user_id: string;
   userId?: string;
+  name?: string;
   title: string;
   bio: string;
   location: string;
@@ -507,8 +517,10 @@ export interface GigExtra {
   title: string;
   description: string;
   price: number;
-  additional_days: number;
-  applies_to: 'basic' | 'standard' | 'premium' | 'all';
+  additional_days?: number;
+  additionalDays?: number;
+  applies_to?: 'basic' | 'standard' | 'premium' | 'all';
+  appliesTo?: 'basic' | 'standard' | 'premium' | 'all';
 }
 
 export interface GigMilestone {
@@ -553,6 +565,8 @@ export interface Gig {
   isFeatured?: boolean; // camelCase
   isTopSelected?: boolean; // camelCase
   isRecommended?: boolean; // camelCase
+  deliveryTime?: string;
+  revisions?: number;
   description: string;
   packages: GigPackage[];
   pricingMode?: PricingMode; // camelCase
@@ -606,6 +620,7 @@ export interface Job {
   id: string;
   title: string;
   clientName: string; // camelCase
+  client_name?: string;
   clientId?: string; // camelCase
   clientAvatar?: string | null; // camelCase
   clientProfilePhotoFileId?: string | null; // camelCase
@@ -633,6 +648,8 @@ export interface Job {
   isTopSelected?: boolean; // camelCase
   isRecommended?: boolean; // camelCase
   adminStatus?: 'pending' | 'approved' | 'rejected'; // camelCase
+  admin_status?: 'pending' | 'approved' | 'rejected';
+  createdAt?: string;
   adminReason?: string;
   proposalRequirements?: {
     amount?: boolean;
@@ -674,6 +691,12 @@ export interface Contract {
   hours_today?: number;
   hours_this_week?: number;
   earnings_pending?: number;
+  totalHoursLogged?: number;
+  totalPaid?: number;
+  hoursToday?: number;
+  hoursThisWeek?: number;
+  earningsPending?: number;
+  activeSessionId?: string;
   active_session_id?: string;
 }
 
@@ -779,6 +802,13 @@ export interface Escrow {
   status: EscrowStatus;
   funded_at: string;
   released_at?: string;
+  orderId?: string;
+  clientId?: string;
+  clientName?: string;
+  freelancerId?: string;
+  freelancerName?: string;
+  fundedAt?: string;
+  releasedAt?: string;
 }
 
 // Permissive aliases: add index signatures to core interfaces so both
@@ -820,6 +850,11 @@ export interface Wallet {
   frozen: boolean;
   currency: string;
   updated_at: string;
+  userId?: string;
+  availableBalance?: number;
+  pendingClearance?: number;
+  escrowBalance?: number;
+  updatedAt?: string;
 }
 
 export interface WalletTransaction {
@@ -833,6 +868,10 @@ export interface WalletTransaction {
   reference_id?: string;
   // camelCase alias
   reference?: string;
+  referenceId?: string;
+  user_id?: string;
+  userId?: string;
+  timestamp?: string;
   created_at: string;
   createdAt?: string;
   admin_note?: string;
@@ -878,11 +917,11 @@ export interface GcoinTransaction {
 }
 
 export interface GcoinSettings {
-  conversion_rate: number;
+  conversion_rate?: number;
   min_withdrawal?: number;
-  conversion_enabled: boolean;
+  conversion_enabled?: boolean;
   auto_approve_conversions?: boolean;
-  user_transfers_enabled: boolean;
+  user_transfers_enabled?: boolean;
   // Earning rule units
   views_unit?: number;
   likes_unit?: number;
@@ -925,6 +964,11 @@ export interface GcoinConversionRequest {
   amount_fiat: number;
   status: 'pending' | 'approved' | 'rejected';
   requested_at: string;
+  userId?: string;
+  userName?: string;
+  amountGcoin?: number;
+  amountFiat?: number;
+  requestedAt?: string;
 }
 
 // ==================== CATEGORIES & LISTINGS ====================
@@ -1344,9 +1388,12 @@ export interface MarketingPopupSubscribeConfig {
 }
 
 export interface ReferralIntelligence {
-  top_referrers: { user_id: string; name: string; total_referrals: number; quality_score: number; k_factor: number }[];
-  fraud_alerts: { referrer_id: string; reason: string; severity: string }[];
-  campaign_suggestions: string[];
+  top_referrers?: { user_id: string; userId?: string; name: string; total_referrals: number; totalReferrals?: number; quality_score: number; qualityScore?: number; k_factor: number; kFactor?: number }[];
+  fraud_alerts?: { referrer_id: string; referrerId?: string; reason: string; severity: string }[];
+  campaign_suggestions?: string[];
+  topReferrers?: { user_id?: string; userId?: string; name: string; total_referrals?: number; totalReferrals?: number; quality_score?: number; qualityScore?: number; k_factor?: number; kFactor?: number }[];
+  fraudAlerts?: { referrer_id?: string; referrerId?: string; reason: string; severity: string }[];
+  campaignSuggestions?: string[];
 }
 
 export interface AdCampaign {
@@ -1464,6 +1511,13 @@ export interface Conversation {
     isOnline?: boolean;
     last_seen_at?: string;
     lastSeenAt?: string;
+    memberRole?: string;
+    member_role?: string;
+    isScrolitha?: boolean;
+    is_scrolitha?: boolean;
+    systemLabel?: string;
+    system_label?: string;
+    presenceState?: string;
     role?: string;
     profilePhotoFileId?: string;
     profile_photo_file_id?: string;
@@ -2097,6 +2151,13 @@ export interface SystemConfig {
   registrations_enabled: boolean;
   kyc_enforced: boolean;
   admin_2fa: boolean;
+  maintenancePage?: {
+    title?: string;
+    body?: string;
+    supportEmail?: string;
+    estimatedReturn?: string;
+    [key: string]: string | undefined;
+  };
   resumeAi?: ResumeAiSettings;
   resume_ai?: ResumeAiSettings;
   verification?: VerificationPolicySettings;
@@ -2130,16 +2191,24 @@ export interface SystemConfig {
   optimization?: OptimizationConfig;
   // Backward-compatible wrapper used by some UI modules
   system?: any;
+  maintenanceMode?: boolean;
+  registrationsEnabled?: boolean;
+  kycEnforced?: boolean;
+  admin2FA?: boolean;
 }
 
 export interface ComplianceConfig {
   region: string;
   code: string;
-  gdpr_enabled: boolean;
-  data_residency: string;
-  kyc_provider: string;
-  tax_engine: string;
+  gdpr_enabled?: boolean;
+  data_residency?: string;
+  kyc_provider?: string;
+  tax_engine?: string;
   active: boolean;
+  gdprEnabled?: boolean;
+  dataResidency?: string;
+  kycProvider?: string;
+  taxEngine?: string;
 }
 
 export interface EmailProviderConfig {
@@ -2289,6 +2358,12 @@ export interface HirePageConfig {
   highlights: HireHighlight[];
   steps: HireStep[];
   testimonials: HireTestimonial[];
+  callToAction?: {
+    title?: string;
+    subtitle?: string;
+    ctaLabel?: string;
+    ctaUrl?: string;
+  };
   updated_at?: string;
 }
 
@@ -2367,6 +2442,7 @@ export interface BlogPost {
   // camelCase compatibility
   authorName?: string;
   updatedAt?: string;
+  createdAt?: string;
   scheduled_at?: string;
   scheduledAt?: string;
 }
@@ -2379,22 +2455,39 @@ export interface StaticPage {
   blocks: ContentBlock[];
   status: PageStatus;
   visibility: Visibility;
-  updated_at: string;
-  category_id: string;
-  seo?: { meta_title: string; meta_description: string; meta_keywords?: string[] };
+  updated_at?: string;
+  updatedAt?: string;
+  category_id?: string;
+  categoryId?: string;
+  seo?: {
+    meta_title?: string;
+    meta_description?: string;
+    meta_keywords?: string[];
+    metaTitle?: string;
+    metaDescription?: string;
+    metaKeywords?: string[];
+  };
   images?: string[];
   videos?: string[];
 }
 
 export interface BlogSettings {
-  page_title: string;
-  meta_title: string;
-  meta_description: string;
-  banner_image: string;
-  posts_per_page: number;
-  default_category: string;
-  show_author: boolean;
-  show_date: boolean;
+  page_title?: string;
+  meta_title?: string;
+  meta_description?: string;
+  banner_image?: string;
+  posts_per_page?: number;
+  default_category?: string;
+  show_author?: boolean;
+  show_date?: boolean;
+  pageTitle?: string;
+  metaTitle?: string;
+  metaDescription?: string;
+  bannerImage?: string;
+  postsPerPage?: number;
+  defaultCategory?: string;
+  showAuthor?: boolean;
+  showDate?: boolean;
 }
 
 // ==================== HOMEPAGE CONTENT ====================
@@ -2906,6 +2999,11 @@ export interface HomepageAnalytics {
   avg_time_on_page: number;
   device_breakdown: { desktop: number; mobile: number; tablet: number };
   section_engagement: { name: string; clicks: number; views: number }[];
+  ctaClicks?: number;
+  bounceRate?: number;
+  avgTimeOnPage?: number;
+  deviceBreakdown?: { desktop: number; mobile: number; tablet: number };
+  sectionEngagement?: { name: string; clicks: number; views: number }[];
 }
 
 // ==================== HEADER & NAVIGATION ====================
@@ -3039,6 +3137,9 @@ export interface NavIconConfig {
   url?: string;
   link?: string;
   href?: string;
+  isEnabled?: boolean;
+  showLabel?: boolean;
+  sortOrder?: number;
 }
 
 export interface HelpLink {
@@ -3047,6 +3148,7 @@ export interface HelpLink {
   url: string;
   target: '_self' | '_blank';
   is_enabled: boolean;
+  isEnabled?: boolean;
 }
 
 export interface HeroSearchConfig {
@@ -3130,8 +3232,10 @@ export interface UploadedFile {
   type: MediaType | string;
   size: number;
   url: string;
+  path?: string;
   category: FileCategory;
   created_at: string;
+  uploadedAt?: string;
   storage_key?: string;
   storageKey?: string;
   storage_provider?: string;
@@ -3141,6 +3245,7 @@ export interface UploadedFile {
   mimeType?: string;
   thumbnail_url?: string | null;
   thumbnailUrl?: string | null;
+  thumbnail?: string | null;
   width?: number | null;
   height?: number | null;
   duration?: number | null;
@@ -3154,6 +3259,8 @@ export interface SkillRecommendation {
   income_uplift: number;
   difficulty: string;
   reason: string;
+  demandGrowth?: number;
+  incomeUplift?: number;
 }
 
 export interface EnterpriseHiringInsight {
@@ -3165,10 +3272,12 @@ export interface EnterpriseHiringInsight {
   teamGaps?: string[];
   market_position: string;
   budget_optimization: string;
+  budgetOptimization?: string;
 }
 
 export interface BudgetAdvice {
-  recommended_range: string;
+  recommended_range?: string;
+  recommendedRange?: string;
   success_probability?: number;
   successProbability?: number;
   market_comparison?: string;
@@ -3276,7 +3385,7 @@ export interface AIConfig {
   };
   cost_control?: {
     enabled?: boolean;
-    monthly_limit_usd: number;
+    monthly_limit_usd?: number;
     current_spend_usd?: number;
   };
   // CamelCase alias for UI
@@ -3324,6 +3433,7 @@ export interface WithdrawalRequest {
   details: any;
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   requested_at: string;
+  created_at?: string;
   processed_at?: string;
   risk_score?: number;
   risk_level?: string;
@@ -3353,11 +3463,11 @@ export interface CommissionRule {
 }
 
 export interface GlobalCommissionSettings {
-  freelancer_fee_type: 'percentage' | 'fixed';
-  freelancer_fee_value: number;
-  employer_fee_type: 'percentage' | 'fixed';
-  employer_fee_value: number;
-  minimum_fee: number;
+  freelancer_fee_type?: 'percentage' | 'fixed';
+  freelancer_fee_value?: number;
+  employer_fee_type?: 'percentage' | 'fixed';
+  employer_fee_value?: number;
+  minimum_fee?: number;
   max_adjustment?: number;
   maxAdjustment?: number;
   freelancerFeeType?: 'percentage' | 'fixed';
@@ -3373,15 +3483,21 @@ export interface PlatformFinancials {
   total_pending_clearance: number;
   platform_revenue: number;
   refund_pool: number;
+  totalEscrow?: number;
+  totalClearedUserFunds?: number;
+  totalPendingClearance?: number;
+  platformRevenue?: number;
+  refundPool?: number;
 }
 
 export interface MarketingROI {
   channel: string;
   spend: number;
   conversions: number;
-  cost_per_acquisition: number;
+  cost_per_acquisition?: number;
   revenue: number;
   roi: number;
+  costPerAcquisition?: number;
 }
 
 // ==================== SUBSCRIPTIONS & PLANS ====================
@@ -3486,6 +3602,7 @@ export interface SupportTicket {
   is_read_by_user: boolean;
   isReadByUser?: boolean;
   attachments?: string[];
+  recaptchaToken?: string;
 }
 
 export interface TicketCategory {
@@ -3560,6 +3677,10 @@ export interface ChurnRisk {
   factors: string[];
   last_active: string;
   projected_loss: number;
+  userId?: string;
+  userName?: string;
+  lastActive?: string;
+  projectedLoss?: number;
 }
 
 export interface GrowthForecast {
@@ -3600,6 +3721,13 @@ export interface LTVMetric {
   revenue_velocity: 'Low' | 'Medium' | 'High';
   churn_risk: number;
   next_action: string;
+  userId?: string;
+  userName?: string;
+  predictedLTV?: number;
+  confidenceScore?: number;
+  revenueVelocity?: 'Low' | 'Medium' | 'High';
+  churnRisk?: number;
+  nextAction?: string;
 }
 
 export interface DemandForecast {
@@ -3610,6 +3738,8 @@ export interface DemandForecast {
   confidence: number;
   timeframe: string;
   category: string;
+  growthRate?: number;
+  recommendedPriceRange?: string;
 }
 
 // ==================== SEARCH & DISCOVERY ====================
@@ -3810,6 +3940,7 @@ export interface CommunityClub {
   isJoined?: boolean;
   membershipRole?: 'owner' | 'moderator' | 'member' | null;
   pendingRequest?: GroupJoinRequestSummary | null;
+  hasPendingRequest?: boolean;
   pendingInvite?: GroupInviteSummary | null;
   members?: GroupMemberSummary[];
   pendingRequestCount?: number;
@@ -3860,6 +3991,8 @@ export interface GroupJoinRequestSummary {
     name: string;
     username?: string;
   } | null;
+  reviewedAt?: string | null;
+  reviewed_at?: string | null;
 }
 
 export interface GroupInviteSummary {
@@ -3939,6 +4072,14 @@ export interface CommunityChannel {
   is_joined?: boolean;
   created_at?: string;
   last_activity?: string;
+  isPaid?: boolean;
+  unreadCount?: number;
+  onlineCount?: number;
+  isLocked?: boolean;
+  isPublic?: boolean;
+  isJoined?: boolean;
+  createdAt?: string;
+  lastActivity?: string;
 }
 
 export interface CommunityMessage {
@@ -3996,6 +4137,9 @@ export interface LeaderboardEntry {
   trend: 'up' | 'down' | 'stable';
   contributions: number;
   category: string;
+  userId?: string;
+  userName?: string;
+  userAvatar?: string;
 }
 
 export interface InteractionCounts {
@@ -4056,6 +4200,10 @@ export interface CommunitySettings {
   sentiment_analysis: boolean;
   enable_clubs: boolean;
   enable_events: boolean;
+
+  maxImagesPerPost?: number;
+  maxVideoSizeMb?: number;
+  storyExpiryHours?: number;
 
   // camelCase aliases (compat)
   requireLoginToView?: boolean;
@@ -4128,12 +4276,18 @@ export interface LegacyCommunitySettings {
 export interface CommunityAnalytics {
   health_score: number;
   healthScore?: number;
-  active_users: number;
-  messages_today: number;
-  ai_flagged_count: number;
-  engagement_trend: number[];
-  top_channels: { name: string; activity: number }[];
+  active_users?: number;
+  activeUsers?: number;
+  messages_today?: number;
+  messagesToday?: number;
+  ai_flagged_count?: number;
+  aiFlaggedCount?: number;
+  engagement_trend?: number[];
+  engagementTrend?: number[];
+  top_channels?: { name: string; activity: number }[];
+  topChannels?: { name: string; activity: number }[];
   toxicity_score: number;
+  toxicityScore?: number;
   total_members?: number;
   active_today?: number;
   new_this_week?: number;
@@ -4224,6 +4378,7 @@ export interface Notification {
   is_read?: boolean;
   isRead?: boolean;
   timestamp: string;
+  dismissed?: boolean;
 }
 
 // ==================== ADMIN DASHBOARD TYPES ====================

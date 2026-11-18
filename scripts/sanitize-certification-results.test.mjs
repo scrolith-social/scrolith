@@ -1,0 +1,274 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const sanitizerPath = join(repositoryRoot, 'scripts', 'sanitize-certification-results.mjs');
+
+function listFiles(root) {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    return entry.isDirectory() ? listFiles(path) : [path];
+  });
+}
+
+test('sanitizer reports Playwright outcomes and strips unapproved evidence fields', () => {
+  const testRoot = mkdtempSync(join(tmpdir(), 'scrolith-sanitizer-test-'));
+  const resultsRoot = join(testRoot, 'results');
+  const safeEvidenceRoot = join(resultsRoot, 'safe-evidence');
+  mkdirSync(safeEvidenceRoot, { recursive: true });
+  const secondRunRoot = join(resultsRoot, 'iphone-15', 'member-home');
+  const secondEvidenceRoot = join(secondRunRoot, 'safe-evidence');
+  mkdirSync(secondEvidenceRoot, { recursive: true });
+  const rawTestOutput = join(secondRunRoot, 'test-output', 'raw');
+  const rawHtmlReport = join(secondRunRoot, 'html-report', 'data');
+  mkdirSync(rawTestOutput, { recursive: true });
+  mkdirSync(rawHtmlReport, { recursive: true });
+  writeFileSync(join(rawTestOutput, 'cert-results.json'), JSON.stringify({ suites: [{ specs: [{ title: 'RAW_TEST_OUTPUT_MUST_NOT_BE_READ' }] }] }));
+  writeFileSync(join(rawHtmlReport, 'cert-results.json'), JSON.stringify({ suites: [{ specs: [{ title: 'RAW_HTML_REPORT_MUST_NOT_BE_READ' }] }] }));
+
+  const scenarios = [
+    { title: 'passed', status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', duration: 1 }] },
+    { title: 'failed', status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'failed', duration: 2, errors: [{ message: 'locator.click: button intercepts pointer events token=SYNTHETIC_TOKEN' }] }] },
+    { title: 'timed out', status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'timedOut', duration: 3 }] },
+    { title: 'skipped', status: 'skipped', expectedStatus: 'skipped', annotations: [{ type: 'skip', description: 'requires local auth' }], results: [{ status: 'skipped' }] },
+    { title: 'flaky', status: 'flaky', expectedStatus: 'passed', results: [{ status: 'failed' }, { status: 'passed', duration: 4 }] }
+  ].map((scenario) => ({
+    ...scenario,
+    projectName: 'desktop-chrome',
+    annotations: scenario.annotations || []
+  }));
+
+  writeFileSync(join(resultsRoot, 'cert-results.json'), JSON.stringify({
+    suites: [{
+      title: 'Synthetic suite',
+      specs: [{
+        title: 'password=SYNTHETIC_PASSWORD person@example.invalid',
+        file: 'tests/synthetic.spec.ts',
+        line: 7,
+        tests: scenarios
+      }]
+    }]
+  }));
+  writeFileSync(join(safeEvidenceRoot, 'synthetic.json'), JSON.stringify({
+    schemaVersion: 1,
+    scenario: 'member_home_feed',
+    project: 'desktop-chrome',
+    testIdHash: '012345abcdef',
+    pageState: {
+      route: 'member_home',
+      safePath: '/',
+      postCardCount: 2,
+      authenticatedStoragePresent: true,
+      localTokenKeyPresent: true,
+      localAccessTokenKeyPresent: false,
+      localScrolithTokenKeyPresent: false,
+      tokenCookiePresent: false,
+      storedUserPresent: true,
+      storedUserIdPresent: true,
+      storedUserOnboardingFlagPresent: true,
+      storedUserOnboardingRequired: true,
+      clientAuthState: 'anonymous',
+      clientFollowOnboardingRequired: 'true',
+      followOnboardingRoute: false,
+      memberHomeMarkerCount: 0,
+      mobileHomeMarkerCount: 0,
+      userId: 'SENSITIVE_SYNTHETIC_USER_ID',
+      token: 'SYNTHETIC_TOKEN'
+    },
+    diagnostics: {
+      approvalPolling: {
+        responseCount: 3,
+        statusCounts: [{ status: 200, count: 2 }, { status: 429, count: 1 }],
+        payloadParseFailures: 0,
+        pendingRowCount: 1,
+        matchingAttemptResponses: 1,
+        failedRequestCount: 0,
+        elapsedMs: 1250,
+        attemptId: 'SENSITIVE_SYNTHETIC_ATTEMPT_ID',
+        token: 'SYNTHETIC_TOKEN'
+      }
+    },
+    apiEvents: [{
+      kind: 'response',
+      route: 'feed',
+      method: 'GET',
+      status: 200,
+      itemCount: 2,
+      responseShape: 'items_array',
+      url: 'http://127.0.0.1/private?token=SYNTHETIC_TOKEN',
+      body: 'SYNTHETIC_BODY'
+    }, {
+      kind: 'response',
+      route: 'auth_me',
+      method: 'GET',
+      status: 200,
+      authUserRecordPresent: true,
+      authOnboardingFlagPresent: true,
+      authOnboardingRequired: true,
+      userId: 'SENSITIVE_SYNTHETIC_USER_ID',
+      email: 'person@example.invalid'
+    }, {
+      kind: 'response',
+      route: 'follow_onboarding',
+      method: 'GET',
+      status: 200,
+      body: 'SYNTHETIC_PRIVATE_ONBOARDING_PAYLOAD'
+    }]
+  }));
+  writeFileSync(join(secondRunRoot, 'cert-results.json'), JSON.stringify({
+    suites: [{
+      title: 'Isolated WebKit run',
+      specs: [{
+        title: 'synthetic browser state',
+        file: 'tests/synthetic-webkit.spec.ts',
+        line: 11,
+        tests: [{
+          title: 'WebKit authenticated state',
+          projectName: 'iphone-15',
+          status: 'expected',
+          expectedStatus: 'passed',
+          results: [{ status: 'passed', duration: 5 }]
+        }]
+      }]
+    }]
+  }));
+  writeFileSync(join(secondEvidenceRoot, 'device-approval-iphone-15.json'), JSON.stringify({
+    schemaVersion: 1,
+    scenario: 'device_approval',
+    project: 'iphone-15',
+    testIdHash: 'fedcba987654',
+    pageState: { route: 'login', storedUserPresent: false, approvalDialogCount: 1 },
+    apiEvents: [{ kind: 'response', route: 'approval_list', method: 'GET', status: 200 }]
+  }));
+  writeFileSync(join(safeEvidenceRoot, 'logout-iphone-15.json'), JSON.stringify({
+    schemaVersion: 1,
+    scenario: 'logout',
+    project: 'iphone-15',
+    testIdHash: 'abcdef123456',
+    pageState: {
+      route: 'member_home',
+      safePath: '/member-home',
+      responsiveNavigation: {
+        viewportWidth: 393,
+        mobileProfileVisible: true,
+        desktopAccountMenuVisible: true,
+        mobileQuickMenuVisible: true,
+        accountSheetVisible: false,
+        desktopAccountMenuHitTarget: 'mobile_quick_menu',
+        accountName: 'SENSITIVE_SYNTHETIC_ACCOUNT'
+      }
+    },
+    apiEvents: [{
+      kind: 'response',
+      route: 'logout',
+      method: 'POST',
+      status: 200,
+      url: 'http://127.0.0.1/api/auth/logout?token=SYNTHETIC_TOKEN',
+      headers: { authorization: 'Bearer SYNTHETIC_TOKEN' }
+    }]
+  }));
+
+  try {
+    execFileSync(process.execPath, [sanitizerPath], {
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        CERT_RESULTS_DIR: resultsRoot,
+        SCROLITH_ROOT_SHA: 'a'.repeat(40),
+        RUNNER_OS: 'Linux'
+      },
+      stdio: 'pipe'
+    });
+
+    const outputRoot = join(resultsRoot, 'sanitized');
+    const summary = JSON.parse(readFileSync(join(outputRoot, 'test-summary.json'), 'utf8'));
+    assert.deepEqual(summary.counts, {
+      passed: 2,
+      failed: 1,
+      flaky: 1,
+      skipped: 1,
+      timedOut: 1,
+      interrupted: 0,
+      unknown: 0
+    });
+    assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
+    assert.equal(summary.tests.find((item) => item.status === 'failed')?.failureKind, 'ui_interception');
+    const sanitizedSynthetic = JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8'));
+    assert.equal(sanitizedSynthetic.pageState.authenticatedStoragePresent, true);
+    assert.equal(sanitizedSynthetic.pageState.localTokenKeyPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.localAccessTokenKeyPresent, false);
+    assert.equal(sanitizedSynthetic.pageState.localScrolithTokenKeyPresent, false);
+    assert.equal(sanitizedSynthetic.pageState.tokenCookiePresent, false);
+    assert.equal(sanitizedSynthetic.pageState.storedUserPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.storedUserIdPresent, true);
+    assert.equal(sanitizedSynthetic.pageState.storedUserOnboardingRequired, true);
+    assert.equal(sanitizedSynthetic.pageState.clientAuthState, 'anonymous');
+    assert.equal(sanitizedSynthetic.pageState.clientFollowOnboardingRequired, 'true');
+    assert.equal(sanitizedSynthetic.pageState.memberHomeMarkerCount, 0);
+    const sanitizedAuthEvent = sanitizedSynthetic.apiEvents.find((event) => event.route === 'auth_me');
+    assert.deepEqual({
+      authUserRecordPresent: sanitizedAuthEvent.authUserRecordPresent,
+      authOnboardingFlagPresent: sanitizedAuthEvent.authOnboardingFlagPresent,
+      authOnboardingRequired: sanitizedAuthEvent.authOnboardingRequired
+    }, { authUserRecordPresent: true, authOnboardingFlagPresent: true, authOnboardingRequired: true });
+    const sanitizedOnboardingEvent = sanitizedSynthetic.apiEvents.find((event) => event.route === 'follow_onboarding');
+    assert.deepEqual({ route: sanitizedOnboardingEvent.route, method: sanitizedOnboardingEvent.method, status: sanitizedOnboardingEvent.status }, {
+      route: 'follow_onboarding', method: 'GET', status: 200
+    });
+    assert.equal(JSON.stringify(sanitizedSynthetic).includes('SYNTHETIC_PRIVATE_ONBOARDING_PAYLOAD'), false);
+    assert.equal(Object.hasOwn(sanitizedAuthEvent, 'userId'), false);
+    assert.deepEqual(sanitizedSynthetic.diagnostics.approvalPolling.statusCounts, [
+      { status: 200, count: 2 },
+      { status: 429, count: 1 }
+    ]);
+    assert.equal(sanitizedSynthetic.diagnostics.approvalPolling.matchingAttemptResponses, 1);
+    assert.equal(Object.hasOwn(sanitizedSynthetic.diagnostics.approvalPolling, 'attemptId'), false);
+    assert.equal(existsSync(join(outputRoot, 'iphone-15_member-home__device-approval-iphone-15.json')), true);
+    const sanitizedLogout = JSON.parse(readFileSync(join(outputRoot, 'logout-iphone-15.json'), 'utf8'));
+    assert.deepEqual(sanitizedLogout.pageState.responsiveNavigation, {
+      viewportWidth: 393,
+      mobileProfileVisible: true,
+      desktopAccountMenuVisible: true,
+      mobileQuickMenuVisible: true,
+      accountSheetVisible: false,
+      desktopAccountMenuHitTarget: 'mobile_quick_menu'
+    });
+    assert.deepEqual(sanitizedLogout.networkTrace, [{
+      sequence: 1,
+      kind: 'response',
+      route: 'logout',
+      method: 'POST',
+      status: 200
+    }]);
+    const manifest = JSON.parse(readFileSync(join(outputRoot, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.isolatedRunCount, 2);
+    const evidenceManifest = JSON.parse(readFileSync(join(outputRoot, 'evidence-manifest.json'), 'utf8'));
+    assert.equal(evidenceManifest.files.some((item) => item.name === 'iphone-15_member-home__device-approval-iphone-15.json'), true);
+    assert.equal(evidenceManifest.files.some((item) => item.name === 'logout-iphone-15.json' && item.type === 'sanitized_network_trace_and_responsive_navigation'), true);
+
+    const safeOutput = listFiles(outputRoot).map((path) => readFileSync(path, 'utf8')).join('\n');
+    for (const marker of [
+      'person@example.invalid',
+      'SYNTHETIC_PASSWORD',
+      'SYNTHETIC_STACK',
+      'SYNTHETIC_TOKEN',
+      'SENSITIVE_SYNTHETIC_ATTEMPT_ID',
+      'SYNTHETIC_BODY',
+      'SENSITIVE_SYNTHETIC_USER_ID',
+      'RAW_TEST_OUTPUT_MUST_NOT_BE_READ',
+      'RAW_HTML_REPORT_MUST_NOT_BE_READ',
+      'http://127.0.0.1/private',
+      'SENSITIVE_SYNTHETIC_ACCOUNT'
+    ]) {
+      assert.equal(safeOutput.includes(marker), false, `sanitized output leaked ${marker}`);
+    }
+    assert.equal(safeOutput.includes('unknown'), true);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

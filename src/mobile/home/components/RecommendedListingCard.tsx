@@ -20,6 +20,7 @@ import EnterpriseAvatar from '../../../components/common/EnterpriseAvatar';
 import EnterpriseImage from '../../../components/common/EnterpriseImage';
 import JobCardMedia from '../../../components/media/JobCardMedia';
 import { getJobCardMedia } from '../../../utils/jobCardMedia';
+import { isCanonicalApiUploadUrl } from '../../../utils/assetUrl';
 
 type JobLike = {
   id: string;
@@ -99,13 +100,7 @@ const pickFirstMediaEntry = (values: unknown) => {
 };
 
 const isRawApiUploadUrl = (value: unknown) => {
-  const normalized = String(value || '').trim().toLowerCase();
-  return (
-    normalized.startsWith('https://api.scrolith.com/uploads/') ||
-    normalized.startsWith('http://api.scrolith.com/uploads/') ||
-    normalized.startsWith('/uploads/') ||
-    normalized.startsWith('uploads/')
-  );
+  return isCanonicalApiUploadUrl(value);
 };
 
 const listingHasUsableImageFileId = (row: any) => {

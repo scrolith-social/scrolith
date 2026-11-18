@@ -2026,16 +2026,9 @@ const LiveViewer: React.FC = () => {
   const startFromPreview = useCallback(async () => {
     if (!sessionId || !isHostPreview) return;
     try {
-      const media = await ensureLocalMedia();
+      await ensureLocalMedia();
       const updated = await LiveService.startSession(sessionId);
       setSession(updated);
-      if (media.audioLimited) {
-        showNotification(
-          'warning',
-          'Livestream',
-          'Microphone access is unavailable in app mode. Live started with camera only. Enable microphone in app settings, then retry camera.'
-        );
-      }
       showNotification('success', 'Livestream', 'Live session started.');
       navigate(`/live/${encodeURIComponent(sessionId)}`, { replace: true });
     } catch (error: any) {

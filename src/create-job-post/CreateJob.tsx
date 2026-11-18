@@ -6,7 +6,8 @@ import { useNotification } from '../context/NotificationContext';
 import { AdminService } from '../services/admin';
 import { categoriesApi } from '../services/categories';
 import { jobsApi } from '../services/jobs';
-import { Job, ListingCategory, UploadedFile, BudgetAdvice, Plan, PaymentGateway } from '../types';
+import { Job, ListingCategory, UploadedFile, BudgetAdvice, Plan, PaymentGateway, JobType, ExperienceLevel, Visibility } from '../types';
+import type { Category } from '../services/categories';
 import { Briefcase, DollarSign, FileText, FileImage, FileVideo, ExternalLink, CheckCircle, Upload, X, Crown, Sparkles, ChevronRight, ChevronLeft, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import FilePickerModal from '../dashboard/shared/FilePickerModal';
@@ -33,6 +34,10 @@ const DEFAULT_JOB_STEPS = [
     { id: 'plan', label: 'Plan', enabled: true },
     { id: 'review', label: 'Review', enabled: true }
 ];
+
+const JOB_TYPE_OPTIONS: JobType[] = ['Fixed Price', 'Hourly', 'Contract'];
+const EXPERIENCE_LEVEL_OPTIONS: ExperienceLevel[] = ['Entry', 'Intermediate', 'Expert'];
+const VISIBILITY_OPTIONS: Visibility[] = ['public', 'invite'];
 
 const DEFAULT_JOB_FORM = {
     layout: {
@@ -158,8 +163,8 @@ const CreateJob: React.FC<CreateJobProps> = ({ jobId, mode = 'create', redirectO
     const [formConfig, setFormConfig] = useState<any>(DEFAULT_JOB_FORM);
     
     // Data State
-    const [categories, setCategories] = useState<ListingCategory[]>([]);
-    const [availableSubs, setAvailableSubs] = useState<ListingCategory['subcategories']>([]);
+    const [categories, setCategories] = useState<Category[]>([]);
+    const [availableSubs, setAvailableSubs] = useState<Category['subcategories']>([]);
     type JobDraft = Partial<Job> & { categoryId?: string | null };
     const [job, setJob] = useState<JobDraft>({
         title: '',
@@ -418,7 +423,7 @@ const CreateJob: React.FC<CreateJobProps> = ({ jobId, mode = 'create', redirectO
         const loadCategories = async () => {
             try {
                 const data = await categoriesApi.getJobCategories();
-                setCategories(data.categories || []);
+                setCategories(Array.isArray(data.categories) ? data.categories : []);
             } catch (error) {
                 try {
                     const adminCats = await AdminService.getJobCategories();
@@ -975,11 +980,11 @@ const CreateJob: React.FC<CreateJobProps> = ({ jobId, mode = 'create', redirectO
                                     <div>
                                         <label className="block text-sm font-bold text-gray-900 mb-1">Job Type</label>
                                         <div className="flex bg-gray-100 p-1 rounded-xl">
-                                            {['Fixed Price', 'Hourly', 'Contract'].map(type => (
+                                            {JOB_TYPE_OPTIONS.map(type => (
                                                 <button
                                                     key={type}
                                                     type="button"
-                                                    onClick={() => setJob({...job, type: type as string})}
+                                                    onClick={() => setJob({...job, type})}
                                                     className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${job.type === type ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
                                                 >
                                                     {type}
@@ -992,7 +997,10 @@ const CreateJob: React.FC<CreateJobProps> = ({ jobId, mode = 'create', redirectO
                                         <select 
                                             className="w-full border-gray-300 rounded-xl p-3 shadow-sm bg-white"
                                             value={job.experienceLevel}
-                                            onChange={e => setJob({...job, experienceLevel: e.target.value as string})}
+                                            onChange={e => {
+                                              const value = EXPERIENCE_LEVEL_OPTIONS.find((option) => option === e.target.value);
+                                              if (value) setJob({ ...job, experienceLevel: value });
+                                            }}
                                         >
                                             <option>Entry</option>
                                             <option>Intermediate</option>
@@ -1006,7 +1014,10 @@ const CreateJob: React.FC<CreateJobProps> = ({ jobId, mode = 'create', redirectO
                                         <select 
                                             className="w-full border-gray-300 rounded-xl p-3 shadow-sm bg-white"
                                             value={job.visibility}
-                                            onChange={e => setJob({...job, visibility: e.target.value as string})}
+                                            onChange={e => {
+                                              const value = VISIBILITY_OPTIONS.find((option) => option === e.target.value);
+                                              if (value) setJob({ ...job, visibility: value });
+                                            }}
                                         >
                                             <option value="public">Public (Anyone can apply)</option>
                                             <option value="invite">Invite Only (Private)</option>

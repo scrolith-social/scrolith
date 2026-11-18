@@ -236,7 +236,7 @@ export const CurrencyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         rates: ratesMap,
         baseCurrency
       });
-      if (!result.ok) return { ok: false, amount, error: result.error };
+      if ('error' in result) return { ok: false, amount, error: result.error };
       return { ok: true, amount: result.amount, rate: result.rate };
     },
     [baseCurrency, ratesMap]

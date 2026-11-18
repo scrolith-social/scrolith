@@ -37,7 +37,7 @@ import {
   shouldRenderTextBackground
 } from '../../../utils/postTextBackgrounds';
 import { INLINE_VIDEO_PREVIEW_AUTOPLAY } from '../../../utils/inlineMedia';
-import { resolveAssetUrl } from '../../../utils/assetUrl';
+import { isCanonicalApiUploadUrl, resolveAssetUrl } from '../../../utils/assetUrl';
 import { normalizeContentOfferTags } from '../../../utils/contentOffers';
 import {
   resolvePostAttachmentMediaPair,
@@ -361,13 +361,7 @@ const pickFirstMediaEntry = (values: unknown) => {
 };
 
 const isRawApiUploadUrl = (value: unknown) => {
-  const normalized = String(value || '').trim().toLowerCase();
-  return (
-    normalized.startsWith('https://api.scrolith.com/uploads/') ||
-    normalized.startsWith('http://api.scrolith.com/uploads/') ||
-    normalized.startsWith('/uploads/') ||
-    normalized.startsWith('uploads/')
-  );
+  return isCanonicalApiUploadUrl(value);
 };
 
 const listingHasUsableImageFileId = (row: any) => {
@@ -2069,12 +2063,12 @@ export default function MobileFeed({
         const serviceBaselineRequest = withFastFail(
           CommunityService.getPosts({ limit: feedLimit }),
           constrainedForFeed ? 10000 : 12000,
-          [] as any[]
+          'Posts request timed out. Please retry.'
         );
         const publicBaselineRequest = withFastFail(
           fetchPublicCommunityPostsBaseline(feedLimit),
           constrainedForFeed ? 7000 : 9000,
-          [] as any[]
+          'Public posts request timed out. Please retry.'
         );
         void publicBaselineRequest
           .then((value) => {
@@ -2116,7 +2110,7 @@ export default function MobileFeed({
               await withFastFail(
                 fetchPublicCommunityPostsBaseline(feedLimit),
                 constrainedForFeed ? 7000 : 9000,
-                [] as any[]
+                'Public posts request timed out. Please retry.'
               )
             );
             if (emergencyBaseline.length > 0) {
@@ -2133,7 +2127,7 @@ export default function MobileFeed({
               await withFastFail(
                 CommunityService.getPosts({ limit: feedLimit }),
                 constrainedForFeed ? 10000 : 12000,
-                [] as any[]
+                'Posts request timed out. Please retry.'
               )
             );
             if (emergencyPosts.length > 0) {

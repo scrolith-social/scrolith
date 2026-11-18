@@ -16,6 +16,7 @@ import { FileService } from '../../services/files';
 import { UploadedFile } from '../../types';
 import { useUser } from '../../context/UserContext';
 import { captureAndUpload } from '../../mobile/uploads';
+import { resolveAssetUrl } from '../../utils/assetUrl';
 import {
   resolvePostAttachmentMediaPair,
   resolvePostAttachmentMediaUrl
@@ -519,7 +520,7 @@ const FilePickerModal: React.FC<FilePickerModalProps> = ({
                             const id = String(file.id || (file as any).fileId || '').trim();
                             if (id && tried !== '2') {
                               img.dataset.fallbackTried = '2';
-                              img.src = `https://api.scrolith.com/api/files/content/${encodeURIComponent(id)}`;
+                              img.src = resolveAssetUrl(id) || '';
                               return;
                             }
                             img.style.opacity = '0.35';

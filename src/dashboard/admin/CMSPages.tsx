@@ -33,7 +33,7 @@ import {
     ChevronDown,
     WandSparkles
 } from 'lucide-react';
-import { StaticPage, PageCategory, MediaItem, ContentBlock, BlogCategory, BlogSettings, AnswersPageConfig, GuidesPageConfig, HirePageConfig, FreelancerPageConfig } from '../../types';
+import { StaticPage, PageCategory, MediaItem, ContentBlock, BlogCategory, BlogSettings, AnswersPageConfig, GuidesPageConfig, HirePageConfig, FreelancerPageConfig, PageStatus } from '../../types';
 import { CMSService } from '../../services/cms';
 import { AIService } from '../../services/ai/ai.service';
 import { useNotification } from '../../context/NotificationContext';
@@ -224,7 +224,9 @@ const CMSPages = () => {
             blocks: [],
             status: 'DRAFT',
             visibility: 'public',
+            updated_at: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
+            category_id: categories[0]?.id || '',
             categoryId: categories[0]?.id || '',
             seo: { metaTitle: '', metaDescription: '', metaKeywords: [] },
             images: [],
@@ -922,7 +924,7 @@ const CMSPages = () => {
                                     <select 
                                         className="w-full border-gray-300 rounded-lg"
                                         value={editingPage.status}
-                                        onChange={e => setEditingPage({ ...editingPage, status: e.target.value as string })}
+                                        onChange={e => setEditingPage({ ...editingPage, status: e.target.value as PageStatus })}
                                     >
                                         <option value="DRAFT">Draft</option>
                                         <option value="PUBLISHED">Published</option>
@@ -1066,7 +1068,7 @@ const CMSPages = () => {
                                         {page.status}
                                     </span>
                                 </td>
-                                <td className="px-6 py-4 text-gray-500">{new Date(page.updatedAt || (page as unknown as Record<string, unknown>)['updated_at']).toLocaleDateString()}</td>
+                                <td className="px-6 py-4 text-gray-500">{new Date(page.updatedAt || page.updated_at || 0).toLocaleDateString()}</td>
                                 <td className="px-6 py-4 text-right space-x-2">
                                     <button onClick={() => handleEdit(page)} className="text-blue-600 hover:bg-blue-50 p-2 rounded transition-colors" title="Edit"><Edit2 className="w-4 h-4" /></button>
                                     <button onClick={() => handleDelete(page.id)} className="text-red-600 hover:bg-red-50 p-2 rounded transition-colors" title="Delete"><Trash2 className="w-4 h-4" /></button>

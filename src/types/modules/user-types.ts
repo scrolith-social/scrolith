@@ -7,7 +7,7 @@ export enum UserRole {
   MODERATOR = 'moderator'
 }
 
-export type UserStatus = 'active' | 'suspended' | 'inactive';
+export type UserStatus = 'active' | 'suspended' | 'inactive' | 'restricted' | 'banned';
 export type KYCStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'verified' | 'under_review';
 export type KYCDocumentType = 'ID Card' | 'Passport' | 'Driving License';
 export type KYCDocumentStatus = 'Pending' | 'Approved' | 'Rejected';
@@ -17,6 +17,12 @@ export interface User {
   name: string;
   email: string;
   role: UserRole;
+  title?: string;
+  bio?: string;
+  timezone?: string;
+  profileCompleteness?: number;
+  profile_completion?: number;
+  lastLoginAt?: string | null;
   avatar?: string;
   status?: UserStatus;
   kyc_status?: KYCStatus;
@@ -63,6 +69,7 @@ export interface User {
   followers_count?: number;
   following_count?: number;
   profile_photo_file_id?: string;
+  profilePhotoFileId?: string;
   callCapabilities?: {
     videoCallsEnabled?: boolean;
     videoCallsUpdatedAt?: string | null;

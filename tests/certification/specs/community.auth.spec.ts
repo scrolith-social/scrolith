@@ -6,11 +6,15 @@ import {
   assertDesignTokenOnPage,
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
+  assertRequiredPostControls,
   collectFeedInventory,
   postCards,
+  selectCertificationPostCard,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
 } from '../helpers/postCard';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 test.describe('Community — authenticated post card cert', () => {
   test.beforeEach(() => {
@@ -18,6 +22,7 @@ test.describe('Community — authenticated post card cert', () => {
   });
 
   test('community feed post cards share enterprise design markers', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.community, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     await assertDesignTokenOnPage(page);
@@ -26,12 +31,16 @@ test.describe('Community — authenticated post card cert', () => {
     const count = await cards.count();
     testInfo.annotations.push({ type: 'postCards', description: String(count) });
     if (count === 0) {
-      test.skip(true, 'No community post cards visible');
+      await skipOrFailWhenFeedFixtureMissing(test, count, 'No community post cards visible outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
 
-    const first = cards.first();
+    const first = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(first);
+    await assertRequiredPostControls(first);
     await assertActionRowEqualColumns(first);
     await assertLayoutNoProductOverflow(page, first);
 

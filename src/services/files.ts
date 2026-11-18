@@ -1,4 +1,5 @@
 import api from './api';
+import type { AxiosProgressEvent } from 'axios';
 import { UploadedFile } from '../types';
 import {
   annotateRecoverableError,
@@ -172,7 +173,7 @@ type UploadFileOptions =
       visibility?: VisibilityOption;
       userId?: string;
       user_id?: string;
-      onProgress?: (percent: number, event: ProgressEvent) => void;
+      onProgress?: (percent: number, event: AxiosProgressEvent) => void;
       onRetry?: (attempt: number, delayMs: number, error: Error) => void;
     };
 

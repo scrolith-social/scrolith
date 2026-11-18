@@ -1,16 +1,12 @@
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
-const here = dirname(fileURLToPath(import.meta.url));
-
-export const CERT_BASE_URL =
-  process.env.CERT_BASE_URL ||
-  process.env.P2115_BASE_URL ||
-  'https://p2115---scrolith-frontend-25ysnpjdda-as.a.run.app';
+export const CERT_BASE_URL = process.env.CERT_BASE_URL || '';
+export const CERT_API_BASE = process.env.CERT_API_BASE || '';
 
 export const CERT_STORAGE_STATE =
-  process.env.CERT_STORAGE_STATE || join(here, '../fixtures/storage-state.json');
+  process.env.CERT_STORAGE_STATE || join(tmpdir(), 'scrolith-certification', 'storage-state.json');
 
 export const CERT_EMAIL = process.env.CERT_EMAIL || process.env.SCROLITH_CERT_EMAIL || '';
 export const CERT_PASSWORD = process.env.CERT_PASSWORD || process.env.SCROLITH_CERT_PASSWORD || '';

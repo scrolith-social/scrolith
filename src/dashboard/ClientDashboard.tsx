@@ -50,7 +50,7 @@ const SidebarItem = ({ id, label, icon: Icon, active, onClick }: any) => (
 const ClientDashboard = () => {
     const t = useT();
     const { user, switchRole, logout } = useUser();
-    const [activeTab, setActiveTab] = useState<'overview' | 'marketplace' | 'jobs' | 'proposals' | 'contracts' | 'escrow' | 'candidates' | 'enterprise' | 'wallet' | 'gcoin' | 'favorites' | 'reviews' | 'project-briefs' | 'messages' | 'support' | 'kyc' | 'settings' | 'uploaded-files'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'marketplace' | 'jobs' | 'proposals' | 'contracts' | 'escrow' | 'candidates' | 'enterprise' | 'wallet' | 'gcoin' | 'favorites' | 'reviews' | 'project-briefs' | 'messages' | 'support' | 'kyc' | 'settings' | 'uploaded-files' | 'my-ads'>('overview');
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const params = useParams();

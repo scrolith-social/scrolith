@@ -1,6 +1,7 @@
 import React from 'react';
 import { AuthProviderKey, SocialAuthConfig, UserRole } from '../types';
-import { getApiBaseUrl } from '../utils/apiBase';
+import { getScrolithApiEnvironment, vite } from '../utils/apiBase';
+import { resolveOAuthApiBase, resolveOAuthNavigationUrl } from '../utils/oauthApiUrl';
 import { resolveResponsiveAssetUrl } from '../utils/assetUrl';
 
 type AuthSocialButtonsProps = {
@@ -39,7 +40,6 @@ const defaultSocialConfig: SocialAuthConfig = {
       enabled: true,
       client_id: '202175637855-os6h55m0ce5ak149b1mup83eh4sbn88e.apps.googleusercontent.com',
       client_secret: '',
-      redirect_uri: 'https://api.scrolith.com/api/auth/oauth/google/callback',
       scopes: 'openid profile email',
       button_label: 'Continue with Google',
       // Prefer durable brand SVG; CMS may override with a working URL.
@@ -74,7 +74,6 @@ const defaultSocialConfig: SocialAuthConfig = {
       enabled: true,
       client_id: '86ymbf5i6ity93',
       client_secret: '',
-      redirect_uri: 'https://api.scrolith.com/api/auth/oauth/linkedin/callback',
       scopes: 'openid profile email',
       button_label: 'Continue with LinkedIn',
       label_logo_url: LINKEDIN_LOGO_DATA_URI,
@@ -249,51 +248,21 @@ const shouldShowProvider = (
   return true;
 };
 
-const PRODUCTION_API_ORIGIN = 'https://api.scrolith.com/api';
-
-/** Always absolute HTTPS for OAuth — relative /api breaks in Capacitor and dead GCP URLs break login. */
-const resolveOAuthApiBase = () => {
-  const raw = String(getApiBaseUrl() || '').trim().replace(/\/+$/, '');
-  if (/^https:\/\/api\.scrolith\.com(\/api)?$/i.test(raw)) {
-    return raw.endsWith('/api') ? raw : `${raw}/api`;
+const resolveSocialOAuthApiBase = () => resolveOAuthApiBase(
+  vite.VITE_API_URL || vite.VITE_API_BASE_URL || vite.VITE_BACKEND_URL,
+  {
+    isNative: isNativePlatform(),
+    isDevelopment: getScrolithApiEnvironment() === 'development',
+    environment: getScrolithApiEnvironment()
   }
-  if (/^https?:\/\//i.test(raw)) {
-    try {
-      const host = new URL(raw).hostname.toLowerCase();
-      // Never send OAuth through suspended GCP Cloud Run or localhost from a production app.
-      if (
-        host.includes('run.app') ||
-        host.includes('localhost') ||
-        host === '127.0.0.1' ||
-        host === '10.0.2.2'
-      ) {
-        return PRODUCTION_API_ORIGIN;
-      }
-      return raw.endsWith('/api') ? raw : `${raw}/api`;
-    } catch {
-      return PRODUCTION_API_ORIGIN;
-    }
-  }
-  // Relative /api (web same-origin) is fine in browser; native must use absolute API.
-  if (isNativePlatform()) return PRODUCTION_API_ORIGIN;
-  if (typeof window !== 'undefined') {
-    try {
-      const host = String(window.location?.hostname || '').toLowerCase();
-      if (host === 'scrolith.com' || host.endsWith('.scrolith.com')) {
-        return PRODUCTION_API_ORIGIN;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return raw || PRODUCTION_API_ORIGIN;
-};
+);
 
 const buildOAuthUrl = (
   provider: AuthProviderKey,
   mode: 'login' | 'signup',
   role?: UserRole,
-  redirectTo?: string
+  redirectTo?: string,
+  base?: string | null
 ) => {
   const params = new URLSearchParams();
   params.set('mode', mode);
@@ -301,28 +270,29 @@ const buildOAuthUrl = (
   if (redirectTo) params.set('redirect', redirectTo);
   if (isNativePlatform()) params.set('returnTarget', 'app');
   const query = params.toString();
-  const base = resolveOAuthApiBase();
+  if (!base) return null;
   return `${base}/auth/oauth/${provider}${query ? `?${query}` : ''}`;
 };
 
-const openOAuthUrl = async (url: string) => {
-  // Guard: never open a relative or non-https OAuth start URL from native shells.
-  const safeUrl = (() => {
-    const value = String(url || '').trim();
-    if (/^https:\/\//i.test(value)) return value;
-    if (value.startsWith('/')) return `${PRODUCTION_API_ORIGIN.replace(/\/api$/, '')}${value.startsWith('/api') ? value : `/api${value}`}`;
-    return `${PRODUCTION_API_ORIGIN}/auth/oauth/google`;
-  })();
+const openOAuthUrl = async (url: string, apiBase: string) => {
+  const safeUrl = resolveOAuthNavigationUrl(url, {
+    isNative: isNativePlatform(),
+    isDevelopment: getScrolithApiEnvironment() === 'development',
+    environment: getScrolithApiEnvironment(),
+    currentOrigin: window.location.origin,
+    apiBase
+  });
+  if (!safeUrl) return false;
 
   if (isNativePlatform()) {
     try {
       const { Browser } = await import('@capacitor/browser');
       await Browser.open({ url: safeUrl, presentationStyle: 'popover' as any });
-      return;
+      return true;
     } catch {
       try {
         const opened = window.open(safeUrl, '_system', 'noopener,noreferrer');
-        if (opened) return;
+        if (opened) return true;
       } catch {
         // Fall back to same-window navigation below.
       }
@@ -330,6 +300,7 @@ const openOAuthUrl = async (url: string) => {
   }
 
   window.location.assign(safeUrl);
+  return true;
 };
 
 const AuthSocialButtons: React.FC<AuthSocialButtonsProps> = ({ mode, role, config, redirectTo }) => {
@@ -338,6 +309,7 @@ const AuthSocialButtons: React.FC<AuthSocialButtonsProps> = ({ mode, role, confi
     shouldShowProvider(resolved, provider, mode, role)
   );
   const [brokenLogos, setBrokenLogos] = React.useState<Partial<Record<AuthProviderKey, boolean>>>({});
+  const [oauthError, setOAuthError] = React.useState('');
 
   if (!providers.length) return null;
 
@@ -375,7 +347,22 @@ const AuthSocialButtons: React.FC<AuthSocialButtonsProps> = ({ mode, role, confi
               type="button"
               aria-label={label}
               onClick={() => {
-                void openOAuthUrl(buildOAuthUrl(provider, mode, role, redirectTo));
+                setOAuthError('');
+                const apiBase = resolveSocialOAuthApiBase();
+                if (!apiBase) {
+                  setOAuthError('Social sign-in is unavailable because the API URL is not configured safely.');
+                  return;
+                }
+                const url = buildOAuthUrl(provider, mode, role, redirectTo, apiBase);
+                if (!url) {
+                  setOAuthError('Social sign-in is unavailable because the API URL is not configured safely.');
+                  return;
+                }
+                void openOAuthUrl(url, apiBase).then((opened) => {
+                  if (!opened) {
+                    setOAuthError('Social sign-in is unavailable because the API URL is not configured safely.');
+                  }
+                });
               }}
               className={`flex items-center justify-center gap-3 px-4 py-2.5 border rounded-lg text-sm font-semibold transition-all ${providerStyle[provider]}`}
             >
@@ -412,6 +399,7 @@ const AuthSocialButtons: React.FC<AuthSocialButtonsProps> = ({ mode, role, confi
           );
         })}
       </div>
+      {oauthError ? <p role="alert" className="text-sm text-red-700">{oauthError}</p> : null}
     </div>
   );
 };

@@ -6,15 +6,14 @@ import { chromium, devices } from 'playwright';
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { requireLoopbackTestUrl } from './certificationTarget.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const outDir = join(root, 'playwright-results/phase222');
 mkdirSync(outDir, { recursive: true });
 
-const baseURL = (
-  process.env.CERT_BASE_URL || 'https://p222---scrolith-frontend-25ysnpjdda-as.a.run.app'
-).replace(/\/$/, '');
+const baseURL = requireLoopbackTestUrl(process.env.CERT_BASE_URL, 'CERT_BASE_URL').replace(/\/$/, '');
 const storage =
   process.env.CERT_STORAGE_STATE ||
   join(root, 'tests/certification/fixtures/storage-state.p222.json');

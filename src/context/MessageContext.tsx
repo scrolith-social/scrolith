@@ -1364,7 +1364,7 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setDrafts({});
       setReplyToByConversation({});
       setPendingAttachmentsByConversation((prev) => {
-        Object.values(prev).forEach((items) => revokePendingObjectUrls(items || []));
+        Object.values<PendingComposerAttachment[]>(prev).forEach((items) => revokePendingObjectUrls(items));
         return {};
       });
       setTypingByConversation({});
@@ -2080,9 +2080,9 @@ export const MessageProvider: React.FC<{ children: React.ReactNode }> = ({ child
       socket.off('messages:reaction', handleMessageUpdated);
       socket.off('messages:conversation_updated', handleConversationUpdated);
       socket.off('messages:conversation_deleted', handleConversationDeleted);
-      Object.values(typingClearTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values<number>(typingClearTimersRef.current).forEach((timer) => window.clearTimeout(timer));
       typingClearTimersRef.current = {};
-      Object.values(typingStopTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values<number>(typingStopTimersRef.current).forEach((timer) => window.clearTimeout(timer));
       typingStopTimersRef.current = {};
       if (softRefreshTimerRef.current) {
         window.clearTimeout(softRefreshTimerRef.current);

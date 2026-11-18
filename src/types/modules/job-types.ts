@@ -31,7 +31,6 @@ export interface Job {
   visibility?: Visibility;
   duration?: string;
   attachments?: string[];
-  is_featured?: boolean;
   admin_status?: 'pending' | 'approved' | 'rejected';
   adminReason?: string;
   meta?: any;

@@ -138,8 +138,8 @@ export const resolveEngagementQuality = (interactions: any): EngagementQualityPr
   const views = Number(interactions.views ?? 0) || 0;
   let reactionSum = 0;
   if (interactions.reactions && typeof interactions.reactions === 'object') {
-    reactionSum = Object.values(interactions.reactions as Record<string, unknown>).reduce(
-      (sum: number, value) => sum + (Number(value) || 0),
+    reactionSum = Object.values(interactions.reactions as Record<string, unknown>).reduce<number>(
+      (sum, value) => sum + (Number(value) || 0),
       0
     );
   }

@@ -18,9 +18,11 @@ const handleApiResponse = <T>(response: any): T => {
 export interface Category {
   id: string;
   name: string;
+  slug?: string;
   subcategories: Array<{
     id: string;
     name: string;
+    slug?: string;
   }>;
 }
 

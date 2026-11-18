@@ -392,7 +392,7 @@ const ScrollCard: React.FC<ScrollCardProps> = ({
         if (!active || !summary) return;
         setScrollReactionCounts(summary.counts || {});
         if (Array.isArray(summary.allowed) && summary.allowed.length) {
-          setScrollAllowedReactions(summary.allowed);
+          setScrollAllowedReactions(summary.allowed.map((reaction) => ({ ...reaction, enabled: reaction.enabled !== false })));
         }
       })
       .catch((error: any) => {

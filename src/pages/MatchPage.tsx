@@ -5,6 +5,18 @@ import { useUser } from '../context/UserContext';
 import { useSocket } from '../context/SocketContext';
 import { ScrolithMatchService, type MatchAccountType, type MatchFilters, type MatchPreferences, type MatchTab, type ScrolithMatchFeed, type ScrolithMatchItem } from '../services/scrolithMatch';
 
+type ActiveMatchPreference = {
+  skills: string[];
+  locations: string[];
+  remoteOnly: boolean;
+  workTypes: string[];
+  experience?: string;
+  minBudget?: number | null;
+  maxBudget?: number | null;
+  minRate?: number | null;
+  maxRate?: number | null;
+};
+
 const DEFAULT_PREFERENCES: MatchPreferences = { freelancer: { skills: [], locations: [], remoteOnly: false, minRate: null, maxRate: null, workTypes: [] }, client: { skills: [], locations: [], remoteOnly: false, minBudget: null, maxBudget: null, experience: '', workTypes: [] } };
 const resolveAccountType = (value: string | null, role: unknown): MatchAccountType => { const requested = String(value || '').toUpperCase(); if (requested === 'CLIENT' || requested === 'EMPLOYER') return 'CLIENT'; if (requested === 'FREELANCER' || requested === 'SELLER') return 'FREELANCER'; return ['CLIENT', 'EMPLOYER'].includes(String(role || '').toUpperCase()) ? 'CLIENT' : 'FREELANCER'; };
 const emptyFeed = (accountType: MatchAccountType): ScrolithMatchFeed => ({ enabled: false, accountType, items: [], mutual: [], limits: { dailyInterestLimit: 0, interestsUsed: 0 } });
@@ -37,7 +49,7 @@ const MatchPage: React.FC = () => {
   useEffect(() => { void ScrolithMatchService.getPreferences().then((value) => { setPreferences(value); setPreferenceDraft(value); }).catch(() => undefined); }, [user?.id]);
   useEffect(() => { if (!socket) return; const refresh = () => void load(); socket.on('match:updated', refresh); socket.on('match:mutual', refresh); return () => { socket.off('match:updated', refresh); socket.off('match:mutual', refresh); }; }, [load, socket]);
   useEffect(() => { const refresh = () => { if (document.visibilityState === 'visible') void load(); }; window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh); return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); }; }, [load]);
-  const setContext = (next: MatchAccountType, nextTab: MatchTab = tab) => setSearchParams({ as: next.toLowerCase(), ...(nextTab === 'mutual' ? { tab: 'mutual' } : {}) }); const setFilter = <K extends keyof MatchFilters>(key: K, value: MatchFilters[K]) => setFilters((current) => ({ ...current, [key]: value })); const clearFilters = () => setFilters({}); const items = useMemo(() => tab === 'mutual' ? feed.mutual : feed.items, [feed, tab]); const activePreference = accountType === 'FREELANCER' ? preferenceDraft.freelancer : preferenceDraft.client;
+  const setContext = (next: MatchAccountType, nextTab: MatchTab = tab) => setSearchParams({ as: next.toLowerCase(), ...(nextTab === 'mutual' ? { tab: 'mutual' } : {}) }); const setFilter = <K extends keyof MatchFilters>(key: K, value: MatchFilters[K]) => setFilters((current) => ({ ...current, [key]: value })); const clearFilters = () => setFilters({}); const items = useMemo(() => tab === 'mutual' ? feed.mutual : feed.items, [feed, tab]); const activePreference: ActiveMatchPreference = accountType === 'FREELANCER' ? { ...preferenceDraft.freelancer } : { ...preferenceDraft.client };
   const updatePreference = (context: 'freelancer' | 'client', patch: Record<string, unknown>) => setPreferenceDraft((current) => ({ ...current, [context]: { ...current[context], ...patch } }));
   const savePreferences = async () => { setSavingPreferences(true); setError(''); try { const saved = await ScrolithMatchService.updatePreferences(preferenceDraft); setPreferences(saved); setPreferenceDraft(saved); setShowPreferences(false); await load(); } catch (cause: any) { setError(cause?.response?.data?.error || cause?.message || 'Unable to save Match preferences.'); } finally { setSavingPreferences(false); } };
   const act = async (item: ScrolithMatchItem, action: 'interest' | 'dismiss') => { setBusyId(item.id); try { await ScrolithMatchService.postAction(action, item.id, accountType); await load(); } catch (cause: any) { setError(cause?.response?.data?.error || cause?.message || 'Unable to update this Match.'); } finally { setBusyId(''); } }; const openChat = async (item: ScrolithMatchItem) => { if (!item.mutual) return; setBusyId(item.id); try { const conversation = await ScrolithMatchService.createMutualConversation(item.id); navigate(`/messages/${conversation.id}`); } catch (cause: any) { setError(cause?.message || 'Unable to open the conversation.'); } finally { setBusyId(''); } };

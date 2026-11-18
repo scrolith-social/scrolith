@@ -41,8 +41,8 @@ test('formatVoiceDuration pads seconds', () => {
 test('isUsableVoiceBlob rejects empty/short blobs', () => {
   assert.equal(isUsableVoiceBlob(null), false);
   assert.equal(isUsableVoiceBlob(undefined), false);
-  assert.equal(isUsableVoiceBlob(new Blob([new Uint8Array(10)]), 256), false);
-  assert.equal(isUsableVoiceBlob(new Blob([new Uint8Array(300)]), 256), true);
+  assert.equal(isUsableVoiceBlob(new Blob([new Uint8Array(10)]), { minBytes: 256 }), false);
+  assert.equal(isUsableVoiceBlob(new Blob([new Uint8Array(300)]), { minBytes: 256 }), true);
 });
 
 test('createVoiceFile produces named File with mime', () => {

@@ -70,8 +70,8 @@ const normalizeRole = (role: any): string => {
     return r;
 };
 
-const normalizeRoleList = (value: any): string[] => {
-    const allRoles = [USER_ROLES.GUEST, USER_ROLES.FREELANCER, USER_ROLES.EMPLOYER, USER_ROLES.ADMIN, USER_ROLES.MODERATOR];
+const normalizeRoleList = (value: any): UserRole[] => {
+    const allRoles: UserRole[] = [USER_ROLES.GUEST, USER_ROLES.FREELANCER, USER_ROLES.EMPLOYER, USER_ROLES.ADMIN, USER_ROLES.MODERATOR];
     const list = Array.isArray(value)
         ? value.map(normalizeRole).filter(Boolean)
         : typeof value === 'string'
@@ -86,7 +86,7 @@ const normalizeRoleList = (value: any): string[] => {
         return allRoles;
     }
 
-    return list;
+    return list.filter((role): role is UserRole => allRoles.includes(role as UserRole));
 };
 
 const normalizeActivityType = (value: any) => {

@@ -3,6 +3,35 @@
  */
 import api from './api';
 
+export type DiscoveryStatus = {
+  disclosure?: string;
+  surfaces?: Record<string, boolean>;
+};
+
+export type DiscoveryRecommendation = {
+  id: string;
+  entityType: string;
+  entityId: string;
+  title: string;
+  subtitle?: string;
+  explanation?: string;
+  whyAmISeeingThis?: string;
+  reasons?: string[];
+  score?: number;
+};
+
+export type DiscoveryMemory = {
+  preferredTopics?: string[];
+  mutedTopics?: string[];
+  [key: string]: unknown;
+};
+
+export type DiscoverySearchAssist = {
+  enabled: boolean;
+  reason?: string;
+  suggestions?: string[];
+};
+
 const unwrap = <T>(res: any): T => {
   if (res?.data?.data !== undefined) return res.data.data as T;
   if (res?.data !== undefined) return res.data as T;
@@ -10,21 +39,21 @@ const unwrap = <T>(res: any): T => {
 };
 
 export const ScrolithaDiscoveryService = {
-  async getStatus() {
+  async getStatus(): Promise<DiscoveryStatus> {
     const res = await api.get('/ai/discovery/status');
-    return unwrap(res);
+    return unwrap<DiscoveryStatus>(res);
   },
   async scoreFeed(candidates: any[], useModelAssist = false) {
     const res = await api.post('/ai/discovery/feed-scores', { candidates, useModelAssist });
     return unwrap(res);
   },
-  async getRecommendations(params?: { types?: string; limit?: number }) {
+  async getRecommendations(params?: { types?: string; limit?: number }): Promise<{ items: DiscoveryRecommendation[] }> {
     const res = await api.get('/ai/discovery/recommendations', { params });
-    return unwrap(res);
+    return unwrap<{ items: DiscoveryRecommendation[] }>(res);
   },
-  async getDashboard() {
+  async getDashboard(): Promise<{ sections: unknown[] }> {
     const res = await api.get('/ai/discovery/dashboard');
-    return unwrap(res);
+    return unwrap<{ sections: unknown[] }>(res);
   },
   async feedback(body: {
     entityType: string;
@@ -36,17 +65,17 @@ export const ScrolithaDiscoveryService = {
     const res = await api.post('/ai/discovery/feedback', body);
     return unwrap(res);
   },
-  async searchAssist(query: string, domain?: string) {
+  async searchAssist(query: string, domain?: string): Promise<DiscoverySearchAssist> {
     const res = await api.post('/ai/discovery/search-assist', { query, domain });
-    return unwrap(res);
+    return unwrap<DiscoverySearchAssist>(res);
   },
-  async getMemory() {
+  async getMemory(): Promise<DiscoveryMemory> {
     const res = await api.get('/ai/discovery/memory');
-    return unwrap(res);
+    return unwrap<DiscoveryMemory>(res);
   },
-  async updateMemory(partial: Record<string, unknown>) {
+  async updateMemory(partial: Record<string, unknown>): Promise<DiscoveryMemory> {
     const res = await api.patch('/ai/discovery/memory', partial);
-    return unwrap(res);
+    return unwrap<DiscoveryMemory>(res);
   },
   async deleteMemory() {
     const res = await api.delete('/ai/discovery/memory');

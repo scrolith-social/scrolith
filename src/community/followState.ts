@@ -2,6 +2,25 @@ import { useEffect, useSyncExternalStore } from 'react';
 
 type FollowStateMap = Record<string, boolean>;
 
+export const mergeFollowStatusUpdates = (
+  current: Readonly<FollowStateMap>,
+  updates: Readonly<FollowStateMap>
+): { next: FollowStateMap; changed: boolean } => {
+  const next = { ...current };
+  let changed = false;
+
+  Object.entries(updates || {}).forEach(([rawId, rawValue]) => {
+    const id = String(rawId || '').trim();
+    if (!id) return;
+    const value = Boolean(rawValue);
+    if (next[id] === value) return;
+    next[id] = value;
+    changed = true;
+  });
+
+  return { next, changed };
+};
+
 let followState: FollowStateMap = {};
 const listeners = new Set<() => void>();
 
@@ -25,19 +44,7 @@ export const setFollowStatus = (targetUserId: string, isFollowing: boolean) => {
 };
 
 export const setFollowStatuses = (updates: FollowStateMap) => {
-  const entries = Object.entries(updates || {}).map(([id, value]) => [String(id || '').trim(), Boolean(value)] as const);
-  if (!entries.length) return;
-
-  let changed = false;
-  const next = { ...followState };
-
-  entries.forEach(([id, value]) => {
-    if (!id) return;
-    if (next[id] === value) return;
-    next[id] = value;
-    changed = true;
-  });
-
+  const { next, changed } = mergeFollowStatusUpdates(followState, updates);
   if (!changed) return;
   followState = next;
   emitChange();

@@ -46,7 +46,7 @@ const SidebarItem = ({ id, label, icon: Icon, active, onClick }: any) => (
 const FreelancerDashboard = () => {
     const t = useT();
     const { user, switchRole, logout } = useUser();
-    const [activeTab, setActiveTab] = useState<'overview' | 'marketplace' | 'growth' | 'contracts' | 'gigs' | 'orders' | 'proposals' | 'wallet' | 'gcoin' | 'messages' | 'support' | 'kyc' | 'reviews' | 'likes' | 'profile' | 'settings' | 'uploaded-files'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'marketplace' | 'growth' | 'contracts' | 'gigs' | 'orders' | 'proposals' | 'wallet' | 'gcoin' | 'messages' | 'support' | 'kyc' | 'reviews' | 'likes' | 'profile' | 'settings' | 'uploaded-files' | 'my-ads'>('overview');
     const navigate = useNavigate();
     const [searchParams] = useSearchParams();
     const params = useParams();

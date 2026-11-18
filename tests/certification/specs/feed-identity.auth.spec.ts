@@ -1,7 +1,8 @@
-import { test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { FEED_IDENTITY_MS, requireAuthOrSkip } from '../helpers/env';
 import { CERT_ROUTES } from '../helpers/routes';
-import { assertFeedIdentityStable } from '../helpers/feedIdentity';
+import { assertFeedIdentityStable, runFeedIdentityProbe } from '../helpers/feedIdentity';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 /**
  * Automates the operator 60s feed-identity certification.
@@ -17,12 +18,37 @@ test.describe('Feed identity — 60s stability', () => {
 
   test('Member Home identity stable under soft activity', async ({ page }, testInfo) => {
     test.setTimeout(FEED_IDENTITY_MS + 90_000);
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
-    const result = await assertFeedIdentityStable(page, {
-      surface: 'member_home',
-      durationMs: FEED_IDENTITY_MS
-    });
-    testInfo.annotations.push({ type: 'feedIdentity', description: JSON.stringify(result) });
+    let evidenceWritten = false;
+    try {
+      const result = await runFeedIdentityProbe(page, {
+        surface: 'member_home',
+        durationMs: FEED_IDENTITY_MS
+      });
+      if (result.failed) {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+        evidenceWritten = true;
+        expect(result.failed, 'Member Home feed identity certification failed; inspect the sanitized evidence artifact.').toBe(false);
+      }
+      testInfo.annotations.push({
+        type: 'feedIdentity',
+        description: JSON.stringify({ surface: result.surface, durationMs: result.durationMs, samples: result.samples, failed: false })
+      });
+      expect(result.initial, 'expected a seeded initial Member Home post').toBeTruthy();
+      expect(result.final, 'the Member Home post remained present throughout the identity window').toBeTruthy();
+      if (result.initial && result.final) {
+        if (result.initial.postId && result.final.postId) expect(result.final.postId).toBe(result.initial.postId);
+        expect(result.final.fingerprint).toBe(result.initial.fingerprint);
+      }
+    } catch (error) {
+      if (!evidenceWritten) {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events).catch(() => undefined);
+      }
+      throw error;
+    }
   });
 
   test('Community identity stable under soft activity', async ({ page }, testInfo) => {
@@ -44,7 +70,6 @@ test.describe('Feed identity — 60s stability', () => {
     while (Date.now() - started < Math.min(FEED_IDENTITY_MS, 30_000)) {
       await page.waitForTimeout(3_000);
       await page.evaluate(() => {
-        document.dispatchEvent(new Event('visibilitychange'));
         window.dispatchEvent(new Event('focus'));
       });
       const alive = await page.evaluate(() => Boolean(document.body));

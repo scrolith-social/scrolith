@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosHeaders } from 'axios';
 import { tokenStore } from './tokenStore';
 import { getApiBaseUrl, vite } from '../utils/apiBase';
 import { resolveAssetUrl } from '../utils/assetUrl';
@@ -175,7 +175,7 @@ api.interceptors.request.use(
       config.baseURL = getApiBaseUrl();
     }
     if (!config.headers) {
-      config.headers = {};
+      config.headers = AxiosHeaders.from();
     }
     const headers = config.headers as any;
     const existingRequestId =

@@ -124,7 +124,7 @@ export const normalizeLiveDiagnosticsConfig = (
   input: Partial<LiveDiagnosticsConfig> | null | undefined
 ): LiveDiagnosticsConfig => {
   const source = input && typeof input === 'object' ? input : {};
-  const thresholds =
+  const thresholds: Partial<LiveDiagnosticsConfig['alertThresholds']> =
     source.alertThresholds && typeof source.alertThresholds === 'object' ? source.alertThresholds : {};
   return {
     enabled: normalizeDiagnosticsBoolean(source.enabled, DEFAULT_LIVE_DIAGNOSTICS_CONFIG.enabled),

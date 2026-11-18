@@ -65,7 +65,8 @@ const AdCard = ({
             : ad.creativeUrl
               ? { url: ad.creativeUrl, type: 'image' }
               : null;
-        const preferredUrl = resolveFileContentUrl(primary?.id) || resolveAssetUrl(String(primary?.url || '').trim());
+        const mediaId = primary && 'id' in primary ? primary.id : undefined;
+        const preferredUrl = resolveFileContentUrl(mediaId) || resolveAssetUrl(String(primary?.url || '').trim());
         if (!preferredUrl) return null;
         return {
             ...primary,

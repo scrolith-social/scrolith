@@ -65,7 +65,9 @@ const BlogManagement = () => {
             blocks: [{ id: 'b1', type: 'text', content: 'Start writing your amazing story...' }],
             excerpt: '',
             shortDescription: '',
+            short_description: '',
             featuredImage: '',
+            featured_image: '',
             status: 'draft',
             visibility: 'public',
             authorName: 'Admin', // In real app, from user context
@@ -73,13 +75,21 @@ const BlogManagement = () => {
             categoryId: categories[0]?.id || '',
             category_id: categories[0]?.id || '',
             categoryName: categories[0]?.name || '',
+            category_name: categories[0]?.name || '',
             tags: [],
             views: 0,
-            seo: { metaTitle: '', metaDescription: '', metaKeywords: [], noIndex: false },
+            seo: {
+                meta_title: '', meta_description: '', meta_keywords: [], no_index: false,
+                metaTitle: '', metaDescription: '', metaKeywords: [], noIndex: false
+            },
             allowComments: true,
+            allow_comments: true,
             isFeatured: false,
+            is_featured: false,
             createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
         });
         setView('editor');
     };

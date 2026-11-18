@@ -105,6 +105,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
 }) => {
   const compactSurface = useCompactGuestSurface();
   const initialTab = normalizeGuestAuthTab(defaultTab || content?.defaultTab);
+  const preferredAuthTabRef = React.useRef(initialTab);
   const [activeTab, setActiveTab] = React.useState<"login" | "signup">(initialTab);
   const { login, register } = useUser();
   const { settings } = useContent();
@@ -171,7 +172,11 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   };
 
   React.useEffect(() => {
-    setActiveTab(normalizeGuestAuthTab(defaultTab || content?.defaultTab));
+    const nextPreferredTab = normalizeGuestAuthTab(defaultTab || content?.defaultTab);
+    if (preferredAuthTabRef.current === nextPreferredTab) return;
+
+    preferredAuthTabRef.current = nextPreferredTab;
+    setActiveTab(nextPreferredTab);
     setLoginHvToken(null);
     setLoginHvRequired(true);
     setSignupHvToken(null);

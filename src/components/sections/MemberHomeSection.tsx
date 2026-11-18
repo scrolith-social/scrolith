@@ -357,7 +357,12 @@ type FeedPost = {
   };
   viewer?: {
     isFollowingAuthor?: boolean;
+    isFollowingPage?: boolean;
   };
+  businessPage?: { slug?: string | null } | null;
+  repostsCount?: number;
+  sharesCount?: number;
+  viewsCount?: number;
   authorId?: string;
   authorUserId?: string;
   authorName?: string;
@@ -417,8 +422,16 @@ type FeedPost = {
     reactions?: Record<string, number> | number;
     dashGcoinTotal?: number;
   };
-  userState?: { liked?: boolean; reposted?: boolean };
+  userState?: {
+    liked?: boolean;
+    reposted?: boolean;
+    reaction?: string | null;
+    interestSignal?: string | null;
+  };
 };
+
+type CommunityClubPreview = Pick<CommunityClub, 'id' | 'name'> & Partial<CommunityClub>;
+type MarketplaceListingPreview = Pick<MarketplaceListing, 'id' | 'title'> & Partial<MarketplaceListing>;
 
 type ProfileCard = {
   id: string;
@@ -1684,9 +1697,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   const [sidebarTopAd, setSidebarTopAd] = useState<SidebarAdCard | null>(null);
   const [sidebarFeaturedAd, setSidebarFeaturedAd] = useState<SidebarAdCard | null>(null);
   const [sidebarMiddleAd, setSidebarMiddleAd] = useState<SidebarAdCard | null>(null);
-  const [marketplacePreviewListings, setMarketplacePreviewListings] = useState<MarketplaceListing[]>([]);
+  const [marketplacePreviewListings, setMarketplacePreviewListings] = useState<MarketplaceListingPreview[]>([]);
   const [marketplacePreviewLoading, setMarketplacePreviewLoading] = useState(false);
-  const [groupPreviewRecommendations, setGroupPreviewRecommendations] = useState<CommunityClub[]>([]);
+  const [groupPreviewRecommendations, setGroupPreviewRecommendations] = useState<CommunityClubPreview[]>([]);
   const [groupPreviewLoading, setGroupPreviewLoading] = useState(false);
   const [blogPreviewItems, setBlogPreviewItems] = useState<ProfessionalDiscoveryItem[]>([]);
   const [careerPreviewItems, setCareerPreviewItems] = useState<ProfessionalDiscoveryItem[]>([]);
@@ -3734,14 +3747,14 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     user
   ]);
 
-  const extractMarketplacePreviewListings = useCallback((value: any): MarketplaceListing[] => {
+  const extractMarketplacePreviewListings = useCallback((value: any): MarketplaceListingPreview[] => {
     if (Array.isArray(value)) return value;
     if (Array.isArray(value?.listings)) return value.listings;
     if (Array.isArray(value?.items)) return value.items;
     return [];
   }, []);
 
-  const extractGroupPreviewRecommendations = useCallback((value: any): CommunityClub[] => {
+  const extractGroupPreviewRecommendations = useCallback((value: any): CommunityClubPreview[] => {
     if (Array.isArray(value)) return value;
     if (Array.isArray(value?.groups)) return value.groups;
     if (Array.isArray(value?.clubs)) return value.clubs;
@@ -4061,7 +4074,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
               .slice(0, 3)
           : [];
 
-      const mappedDiscoveryGroups: CommunityClub[] = discoveryGroups.slice(0, 3).map((item) => ({
+      const mappedDiscoveryGroups: CommunityClubPreview[] = discoveryGroups.slice(0, 3).map((item) => ({
         id: item.id,
         name: item.title,
         title: item.title,
@@ -4073,7 +4086,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         slug: String(item.meta?.slug || item.id),
         status: 'active',
         category: item.subtitle || 'Professional group'
-      })) as CommunityClub[];
+      }));
 
       setGroupPreviewRecommendations(mappedDiscoveryGroups.length ? mappedDiscoveryGroups : fallbackGroups);
 
@@ -4082,7 +4095,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
           ? extractMarketplacePreviewListings(marketplaceRes.value).slice(0, 3)
           : [];
 
-      const mappedDiscoveryMarketplace: MarketplaceListing[] = discoveryMarketplace.slice(0, 3).map((item) => ({
+      const mappedDiscoveryMarketplace: MarketplaceListingPreview[] = discoveryMarketplace.slice(0, 3).map((item) => ({
         id: item.id,
         title: item.title,
         description: item.description || '',
@@ -4090,9 +4103,8 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         images: item.imageUrl ? [item.imageUrl] : [],
         price: Number(item.meta?.price || 0) || undefined,
         currency: String(item.meta?.currency || 'USD'),
-        category: item.subtitle || 'Marketplace',
         location: ''
-      })) as MarketplaceListing[];
+      }));
 
       setMarketplacePreviewListings(
         mappedDiscoveryMarketplace.length ? mappedDiscoveryMarketplace : fallbackMarketplace
@@ -4148,7 +4160,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     }, 350);
   }, [loadSidebar]);
 
-  const buildGroupRecommendationPath = useCallback((group: CommunityClub) => {
+  const buildGroupRecommendationPath = useCallback((group: CommunityClubPreview) => {
     const reference = String(group.slug || group.id || '').trim();
     if (!reference) return '/community/clubs';
     const search = new URLSearchParams();
@@ -4157,7 +4169,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
   }, []);
 
   const handleJoinGroupRecommendation = useCallback(
-    async (group: CommunityClub) => {
+    async (group: CommunityClubPreview) => {
       const groupId = String(group.id || '').trim();
       if (!groupId) return;
       if (!user) {
@@ -4429,7 +4441,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
     };
   }, []);
 
-  const resolveMarketplaceListingUrl = useCallback((listing: MarketplaceListing) => {
+  const resolveMarketplaceListingUrl = useCallback((listing: MarketplaceListingPreview) => {
     const slugOrId = String(listing?.slug || listing?.id || '').trim();
     return slugOrId ? `/marketplace/listing/${encodeURIComponent(slugOrId)}` : '/marketplace';
   }, []);
@@ -5185,6 +5197,7 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
         name: media.name,
         type: inferMediaType(media)
       })),
+      textBackgroundId: post.textBackgroundId || POST_TEXT_BG_NONE_ID,
       mediaCaption: resolveFirstAttachmentCaption(post, post.attachments)
     });
   }, []);
@@ -10331,7 +10344,9 @@ const MemberHomeSection: React.FC<{ content?: MemberHomeContent }> = ({ content:
                             repostCount={post.repostsCount ?? post.interactions?.reposts ?? 0}
                             shareCount={post.sharesCount ?? post.interactions?.shares ?? 0}
                             viewCount={post.interactions?.views ?? post.viewsCount ?? 0}
-                            initialReactionCounts={post.interactions?.reactions}
+                            initialReactionCounts={typeof post.interactions?.reactions === 'object' && post.interactions.reactions !== null
+                              ? post.interactions.reactions
+                              : undefined}
                             initialUserReaction={post.userState?.reaction}
                             interestSurveyEnabled={interestSurveyPostIds.has(post.id)}
                             initialInterestSignal={post.userState?.interestSignal}

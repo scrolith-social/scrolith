@@ -1,3 +1,4 @@
+import { describe, expect, test } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -34,8 +35,9 @@ describe('ScrolithHumanVerification component contract', () => {
   });
 
   test('does not reload challenges when parent callback identities change', () => {
-    expect(source).toContain('callbacksRef');
+    expect(source).toContain('const loadChallengeRef = useRef(loadChallenge)');
+    expect(source).toContain('() => void loadChallengeRef.current()');
     expect(source).toContain('const loadChallenge = useCallback');
-    expect(source).toContain('}, [disabled, endpoint]);');
+    expect(source).toContain('}, [autoLoad, disabled, endpoint]);');
   });
 });

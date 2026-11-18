@@ -442,15 +442,14 @@ const normalizeBusinessPageServicePackage = (value: any, index: number): Busines
   const price = Number.isFinite(rawPrice) ? Math.max(0, Number(rawPrice.toFixed(2))) : 0;
   const rawTurnaround = Number(value?.turnaroundDays);
   const rawRevisions = Number(value?.revisions);
-  const features = Array.isArray(value?.features)
-    ? Array.from(
-        new Set(
-          value.features
-            .map((entry: any) => String(entry || '').trim())
-            .filter(Boolean)
-        )
-      ).slice(0, 12)
-    : [];
+  const rawFeatures: unknown[] = Array.isArray(value?.features) ? value.features : [];
+  const features = Array.from(
+    new Set(
+      rawFeatures
+        .map((entry) => String(entry || '').trim())
+        .filter((entry) => entry.length > 0)
+    )
+  ).slice(0, 12);
   const addons = Array.isArray(value?.addons)
     ? value.addons
         .map((addon: any, addonIndex: number) =>
@@ -790,6 +789,24 @@ class CommunityService {
     const data = extractData<any>(response);
     if (!data) return null;
     return normalizeClub(data);
+  }
+
+  static async getGroup(groupIdOrSlug: string): Promise<CommunityClub | null> {
+    const reference = String(groupIdOrSlug || '').trim();
+    if (!reference) return null;
+
+    try {
+      const byId = await this.getClubById(reference);
+      if (byId) return byId;
+    } catch (error: unknown) {
+      const response = typeof error === 'object' && error !== null && 'response' in error
+        ? (error as { response?: { status?: unknown } }).response
+        : undefined;
+      if (response?.status !== 404) throw error;
+    }
+
+    const matches = await this.getClubs({ q: reference, limit: 50 });
+    return matches.find((club) => club.id === reference || club.slug === reference) || null;
   }
 
   static async getClubDisplayConfig(): Promise<CommunityGroupsConfig> {

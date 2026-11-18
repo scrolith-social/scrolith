@@ -197,7 +197,7 @@ const normalizeProfessionalIdentity = (value: any) => {
   const featuredClubs = toArray(value.featured_clubs ?? value.featuredClubs).map((club: any) => ({
     id: String(club?.id || ''),
     name: String(club?.name || 'Community club'),
-    visibility: String(club?.visibility || 'public').toLowerCase() === 'private' ? 'private' : 'public',
+    visibility: (String(club?.visibility || 'public').toLowerCase() === 'private' ? 'private' : 'public') as import('../types').ChannelVisibility,
     member_count: Number(club?.member_count ?? club?.memberCount ?? 0),
     memberCount: Number(club?.memberCount ?? club?.member_count ?? 0),
     cover_image: club?.cover_image ?? club?.coverImage ?? '',

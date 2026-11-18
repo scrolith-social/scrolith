@@ -1,8 +1,9 @@
 // C:\Projects\Scrolith\vite.config.ts
-import { defineConfig, splitVendorChunkPlugin } from 'vite'
+import { defineConfig, loadEnv, splitVendorChunkPlugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import getBackendTarget from './scripts/getBackendTarget'
+import { resolveApiBaseForEnvironment, type ScrolithApiEnvironment } from './src/utils/apiBasePolicy'
 
 // Chunk name suffix rotates after 2026-07-24 canary (immutable 404 cache poison).
 const CHUNK_BUST = 'b24c'
@@ -51,7 +52,42 @@ const resolveManualChunk = (id: string) => {
   return undefined
 }
 
-export default defineConfig({
+const PUBLIC_BROWSER_KEY_ALLOWLIST = new Set(['VITE_FIREBASE_API_KEY', 'VITE_GOOGLE_MAPS_API_KEY'])
+
+const assertNoPrivateBrowserEnv = (mode: string) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const unsafeNames = Object.keys(env).filter((name) =>
+    !PUBLIC_BROWSER_KEY_ALLOWLIST.has(name) &&
+    /(?:SECRET|TOKEN|PASSWORD|PRIVATE|API_KEY|OPENAI.*KEY|GEMINI.*KEY|DATABASE_URL|DB_URL|CONNECTION_STRING|CLIENT_SECRET|ACCESS_KEY|AUTHORIZATION)/i.test(name)
+  )
+
+  if (unsafeNames.length) {
+    throw new Error(
+      `Refusing to build with credential-like environment variables: ${unsafeNames.sort().join(', ')}. ` +
+      'Frontend builds must not receive secrets; use a server-side secret and backend provider route.'
+    )
+  }
+}
+
+const assertSafeApiBuildTarget = (mode: string) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const configuredTarget = String(env.VITE_SCROLITH_ENV || '').trim().toLowerCase()
+  const target = configuredTarget || (mode === 'development' ? 'development' : mode === 'production' ? 'production' : 'ci')
+  if (!['development', 'staging', 'production', 'ci'].includes(target)) {
+    throw new Error('Refusing to build: VITE_SCROLITH_ENV is not a supported target.')
+  }
+
+  const apiUrl = env.VITE_API_URL || env.VITE_API_BASE_URL || env.VITE_BACKEND_URL
+  const resolved = resolveApiBaseForEnvironment(apiUrl, target as ScrolithApiEnvironment)
+  if (!resolved) {
+    throw new Error(`Refusing to build: API URL is missing or not allowed for the ${target} target.`)
+  }
+}
+
+export default defineConfig(({ mode, command }) => {
+  assertNoPrivateBrowserEnv(mode)
+  if (command === 'build') assertSafeApiBuildTarget(mode)
+  return {
   base: '/',
   plugins: [react(), splitVendorChunkPlugin()],
   server: (() => {
@@ -150,5 +186,6 @@ export default defineConfig({
         manualChunks: resolveManualChunk
       }
     }
+  }
   }
 })

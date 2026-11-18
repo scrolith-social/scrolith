@@ -618,7 +618,7 @@ const AuthPagesManager = ({ setView }: { setView: (view: 'list' | 'editor' | 'ca
                                                     className="w-full border-gray-300 rounded-lg p-2 text-sm font-mono"
                                                     value={providerConfig.redirect_uri || ''}
                                                     onChange={(e) => updateProvider(provider, { redirect_uri: e.target.value })}
-                                                    placeholder={`https://api.scrolith.com/api/auth/oauth/${provider}/callback`}
+                                                    placeholder={`https://api.example.invalid/api/auth/oauth/${provider}/callback`}
                                                 />
                                                 <p className="text-[11px] text-gray-500 mt-1">
                                                     Frontend completion (automatic):{' '}

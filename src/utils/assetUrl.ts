@@ -2,8 +2,6 @@ import { getBackendOrigin } from './apiBase';
 
 const localAssetHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '10.0.2.2']);
 const FILE_CONTENT_PATH = '/api/files/content/';
-/** Used when getBackendOrigin() is empty so relative media never resolves against the SPA host. */
-const DEFAULT_PRODUCTION_API_ORIGIN = 'https://api.scrolith.com';
 
 type AssetTransformFit = 'inside' | 'cover' | 'contain';
 
@@ -64,22 +62,7 @@ const recoverEncodedAbsoluteAssetUrl = (value: string) => {
 };
 
 const resolveBackendOrigin = () => {
-  const origin = String(getBackendOrigin() || '').trim().replace(/\/+$/, '');
-  if (origin) return origin;
-
-  if (typeof window !== 'undefined') {
-    try {
-      const host = String(window.location?.hostname || '').toLowerCase();
-      // Signed-in SPA on scrolith.com must never load /api/files/* from the frontend origin.
-      if (host === 'scrolith.com' || host.endsWith('.scrolith.com') || host.endsWith('.run.app')) {
-        return DEFAULT_PRODUCTION_API_ORIGIN;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return '';
+  return String(getBackendOrigin() || '').trim().replace(/\/+$/, '');
 };
 
 /**
@@ -115,6 +98,22 @@ const isCanonicalApiAssetHost = (hostname: string) => {
   // Historical backend Cloud Run host — keep absolute content URLs as-is.
   if (host.includes('scrolith-backend') && host.endsWith('.run.app')) return true;
   return false;
+};
+
+/** True for relative uploads or absolute upload URLs from a known Scrolith API host. */
+export const isCanonicalApiUploadUrl = (value: unknown) => {
+  const raw = String(value || '').trim();
+  const normalized = raw.toLowerCase();
+  if (normalized.startsWith('/uploads/') || normalized.startsWith('uploads/')) return true;
+
+  try {
+    const parsed = new URL(raw);
+    return ['http:', 'https:'].includes(parsed.protocol) &&
+      parsed.pathname.toLowerCase().startsWith('/uploads/') &&
+      isCanonicalApiAssetHost(parsed.hostname);
+  } catch {
+    return false;
+  }
 };
 
 /** Pre-signed / tokenized object URLs must never be rewritten (signatures are host-bound). */
@@ -187,8 +186,9 @@ export const resolveAssetUrl = (value?: string | null) => {
 
   // disk: legacy local-file ids are served through the content API.
   if (lower.startsWith('disk:')) {
-    const origin = resolveBackendOrigin() || DEFAULT_PRODUCTION_API_ORIGIN;
-    return `${origin}/api/files/content/${encodeURIComponent(trimmed)}`;
+    const path = `/api/files/content/${encodeURIComponent(trimmed)}`;
+    const origin = resolveBackendOrigin();
+    return origin ? `${origin}${path}` : path;
   }
 
   let backendOrigin = resolveBackendOrigin();
@@ -218,32 +218,30 @@ export const resolveAssetUrl = (value?: string | null) => {
             // Keep the original canonical URL when the configured origin is invalid.
           }
         }
-        return trimmed;
+        // A canonical production URL in API data must not bypass the configured
+        // deployment target. Relative resolution fails closed in that environment.
+        return `${url.pathname}${url.search}${url.hash}`;
       }
 
       // Only rewrite SPA hosts that would otherwise return HTML for /api or /uploads.
       if (!isSpaAssetHost(hostname)) return trimmed;
 
-      const origin = backendOrigin || DEFAULT_PRODUCTION_API_ORIGIN;
-      return `${origin}${url.pathname}${url.search}${url.hash}`;
+      return backendOrigin ? `${backendOrigin}${url.pathname}${url.search}${url.hash}` : `${url.pathname}${url.search}${url.hash}`;
     } catch {
       return trimmed;
     }
   }
 
   if (isAssetPath(lower)) {
-    const origin = backendOrigin || DEFAULT_PRODUCTION_API_ORIGIN;
-    if (lower.startsWith('uploads/')) return `${origin}/${trimmed}`;
-    if (lower.startsWith('api/files/')) return `${origin}/${trimmed}`;
-    if (lower.startsWith('files/content/')) return `${origin}/${trimmed}`;
-    return `${origin}${trimmed.startsWith('/') ? trimmed : `/${trimmed}`}`;
+    const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    return backendOrigin ? `${backendOrigin}${path}` : path;
   }
 
   // Bare storage/file IDs (cuid/uuid/disk:) are commonly stored in cover/avatar fields.
   // Convert them to the public content endpoint instead of using the raw id as an <img src>.
   if (isLikelyBareFileId(trimmed)) {
-    const origin = backendOrigin || DEFAULT_PRODUCTION_API_ORIGIN;
-    return `${origin}/api/files/content/${encodeURIComponent(trimmed)}`;
+    const path = `/api/files/content/${encodeURIComponent(trimmed)}`;
+    return backendOrigin ? `${backendOrigin}${path}` : path;
   }
 
   return trimmed;
@@ -282,7 +280,7 @@ export const resolveResponsiveAssetUrl = (
   const isAbsolute = /^https?:\/\//i.test(resolved);
   const fallbackOrigin =
     getBackendOrigin() ||
-    (typeof window !== 'undefined' ? window.location.origin : 'https://scrolith.com');
+    (typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
 
   try {
     const url = new URL(resolved, fallbackOrigin);

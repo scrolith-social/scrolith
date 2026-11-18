@@ -830,7 +830,7 @@ const CategoriesList = ({ items, type, reload, loading }: {
                                     <select
                                         className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                                         value={editing.status}
-                                        onChange={e => setEditing({ ...editing, status: e.target.value as string })}
+                                        onChange={e => setEditing({ ...editing, status: e.target.value as 'active' | 'hidden' })}
                                     >
                                         <option value="active">Active</option>
                                         <option value="hidden">Hidden</option>
@@ -1155,7 +1155,7 @@ const PlanManager = () => {
                             <select
                                 className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                                 value={editingPlan.type}
-                                onChange={e => setEditingPlan({ ...editingPlan, type: e.target.value as string })}
+                                onChange={e => setEditingPlan({ ...editingPlan, type: e.target.value as 'freelancer' | 'employer' })}
                             >
                                 <option value="freelancer">Freelancer</option>
                                 <option value="employer">Employer</option>
@@ -1166,7 +1166,7 @@ const PlanManager = () => {
                             <select
                                 className="w-full border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                                 value={editingPlan.interval}
-                                onChange={e => setEditingPlan({ ...editingPlan, interval: e.target.value as string })}
+                                onChange={e => setEditingPlan({ ...editingPlan, interval: e.target.value as 'monthly' | 'yearly' | 'lifetime' })}
                             >
                                 <option value="monthly">Monthly</option>
                                 <option value="yearly">Yearly</option>

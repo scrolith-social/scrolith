@@ -979,7 +979,8 @@ const Navbar = () => {
   );
 
   const headerActions = (pick(hc, 'actions') as Record<string, unknown>) || {};
-  const headerSearchMode = String(pick(hc, 'searchMode', 'search_mode') ?? 'keyword');
+  const rawHeaderSearchMode = String(pick(hc, 'searchMode', 'search_mode') ?? 'keyword').toLowerCase();
+  const headerSearchMode: 'keyword' | 'semantic' = rawHeaderSearchMode === 'semantic' ? 'semantic' : 'keyword';
 
   const visibleActivityIcons = useMemo(() => {
     if (!isAuthenticated || !activityConfig || !Array.isArray(ac?.icons)) return [];

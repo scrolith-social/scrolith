@@ -2,7 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   DEFAULT_LIVE_DIAGNOSTICS_CONFIG,
   LiveService,
+  normalizeLiveDiagnosticsConfig,
+  normalizeLiveExperienceConfig,
   type LiveConfig,
+  type LiveDiagnosticsThresholds,
   type LiveRestriction,
   type LiveSession
 } from '../services/live';
@@ -39,10 +42,7 @@ const AdminLivePlatform: React.FC = () => {
       prev
         ? {
             ...prev,
-            experienceConfig: {
-              ...(prev.experienceConfig || {}),
-              [key]: value
-            }
+            experienceConfig: normalizeLiveExperienceConfig({ ...prev.experienceConfig, [key]: value })
           }
         : prev
     );
@@ -53,10 +53,10 @@ const AdminLivePlatform: React.FC = () => {
       prev
         ? {
             ...prev,
-            experienceConfig: {
-              ...(prev.experienceConfig || {}),
+            experienceConfig: normalizeLiveExperienceConfig({
+              ...prev.experienceConfig,
               [key]: Number.isFinite(value) ? value : 0
-            }
+            })
           }
         : prev
     );
@@ -67,10 +67,7 @@ const AdminLivePlatform: React.FC = () => {
       prev
         ? {
             ...prev,
-            experienceConfig: {
-              ...(prev.experienceConfig || {}),
-              [key]: value
-            }
+            experienceConfig: normalizeLiveExperienceConfig({ ...prev.experienceConfig, [key]: value })
           }
         : prev
     );
@@ -81,10 +78,10 @@ const AdminLivePlatform: React.FC = () => {
       prev
         ? {
             ...prev,
-            diagnosticsConfig: {
+            diagnosticsConfig: normalizeLiveDiagnosticsConfig({
               ...(prev.diagnosticsConfig || DEFAULT_LIVE_DIAGNOSTICS_CONFIG),
               [key]: value
-            }
+            })
           }
         : prev
     );
@@ -95,27 +92,27 @@ const AdminLivePlatform: React.FC = () => {
       prev
         ? {
             ...prev,
-            diagnosticsConfig: {
+            diagnosticsConfig: normalizeLiveDiagnosticsConfig({
               ...(prev.diagnosticsConfig || DEFAULT_LIVE_DIAGNOSTICS_CONFIG),
               [key]: Number.isFinite(value) ? value : 0
-            }
+            })
           }
         : prev
     );
   }, []);
 
-  const updateDiagnosticsThreshold = useCallback((key: string, value: number) => {
+  const updateDiagnosticsThreshold = useCallback((key: keyof LiveDiagnosticsThresholds, value: number) => {
     setConfig((prev) =>
       prev
         ? {
             ...prev,
-            diagnosticsConfig: {
+            diagnosticsConfig: normalizeLiveDiagnosticsConfig({
               ...(prev.diagnosticsConfig || DEFAULT_LIVE_DIAGNOSTICS_CONFIG),
               alertThresholds: {
-                ...((prev.diagnosticsConfig || DEFAULT_LIVE_DIAGNOSTICS_CONFIG).alertThresholds || {}),
+                ...(prev.diagnosticsConfig || DEFAULT_LIVE_DIAGNOSTICS_CONFIG).alertThresholds,
                 [key]: Number.isFinite(value) ? value : 0
               }
-            }
+            })
           }
         : prev
     );

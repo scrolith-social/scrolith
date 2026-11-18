@@ -109,6 +109,10 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       try {
         const token = await AuthService.getToken();
+        // React StrictMode may clean up and replay this effect while the token
+        // store is still resolving. A stale run must not clear a session or
+        // overwrite the state produced by the current run.
+        if (!mounted) return;
         const cachedUser = token ? AuthService.getStoredUser() : null;
 
         if (!token) {
@@ -130,10 +134,12 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
           AUTH_BOOTSTRAP_TIMEOUT_MS,
           { user: cachedUser, unauthorized: false }
         );
+        if (!mounted) return;
         if (me && mounted) {
           setUser(me);
           setIsAuthenticated(true);
         } else if (unauthorized) {
+          // Only the active bootstrap may invalidate the shared token store.
           setUser(null);
           setIsAuthenticated(false);
           await AuthService.clearToken();
@@ -146,6 +152,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsAuthenticated(false);
         }
       } catch (error) {
+        if (!mounted) return;
         console.error('Auth initialization error:', error);
         const cachedUser = AuthService.getStoredUser();
         if (cachedUser && mounted) {
@@ -394,16 +401,22 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .then(({ clearInstantGraphUser }) => clearInstantGraphUser(previousUserId))
       .catch(() => undefined);
 
-    void AuthService.clearToken();
+    // Keep the bearer token available for the authenticated logout request.
+    // AuthService.logout clears local token storage only after that request
+    // completes (or times out), so the server can durably revoke the session.
     void (async () => {
       try {
         const { unregisterPushNotifications } = await import('../mobile/push');
         await unregisterPushNotifications();
-      } catch {}
-      await AuthService.logout();
-    })();
+      } catch {
+        // Push cleanup is best-effort and must not prevent session revocation.
+      }
 
-    window.location.assign('/auth/login');
+      const serverRevoked = await AuthService.logout().catch(() => false);
+      window.location.assign(
+        serverRevoked ? '/auth/login' : '/auth/login?logout=revocation-unconfirmed'
+      );
+    })();
   };
 
   const updateUser = (updates: Partial<User>) => {

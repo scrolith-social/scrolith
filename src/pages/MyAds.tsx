@@ -230,7 +230,7 @@ const getCampaignPrimaryMedia = (ad: AdCampaign) => {
   return {
     url: mediaType === 'video' ? resolveAdPreviewMediaUrl(media) : resolveAdPreviewPosterUrl(media) || resolveAdPreviewMediaUrl(media),
     type: mediaType,
-    name: String(media?.name || ad.title || 'Creative').trim()
+    name: String((media && 'name' in media ? media.name : undefined) || ad.title || 'Creative').trim()
   };
 };
 
@@ -1244,8 +1244,10 @@ const MyAds = () => {
       return { redirected: true, paid: false, message: 'Opening checkout.', code: paymentCode };
     }
 
+    const outerPaymentStatus =
+      paymentResult && 'status' in paymentResult ? paymentResult.status : undefined;
     const paymentStatus =
-      String(paymentPayload?.status || paymentResult?.status || '').trim() ||
+      String(paymentPayload?.status || outerPaymentStatus || '').trim() ||
       String(paymentPayload?.paymentStatus || '').trim();
     if (isPaymentSettledStatus(paymentStatus)) {
       showNotification('success', 'Paid', paymentResult?.message || 'Payment completed successfully.');
@@ -1694,7 +1696,13 @@ const MyAds = () => {
               .filter((media: any) => Boolean(media.id) && Boolean(media.url))
           : [];
         const effectiveMedia = boostMedia.length > 0 ? boostMedia : fallbackMedia;
-        const effectiveEntityUrl = String(boost.destinationUrl || boost.sourceUrl || boost.listingUrl || fallbackDestinationUrl || '').trim();
+        const effectiveEntityUrl = String(
+          boost.destinationUrl ||
+          ('sourceUrl' in boost ? boost.sourceUrl : undefined) ||
+          ('listingUrl' in boost ? boost.listingUrl : undefined) ||
+          fallbackDestinationUrl ||
+          ''
+        ).trim();
         const effectiveTitle = String(boost.campaignName || boost.adTitle || fallbackTitle || '').trim();
         const effectiveBody = String(boost.adCopy || fallbackBody || '').trim();
         const effectiveSubtitle =
@@ -1715,8 +1723,16 @@ const MyAds = () => {
                 : boost.sourceType === 'COMMUNITY_GROUP'
                   ? 'group'
                   : 'listing',
-          entityId: String(boost.sourceId || boost.listingId || boostListingId || boostPostId || boostPageId || boostGroupId || '').trim(),
-          entitySlug: String(boost.sourceSlug || boost.listingSlug || boostContext?.boostListingSlug || '').trim() || undefined,
+          entityId: String(
+            ('sourceId' in boost ? boost.sourceId : undefined) ||
+            ('listingId' in boost ? boost.listingId : undefined) ||
+            boostListingId || boostPostId || boostPageId || boostGroupId || ''
+          ).trim(),
+          entitySlug: String(
+            ('sourceSlug' in boost ? boost.sourceSlug : undefined) ||
+            ('listingSlug' in boost ? boost.listingSlug : undefined) ||
+            boostContext?.boostListingSlug || ''
+          ).trim() || undefined,
           entityUrl: effectiveEntityUrl,
           title: effectiveTitle || `Boost - ${String(boost.adTitle || fallbackTitle || 'Promotion').trim()}`,
           subtitle: effectiveSubtitle,
@@ -1807,6 +1823,8 @@ const MyAds = () => {
           id: 'wallet',
           name: 'Wallet Balance',
           is_enabled: true,
+          mode: 'test' as const,
+          logo: '',
           isEnabled: true,
           supported_currencies: [],
           supportedCurrencies: []
@@ -1818,6 +1836,8 @@ const MyAds = () => {
             id: 'wallet',
             name: 'Wallet Balance',
             is_enabled: true,
+            mode: 'test' as const,
+            logo: '',
             isEnabled: true,
             supported_currencies: [],
             supportedCurrencies: []

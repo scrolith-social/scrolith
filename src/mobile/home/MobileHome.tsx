@@ -798,7 +798,11 @@ const MobileHome = () => {
   }
 
   return (
-    <div className="min-h-[100%] bg-slate-50" style={{ touchAction: 'pan-y pinch-zoom' }}>
+    <div
+      className="min-h-[100%] bg-slate-50"
+      data-testid="scrolith-mobile-home"
+      style={{ touchAction: 'pan-y pinch-zoom' }}
+    >
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {isConnected ? 'Realtime updates connected.' : 'Realtime updates are reconnecting.'}
       </div>

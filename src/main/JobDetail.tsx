@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Tag, Clock, FileText, ExternalLink, Upload, Heart, ShoppingCart, ChevronLeft, ChevronRight, Sparkles, Save, Check } from 'lucide-react';
-import { JobsService } from '../services/jobs';
+import { JobsService, type Job as ServiceJob } from '../services/jobs';
 import { Job, UploadedFile, UserRole } from '../types';
 import { useNotification } from '../context/NotificationContext';
 import { useUser } from '../context/UserContext';
@@ -14,6 +14,38 @@ import { FAVORITES_RATE_LIMIT_MESSAGE, isFavoritesRateLimitedError } from '../se
 import { parseJobAttachment } from '../utils/jobAttachments';
 import ListingBodyContent from '../components/ListingBodyContent';
 import AIComposerAssist from '../components/ai/AIComposerAssist';
+
+const normalizeJobForDetail = (source: ServiceJob): Job => {
+  const budget = source.budget;
+  const budgetLabel =
+    typeof budget === 'string'
+      ? budget
+      : budget.minAmount != null && budget.maxAmount != null
+        ? `${budget.minAmount}–${budget.maxAmount}`
+        : String(budget.amount ?? '');
+
+  return {
+    id: source.id,
+    title: source.title,
+    clientName: source.clientName || 'Client',
+    clientId: source.clientId,
+    clientAvatar: source.clientAvatar,
+    clientProfilePhotoFileId: source.clientProfilePhotoFileId,
+    clientIsPro: source.clientIsPro,
+    clientIsVerified: source.clientIsVerified,
+    client_is_verified: source.client_is_verified,
+    clientVerified: source.clientVerified,
+    budget: budgetLabel,
+    type: typeof budget === 'string' ? 'Fixed Price' : budget.type === 'hourly' ? 'Hourly' : 'Fixed Price',
+    postedTime: source.createdAt,
+    description: source.description,
+    tags: source.tags,
+    proposals: source.proposalsCount,
+    status: source.status,
+    category: source.category,
+    subcategory: source.subcategory
+  };
+};
 
 const JobDetail = () => {
   const { id } = useParams();
@@ -118,7 +150,7 @@ const JobDetail = () => {
         }
         const data = await JobsService.getById(id);
         if (!mounted) return;
-        setJob(data);
+        setJob(data ? normalizeJobForDetail(data) : null);
       } catch (err: any) {
         if (!mounted) return;
         const status = err?.response?.status;

@@ -25,6 +25,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
     const [isShareModalOpen, setIsShareModalOpen] = useState(false);
     const [isSendModalOpen, setIsSendModalOpen] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [processingAction, setProcessingAction] = useState<'like' | 'repost' | null>(null);
 
     useEffect(() => {
         if (initialCounts) setCounts(initialCounts);
@@ -57,6 +58,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
         setCounts(prev => ({ ...prev, likes: prev.likes + (newLiked ? 1 : -1) }));
 
         setIsProcessing(true);
+        setProcessingAction('like');
         try {
             if (type === 'post') {
                 if (newLiked) await CommunityService.postLike(id);
@@ -71,6 +73,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
             setCounts(prev => ({ ...prev, likes: prev.likes + (newLiked ? -1 : 1) }));
         } finally {
             setIsProcessing(false);
+            setProcessingAction(null);
         }
     };
 
@@ -85,6 +88,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
         setCounts(prev => ({ ...prev, reposts: prev.reposts + 1 }));
         
         setIsProcessing(true);
+        setProcessingAction('repost');
         try {
             const success = type === 'post'
                 ? await CommunityService.postRepost(id)
@@ -103,6 +107,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
             setCounts(prev => ({ ...prev, reposts: prev.reposts - 1 }));
         } finally {
             setIsProcessing(false);
+            setProcessingAction(null);
         }
     };
 
@@ -149,7 +154,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
             >
                 <span className="relative inline-flex items-center justify-center">
                     <span className={`${iconWrap} ${state.liked ? 'bg-rose-100 text-rose-600' : ''}`}>
-                        {isProcessing && type === 'like' ? (
+                        {processingAction === 'like' ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                             <Heart className={`h-4 w-4 ${state.liked ? 'fill-current' : ''}`} />
@@ -191,7 +196,7 @@ const InteractionBar: React.FC<Props> = ({ type, id, initialCounts, initialState
             >
                 <span className="relative inline-flex items-center justify-center">
                     <span className={`${iconWrap} ${state.reposted ? 'bg-emerald-100 text-emerald-600' : ''}`}>
-                        {isProcessing && type === 'repost' ? (
+                        {processingAction === 'repost' ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                             <Repeat className="h-4 w-4" />

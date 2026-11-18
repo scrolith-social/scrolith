@@ -8,7 +8,7 @@ import { CommunityService } from '../../services/community';
 import { GcoinService } from '../../services/gcoin';
 import { AdService } from '../../services/ads';
 import { FileService } from '../../services/files';
-import type { CommunitySettings, ModerationLog, ForumThread, CommunityChannel, GcoinWallet, AdCampaign, UserRole, UploadedFile, GcoinSettings, GcoinConversionRequest, CommunityPostReport } from '../../types';
+import type { CommunitySettings, ModerationLog, ForumThread, CommunityChannel, GcoinWallet, AdCampaign, AdPlacement, UserRole, UploadedFile, GcoinSettings, GcoinConversionRequest, CommunityPostReport } from '../../types';
 import { useNotification } from '../../context/NotificationContext';
 import { useUser } from '../../context/UserContext';
 import CommunityAnalytics from './CommunityAnalytics';
@@ -2005,6 +2005,8 @@ const AdManager = () => {
     const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
     const [countryDraft, setCountryDraft] = useState('');
     const { showNotification } = useNotification();
+    const { availableCurrencies } = useCurrency();
+    const { user } = useUser();
 
     useEffect(() => {
         const refresh = async () => {
@@ -2892,7 +2894,7 @@ const AdManager = () => {
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 mb-1">Placement</label>
-                                    <select className="w-full border rounded p-2 text-sm" value={isEditing.placement} onChange={e => setIsEditing({...isEditing, placement: e.target.value as string})}>
+                                    <select className="w-full border rounded p-2 text-sm" value={isEditing.placement} onChange={e => setIsEditing({...isEditing, placement: e.target.value as AdPlacement})}>
                                         <option value="homepage">Homepage</option>
                                         <option value="homepage_feed">Homepage Feed</option>
                                         <option value="community_feed">Community Feed</option>
@@ -3002,8 +3004,9 @@ const ChannelManager = () => {
     }, []);
 
     const handleCreate = async () => {
-        if(!newChannel.name) return;
-        await CommunityService.createChannel(newChannel);
+        const name = String(newChannel.name || '').trim();
+        if (!name) return;
+        await CommunityService.createChannel({ ...newChannel, name });
         setChannels(await CommunityService.getChannels());
         setIsCreating(false);
         setNewChannel({ name: '', type: 'public', isPaid: false, price: 0 });
@@ -3031,7 +3034,7 @@ const ChannelManager = () => {
                     <h4 className="font-bold text-sm mb-3">Create Channel</h4>
                     <div className="grid grid-cols-2 gap-4 mb-4">
                         <input className="border rounded p-2 text-sm" placeholder="Channel Name" value={newChannel.name} onChange={e => setNewChannel({...newChannel, name: e.target.value})} />
-                        <select className="border rounded p-2 text-sm" value={newChannel.type} onChange={e => setNewChannel({...newChannel, type: e.target.value as string})}>
+                        <select className="border rounded p-2 text-sm" value={newChannel.type} onChange={e => setNewChannel({...newChannel, type: e.target.value as CommunityChannel['type']})}>
                             <option value="public">Public</option>
                             <option value="private">Private</option>
                             <option value="club">Club (Paid)</option>

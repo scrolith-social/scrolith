@@ -74,7 +74,7 @@ const LineGraph: React.FC<{ data: ActivityRecord[] }> = ({ data }) => {
   const padding = 24;
   const effectiveHeight = height - padding * 2;
   const effectiveWidth = width - padding * 2;
-  const totalValues = data.flatMap((row) => lineChartKeys.map((key) => Math.max(0, row[key] || 0)));
+  const totalValues = data.flatMap((row) => lineChartKeys.map((key) => Math.max(0, Number(row[key]) || 0)));
   const maxValue = Math.max(1, ...totalValues);
   const steps = Math.max(data.length - 1, 1);
   const getX = (index: number) => padding + (effectiveWidth / steps) * index;
@@ -83,7 +83,7 @@ const LineGraph: React.FC<{ data: ActivityRecord[] }> = ({ data }) => {
     data
       .map((row, index) => {
         const x = getX(index);
-        const y = getY(row[key] || 0);
+        const y = getY(Number(row[key]) || 0);
         return `${index === 0 ? 'M' : 'L'}${x},${y}`;
       })
       .join(' ');
@@ -108,7 +108,7 @@ const LineGraph: React.FC<{ data: ActivityRecord[] }> = ({ data }) => {
         {data.map((row, index) =>
           lineChartKeys.map((key) => {
             const x = getX(index);
-            const y = getY(row[key] || 0);
+            const y = getY(Number(row[key]) || 0);
             return (
               <circle
                 key={`${key}-${row.date}-${index}`}

@@ -471,7 +471,7 @@ const StaffManagementTab = () => {
                                         <select 
                                             className="w-full border border-gray-300 rounded-lg p-2.5"
                                             value={currentStaff.status || 'active'}
-                                            onChange={e => setCurrentStaff({...currentStaff, status: e.target.value as string})}
+                                            onChange={e => setCurrentStaff({...currentStaff, status: e.target.value as StaffStatus})}
                                         >
                                             <option value="active">Active</option>
                                             <option value="suspended">Suspended (Blocked)</option>

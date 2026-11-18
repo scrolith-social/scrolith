@@ -784,7 +784,7 @@ const GroupsWorkspace: React.FC<GroupsWorkspaceProps> = ({ embedded = false }) =
     const joinMode = String(group.joinMode || 'open').toLowerCase();
     const isPrivate = group.visibility === 'private';
     const wasJoined = Boolean(group.isJoined);
-    const wasPending = Boolean(group.pendingRequest);
+    const wasPending = Boolean(group.pendingRequest || group.hasPendingRequest);
     setMembershipBusyId(groupId);
     if (!(joinMode === 'request' || isPrivate)) {
       setGroups((prev) =>
@@ -796,7 +796,7 @@ const GroupsWorkspace: React.FC<GroupsWorkspaceProps> = ({ embedded = false }) =
       );
     } else {
       setGroups((prev) =>
-        prev.map((entry) => (entry.id === groupId ? { ...entry, pendingRequest: true } : entry))
+        prev.map((entry) => (entry.id === groupId ? { ...entry, hasPendingRequest: true } : entry))
       );
     }
     try {
@@ -819,7 +819,7 @@ const GroupsWorkspace: React.FC<GroupsWorkspaceProps> = ({ embedded = false }) =
       setGroups((prev) =>
         prev.map((entry) =>
           entry.id === groupId
-            ? { ...entry, isJoined: wasJoined, pendingRequest: wasPending, memberCount: entry.memberCount }
+            ? { ...entry, isJoined: wasJoined, hasPendingRequest: wasPending, memberCount: entry.memberCount }
             : entry
         )
       );
@@ -1292,7 +1292,7 @@ const GroupsWorkspace: React.FC<GroupsWorkspaceProps> = ({ embedded = false }) =
                               Decline
                             </button>
                           </div>
-                        ) : selectedGroup.pendingRequest ? (
+                        ) : selectedGroup.pendingRequest || selectedGroup.hasPendingRequest ? (
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700">
                             Join request pending
                           </div>
@@ -1343,7 +1343,7 @@ const GroupsWorkspace: React.FC<GroupsWorkspaceProps> = ({ embedded = false }) =
 
                 <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.25fr),360px]">
                   <div className="space-y-4">
-                    {showJoinRequestComposer && !selectedGroup.isJoined && !selectedGroup.pendingRequest && !selectedGroup.pendingInvite ? (
+                    {showJoinRequestComposer && !selectedGroup.isJoined && !selectedGroup.pendingRequest && !selectedGroup.hasPendingRequest && !selectedGroup.pendingInvite ? (
                       <div className="rounded-[24px] border border-amber-200 bg-amber-50 p-4">
                         <div className="flex items-center justify-between gap-3">
                           <div>

@@ -440,10 +440,6 @@ const WalletModule = () => {
             ? 'fixed'
             : 'percentage';
     const freelancerFeeValue = Number(commissionSettings?.freelancerFeeValue ?? commissionSettings?.freelancer_fee_value ?? 0);
-    const freelancerCommissionLabel =
-        freelancerFeeType === 'percentage'
-            ? `${Number.isFinite(freelancerFeeValue) ? freelancerFeeValue : 0}%`
-            : formatPayout(Number.isFinite(freelancerFeeValue) ? freelancerFeeValue : 0);
 
     const runStripeAction = async (action: () => Promise<void>) => {
         setStripeActionLoading(true);
@@ -588,6 +584,11 @@ const WalletModule = () => {
             style: 'currency',
             currency: defaultCurrencyCode
         }).format(Number.isFinite(amount) ? amount : 0);
+
+    const freelancerCommissionLabel =
+        freelancerFeeType === 'percentage'
+            ? `${Number.isFinite(freelancerFeeValue) ? freelancerFeeValue : 0}%`
+            : formatPayout(Number.isFinite(freelancerFeeValue) ? freelancerFeeValue : 0);
 
     const resolvedMethods = payoutMethods.length ? payoutMethods : FALLBACK_PAYOUT_METHODS;
     const getMethodConfig = (methodId: string) =>

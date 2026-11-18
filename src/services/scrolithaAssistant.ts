@@ -34,6 +34,8 @@ export type AssistantResult = {
   autoPublished: false;
 };
 
+export type AssistantPromptList = { items: unknown[] };
+
 export const ScrolithaAssistantService = {
   async getStatus() {
     const res = await api.get('/ai/assistant/status');
@@ -97,9 +99,9 @@ export const ScrolithaAssistantService = {
     const res = await api.get('/ai/assistant/export');
     return unwrap(res);
   },
-  async listPrompts(params?: { category?: string; q?: string }) {
+  async listPrompts(params?: { category?: string; q?: string }): Promise<AssistantPromptList> {
     const res = await api.get('/ai/assistant/prompts', { params });
-    return unwrap(res);
+    return unwrap<AssistantPromptList>(res);
   },
   async usePrompt(id: string, body: { topic: string; conversationId?: string; locale?: string }) {
     const res = await api.post(`/ai/assistant/prompts/${id}/use`, body);

@@ -6,13 +6,17 @@ import {
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
   assertPostCardNoOverflow,
+  assertRequiredPostControls,
   assertSurveyEqualButtons,
   assertTypographyScale,
   measureDocumentOverflowX,
   postCards,
+  selectCertificationPostCard,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH
 } from '../helpers/postCard';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 /**
  * Runs under pixel-7, iphone-15, and mobile-390 projects from playwright.config.ts.
@@ -23,6 +27,7 @@ test.describe('Mobile emulation — post card cert', () => {
   });
 
   test('mobile feed card spacing and controls', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
 
@@ -37,13 +42,17 @@ test.describe('Mobile emulation — post card cert', () => {
 
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      test.skip(true, 'No post cards on mobile surface');
+      await skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards on mobile outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
 
-    const card = cards.first();
+    const card = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(card);
     await assertTypographyScale(card);
+    await assertRequiredPostControls(card);
     await assertActionRowEqualColumns(card);
     await assertSurveyEqualButtons(card);
     await assertPostCardNoOverflow(card);

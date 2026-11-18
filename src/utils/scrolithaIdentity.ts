@@ -10,9 +10,9 @@ export const SCROLITHA_DISPLAY_NAME = 'Scrolitha';
 export const SCROLITHA_ASSET_VERSION = 'p2079';
 
 const SCROLITHA_OFFICIAL_PROFILE_PHOTO_SOURCE =
-  'https://api.scrolith.com/api/files/content/edd2e7e7-1b32-4edd-9209-6e87fe80ea45';
+  '/api/files/content/edd2e7e7-1b32-4edd-9209-6e87fe80ea45';
 const SCROLITHA_OFFICIAL_COVER_PHOTO_SOURCE =
-  'https://api.scrolith.com/api/files/content/a163c581-9ca1-4561-a41f-0540c7fb9214';
+  '/api/files/content/a163c581-9ca1-4561-a41f-0540c7fb9214';
 
 // Resolve defaults at module load so legacy consumers of the exported constants
 // follow an isolated release backend instead of bypassing candidate CORS.

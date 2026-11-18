@@ -2209,7 +2209,7 @@ const CommunityDashboard: React.FC = () => {
                                       prev
                                         ? {
                                             ...prev,
-                                            aiInsightPreference: resolvePostAiInsightPreference(e.target.value, 'off')
+                                            aiInsightPreference: resolvePostAiInsightPreference(e.target.value, 'off') === 'on' ? 'on' : 'off'
                                           }
                                         : prev
                                     )

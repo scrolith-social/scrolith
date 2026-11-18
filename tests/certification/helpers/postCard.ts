@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
+import { isClientAuthenticated, isLikelyAuthenticated } from './auth';
 
 export const POST_CARD = '[data-testid="enterprise-post-card"], [data-post-card-design="21.1.5"], article.scrolith-post-card';
 export const POST_HEADER = '[data-testid="post-header"]';
@@ -26,16 +27,59 @@ export function postCards(page: Page): Locator {
   return page.locator(POST_CARD);
 }
 
+export const REQUIRED_LONG_CONTENT_MARKER = 'SCROLITH_CI_LONG_CONTENT_FIXTURE';
+
+/** CI selects an exact public synthetic post so card and long-content checks do not depend on feed ranking. */
+export async function selectCertificationPostCard(page: Page, fallback: Locator): Promise<Locator> {
+  const seededCard = postCards(page).filter({ hasText: REQUIRED_LONG_CONTENT_MARKER }).first();
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    await expect(seededCard, 'the deterministic cross-account long-content fixture must be in the feed').toBeVisible({ timeout: 15_000 });
+    return seededCard;
+  }
+  return (await seededCard.count()) > 0 ? seededCard : fallback;
+}
+
+/** CI uses explicitly seeded public fixtures; absence is a failure there, not a pass-by-skip. */
+export async function skipOrFailWhenFeedFixtureMissing(
+  test: { skip: (condition: boolean, description?: string) => void },
+  count: number,
+  reason: string,
+  captureEvidence?: () => Promise<void>
+): Promise<void> {
+  if (count > 0) return;
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    if (captureEvidence) await captureEvidence().catch(() => undefined);
+    throw new Error('Required synthetic feed fixture did not render on the authenticated test surface.');
+  }
+  test.skip(true, reason);
+}
+
 export async function waitForFeed(page: Page, timeout = 45_000) {
   await page.waitForLoadState('domcontentloaded');
-  // Either post cards appear or an empty-state / login gate is visible
-  await Promise.race([
-    page.locator(POST_CARD).first().waitFor({ state: 'visible', timeout }),
-    page.getByText(/log in|sign in|no posts|caught up|create your first/i).first().waitFor({
-      state: 'visible',
-      timeout
-    })
-  ]).catch(() => undefined);
+  await expect.poll(() => isClientAuthenticated(page), {
+    timeout: 30_000,
+    message: 'Authenticated feed tests require the client UserContext to contain a hydrated user.'
+  }).toBe(true);
+  await expect.poll(() => isLikelyAuthenticated(page), {
+    timeout: 15_000,
+    message: 'Authenticated feed tests require /api/auth/me to accept the stored session.'
+  }).toBe(true);
+  await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/, {
+    timeout: 15_000,
+    message: 'The authenticated feed route must not redirect to login.'
+  });
+
+  const cardWait = page.locator(POST_CARD).first().waitFor({ state: 'visible', timeout });
+  if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+    // CI seeds an authenticated synthetic post; do not let a guest/login UI or
+    // generic navigation text satisfy this wait.
+    await cardWait;
+  } else {
+    await Promise.race([
+      cardWait,
+      page.getByText(/no posts|caught up|create your first/i).first().waitFor({ state: 'visible', timeout })
+    ]).catch(() => undefined);
+  }
   // Phase 21.1.7 — allow orchestrator + mobile shared lifecycle to settle so
   // cache/network races do not shift the session head under the identity probe.
   await page.waitForTimeout(2500);
@@ -216,6 +260,15 @@ export async function assertActionRowEqualColumns(card: Locator) {
   const max = Math.max(...widths);
   // Equal-width grid cells may differ by a few px due to badges
   expect(max - min, `action widths ${widths.join(',')}`).toBeLessThanOrEqual(24);
+}
+
+export async function assertRequiredPostControls(card: Locator) {
+  const actionRow = card.locator(POST_ACTIONS);
+  await expect(actionRow, 'the synthetic feed card must render its action row').toBeVisible();
+  const controls = actionRow.locator('button[data-post-action-control="true"]');
+  await expect(controls.first(), 'the synthetic feed card must render post controls').toBeVisible();
+  expect(await controls.count(), 'at least two post controls must be available for the layout and accessibility checks').toBeGreaterThanOrEqual(2);
+  await expect(card.getByRole('button', { name: 'Comment', exact: true })).toBeVisible();
 }
 
 export async function assertSurveyEqualButtons(card: Locator) {

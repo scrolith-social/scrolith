@@ -1,5 +1,6 @@
 import api from './api';
-import { getApiBaseUrl } from '../utils/apiBase';
+import { getApiBaseUrl, getScrolithApiEnvironment } from '../utils/apiBase';
+import { resolveNativeApiBase } from '../utils/apiBasePolicy';
 
 export type HumanVerificationEndpoint =
   | 'login'
@@ -186,17 +187,11 @@ const nativePostJson = async <T,>(path: string, data: Record<string, unknown>): 
     throw new Error('Native HTTP bridge is not available.');
   }
 
-  const normalizeApiBase = (value: string) => {
-    const raw = String(value || '').trim().replace(/\/+$/, '');
-    if (!/^https?:\/\//i.test(raw)) return '';
-    return raw.endsWith('/api') ? raw : `${raw}/api`;
-  };
-
-  const bases = Array.from(
-    new Set(
-      [normalizeApiBase(getApiBaseUrl()), 'https://api.scrolith.com/api'].filter(Boolean)
-    )
-  );
+  const configuredBase = resolveNativeApiBase(getApiBaseUrl(), getScrolithApiEnvironment());
+  if (!configuredBase) {
+    throw new Error('Native verification API is not configured for this environment.');
+  }
+  const bases = [configuredBase];
 
   let lastError: any = null;
   for (const base of bases) {

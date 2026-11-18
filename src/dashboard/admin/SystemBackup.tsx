@@ -180,7 +180,7 @@ const SystemBackup: React.FC = () => {
       if (silent) setRefreshing(true);
       try {
         const [meta, backupRows, backupJobRows] = await Promise.all([
-          AdminService.getSystemBackupMeta().catch(() => ({ sections: [] })),
+          AdminService.getSystemBackupMeta().catch((): Awaited<ReturnType<typeof AdminService.getSystemBackupMeta>> => ({ sections: [], runtime: undefined })),
           AdminService.getSystemBackups(),
           AdminService.getSystemBackupJobs().catch(() => [])
         ]);

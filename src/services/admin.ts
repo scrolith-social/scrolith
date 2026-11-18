@@ -1648,7 +1648,7 @@ export const AdminService = {
   async translateByGoogle(texts: string[], targetLang: string): Promise<string[]> {
     // Attempts to call admin endpoint which may proxy Google Translate; otherwise returns inputs as-is
     try {
-      const resp = await adminPost('/translations/translate', { texts, targetLang });
+      const resp = await adminPost<{ translations?: string[] }>('/translations/translate', { texts, targetLang });
       return resp?.translations || texts;
     } catch (e) {
       // no backend => return original texts so front-end can copy keys into values instead
@@ -1658,7 +1658,7 @@ export const AdminService = {
 
   async syncForApp(langId: string): Promise<boolean> {
     try {
-      const resp = await adminPost(`/translations/languages/${encodeURIComponent(langId)}/sync_app`);
+      const resp = await adminPost<{ success?: boolean }>(`/translations/languages/${encodeURIComponent(langId)}/sync_app`);
       return Boolean(resp?.success);
     } catch (e) {
       // fallback: no-op

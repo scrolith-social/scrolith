@@ -143,7 +143,20 @@ const emptyTemplateForm = {
   isActive: true
 };
 
-const emptyFlowForm = {
+type JourneyFlowForm = {
+  key: string;
+  label: string;
+  description: string;
+  triggerType: string;
+  audienceType: string;
+  audienceConfigText: string;
+  metadataText: string;
+  isSystemFlow: boolean;
+  isActive: boolean;
+  steps: JourneyStep[];
+};
+
+const emptyFlowForm: JourneyFlowForm = {
   key: '',
   label: '',
   description: '',
@@ -193,7 +206,7 @@ const NotificationJourneyCenter: React.FC = () => {
   const [templateQuery, setTemplateQuery] = useState('');
   const [flowQuery, setFlowQuery] = useState('');
   const [templateForm, setTemplateForm] = useState(emptyTemplateForm);
-  const [flowForm, setFlowForm] = useState(emptyFlowForm);
+  const [flowForm, setFlowForm] = useState<JourneyFlowForm>(emptyFlowForm);
   const [runIdentifier, setRunIdentifier] = useState('');
   const [runContextText, setRunContextText] = useState('{}');
   const [quietIdentifier, setQuietIdentifier] = useState('');

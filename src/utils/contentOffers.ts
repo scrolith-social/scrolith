@@ -128,7 +128,7 @@ export const normalizeContentOfferSettings = (raw: any): ContentOfferSettings =>
 export const normalizeContentOfferTags = (value: any): ContentOfferTag[] => {
   if (!Array.isArray(value)) return []
   return value
-    .map((entry) => {
+    .map((entry): ContentOfferTag | null => {
       const payload = entry && typeof entry === 'object' ? entry : {}
       const offerType = String(payload.offerType || payload.offer_type || '').trim()
       const offerId = String(payload.offerId || payload.offer_id || '').trim()
@@ -177,7 +177,7 @@ export const normalizeContentOfferTags = (value: any): ContentOfferTag[] => {
               }
       } satisfies ContentOfferTag
     })
-    .filter((entry): entry is ContentOfferTag => Boolean(entry))
+    .filter((entry): entry is ContentOfferTag => entry !== null)
 }
 
 export const mapGigToOfferOption = (gig: Gig): OfferTagOption => ({

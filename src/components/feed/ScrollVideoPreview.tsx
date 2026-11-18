@@ -140,7 +140,7 @@ const ScrollVideoPreview: React.FC<Props> = ({
           loop
           preload={visible ? 'metadata' : 'none'}
           controls={false}
-          // @ts-expect-error webkit-playsinline for older WebViews
+          // Retain the legacy WebView inline-playback hint.
           webkit-playsinline="true"
           disablePictureInPicture
           disableRemotePlayback

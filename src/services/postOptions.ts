@@ -50,7 +50,7 @@ export const postOptionsApi = {
   },
   report: async (postId: string, payload?: { reason?: string; details?: string }) => {
     const res = await api.post(`/community/posts/${encodeURIComponent(postId)}/report`, payload || {});
-    return res.data as ApiResponse<{ reportId: string; status: string }>;
+    return res.data as ApiResponse<{ reportId: string; id?: string; status: string; reviewState?: string }>;
   },
   followAuthor: async (postId: string) => {
     const res = await api.post(`/posts/${encodeURIComponent(postId)}/follow-author`);

@@ -1,40 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// node:test does not inject Vite's import.meta.env; polyfill before loading app utils.
-// Must assign real properties on import.meta.env so static reads in apiBase work.
-const ensureViteEnv = () => {
-  const meta = import.meta as ImportMeta & { env?: Record<string, unknown> };
-  if (!meta.env || typeof meta.env !== 'object') {
-    try {
-      Object.defineProperty(meta, 'env', {
-        value: {},
-        writable: true,
-        configurable: true,
-        enumerable: true
-      });
-    } catch {
-      (meta as any).env = {};
-    }
-  }
-  Object.assign(meta.env as Record<string, unknown>, {
-    PROD: false,
-    DEV: true,
-    MODE: 'test',
-    BASE_URL: '/',
-    VITE_ALLOW_LOCAL_API_IN_PROD: 'false',
-    VITE_API_URL: 'https://api.scrolith.com/api',
-    VITE_API_BASE_URL: 'https://api.scrolith.com/api',
-    VITE_BACKEND_URL: 'https://api.scrolith.com',
-    VITE_FORCE_MOBILE_API_OVERRIDE: 'false',
-    VITE_PUBLIC_APP_DOMAIN: 'scrolith.com'
-  });
-};
-
-ensureViteEnv();
+// The Node test runner does not inject Vite's per-module import.meta.env. These
+// tests therefore exercise the safe, same-origin fallback used without an
+// explicit API origin; deployment-origin behavior is covered by apiBasePolicy tests.
 
 const loadMediaUtils = async () => {
-  ensureViteEnv();
   const [
     { resolveInlineMedia },
     postAttachment,
@@ -108,14 +79,13 @@ test('resolvePostAttachmentMediaUrl resolves file IDs to content endpoint', asyn
   const scrolithHost = resolvePostAttachmentMediaUrl({
     url: 'https://scrolith.com/api/files/content/file_abc123456789'
   });
-  assert.ok(scrolithHost.includes('api.scrolith.com'));
-  assert.ok(!scrolithHost.startsWith('https://scrolith.com/api/files'));
+  assert.equal(scrolithHost, '/api/files/content/file_abc123456789');
 });
 
-test('resolveAssetUrl never rewrites canonical API content or signed URLs', async () => {
+test('resolveAssetUrl uses same-origin paths without configured API origin and preserves signed URLs', async () => {
   const { resolveAssetUrl, resolveResponsiveAssetUrl } = await loadMediaUtils();
   const apiContent = 'https://api.scrolith.com/api/files/content/file_abc123456789';
-  assert.equal(resolveAssetUrl(apiContent), apiContent);
+  assert.equal(resolveAssetUrl(apiContent), '/api/files/content/file_abc123456789');
 
   const signedGcs =
     'https://storage.googleapis.com/bucket/key.jpg?X-Goog-Algorithm=GOOG4&X-Goog-Signature=abc123&X-Goog-Credential=x';
@@ -127,11 +97,10 @@ test('resolveAssetUrl never rewrites canonical API content or signed URLs', asyn
 
   // SPA host asset paths must still be rewritten off the frontend shell.
   const spaHost = resolveAssetUrl('https://scrolith.com/api/files/content/file_abc123456789');
-  assert.ok(spaHost.includes('api.scrolith.com'));
-  assert.ok(!spaHost.startsWith('https://scrolith.com/api/files'));
+  assert.equal(spaHost, '/api/files/content/file_abc123456789');
 });
 
-test('resolvePostAttachmentMediaUrl prefers valid absolute URL over fileId', async () => {
+test('resolvePostAttachmentMediaUrl keeps canonical content same-origin without configured API origin', async () => {
   const { resolvePostAttachmentMediaUrl } = await loadMediaUtils();
   const absolute = 'https://api.scrolith.com/api/files/content/real_file_id_123456';
   assert.equal(
@@ -139,10 +108,10 @@ test('resolvePostAttachmentMediaUrl prefers valid absolute URL over fileId', asy
       url: absolute,
       fileId: 'some_other_id_should_not_win'
     }),
-    absolute
+    '/api/files/content/real_file_id_123456'
   );
   // Absolute content URL passed as fileId must not be double-wrapped.
-  assert.equal(resolvePostAttachmentMediaUrl({ fileId: absolute }), absolute);
+  assert.equal(resolvePostAttachmentMediaUrl({ fileId: absolute }), '/api/files/content/real_file_id_123456');
   // Nested logo/cover shapes
   assert.equal(
     resolvePostAttachmentMediaUrl({ logo: { url: 'https://cdn.example.com/logo.png' } }),
@@ -390,8 +359,9 @@ test('continuous feed keys dedupe by sourceType + sourceId across sources', asyn
 test('media resolvers remain stable for continuous-feed attachment payloads', async () => {
   const { resolvePostAttachmentMediaUrl, resolveAssetUrl } = await loadMediaUtils();
   const content = 'https://api.scrolith.com/api/files/content/file_feed_media_123456';
-  assert.equal(resolvePostAttachmentMediaUrl({ url: content, fileId: 'other_id_should_not_win' }), content);
-  assert.equal(resolveAssetUrl(content), content);
+  const sameOriginContent = '/api/files/content/file_feed_media_123456';
+  assert.equal(resolvePostAttachmentMediaUrl({ url: content, fileId: 'other_id_should_not_win' }), sameOriginContent);
+  assert.equal(resolveAssetUrl(content), sameOriginContent);
   const signed =
     'https://storage.googleapis.com/bucket/key.jpg?X-Goog-Algorithm=GOOG4&X-Goog-Signature=abc';
   assert.equal(resolveAssetUrl(signed), signed);

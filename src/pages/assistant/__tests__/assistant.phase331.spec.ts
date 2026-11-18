@@ -26,7 +26,9 @@ describe('Phase 33.1 Assistant UI', () => {
   it('composer assist never auto-submits', () => {
     const src = readFileSync(composer, 'utf8');
     expect(src).toContain('never auto-submits');
-    expect(src).toContain('Apply to editor');
+    expect(src).toContain('onApplyDraft(draft');
+    expect(src).toContain('Replace text');
+    expect(src).toContain('Insert below');
     expect(src).toContain('role="region"');
     expect(src).toContain('Generate draft');
   });

@@ -42,19 +42,23 @@ const deferNonCriticalTask = (task: () => void | Promise<void>, timeoutMs = 1800
   let disposed = false;
   let timeoutId: number | null = null;
   let idleId: number | null = null;
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
 
   const run = () => {
     if (disposed) return;
     disposed = true;
     void task();
     if (timeoutId !== null) window.clearTimeout(timeoutId);
-    if (idleId !== null && 'cancelIdleCallback' in window) {
-      (window as any).cancelIdleCallback(idleId);
+    if (idleId !== null && typeof idleWindow.cancelIdleCallback === 'function') {
+      idleWindow.cancelIdleCallback(idleId);
     }
   };
 
-  if ('requestIdleCallback' in window) {
-    idleId = (window as any).requestIdleCallback(run, { timeout: timeoutMs });
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    idleId = idleWindow.requestIdleCallback(run, { timeout: timeoutMs });
   } else {
     timeoutId = window.setTimeout(run, Math.min(timeoutMs, 1200));
   }
@@ -62,8 +66,8 @@ const deferNonCriticalTask = (task: () => void | Promise<void>, timeoutMs = 1800
   return () => {
     disposed = true;
     if (timeoutId !== null) window.clearTimeout(timeoutId);
-    if (idleId !== null && 'cancelIdleCallback' in window) {
-      (window as any).cancelIdleCallback(idleId);
+    if (idleId !== null && typeof idleWindow.cancelIdleCallback === 'function') {
+      idleWindow.cancelIdleCallback(idleId);
     }
   };
 };

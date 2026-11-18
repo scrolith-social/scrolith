@@ -403,7 +403,7 @@ const MobileHomepage: React.FC = () => {
                 const current = Array.isArray(merged.postComposer?.allowedVisibilities)
                   ? merged.postComposer?.allowedVisibilities
                   : DEFAULT_CONFIG.postComposer?.allowedVisibilities || [];
-                const set = new Set(current.map((v) => String(v || '').toLowerCase()));
+                const set = new Set<string>(current.map((v) => String(v || '').toLowerCase()));
                 const label =
                   key === 'public'
                     ? 'Allow Public'
@@ -418,7 +418,7 @@ const MobileHomepage: React.FC = () => {
                     label={label}
                     checked={set.has(key)}
                     onChange={(v) => {
-                      const next = new Set(current.map((vv) => String(vv || '').toLowerCase()));
+                      const next = new Set<string>(current.map((vv) => String(vv || '').toLowerCase()));
                       if (v) next.add(key);
                       else next.delete(key);
                       const list = Array.from(next);

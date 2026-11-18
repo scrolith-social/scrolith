@@ -30,7 +30,8 @@ test('infers PDF and image previews from legacy attachment URLs', () => {
   assert.equal(parseJobAttachment('https://cdn.scrolith.com/reference.JPG?token=redacted').kind, 'image');
 });
 
-test('parses URI-encoded serialized attachments for image previews and open links', () => {
+test('parses serialized attachments and uses a same-origin content path without configured API origin', () => {
+  const contentPath = '/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa';
   const payload = {
     fileId: 'd6a2b183-fc0e-4a99-8c26-1a551070fdfa',
     url: 'https://api.scrolith.com/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa',
@@ -44,13 +45,14 @@ test('parses URI-encoded serialized attachments for image previews and open link
   for (const value of [encoded, fullyEncoded]) {
     const parsed = parseJobAttachment(value);
     assert.equal(parsed.fileId, payload.fileId);
-    assert.equal(parsed.url, payload.url);
+    assert.equal(parsed.url, contentPath);
     assert.equal(parsed.kind, 'image');
     assert.equal(parsed.name, payload.name);
   }
 });
 
-test('parses serialized attachments wrapped in an API URL', () => {
+test('parses serialized attachments wrapped in an API URL without a production fallback', () => {
+  const contentPath = '/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa';
   const payload = {
     fileId: 'd6a2b183-fc0e-4a99-8c26-1a551070fdfa',
     url: 'https://api.scrolith.com/api/files/content/d6a2b183-fc0e-4a99-8c26-1a551070fdfa',
@@ -64,7 +66,7 @@ test('parses serialized attachments wrapped in an API URL', () => {
   const fullyEncodedParsed = parseJobAttachment(encodeURIComponent(wrapped));
 
   assert.equal(parsed.fileId, payload.fileId);
-  assert.equal(parsed.url, payload.url);
+  assert.equal(parsed.url, contentPath);
   assert.equal(parsed.kind, 'image');
   assert.equal(parsed.name, payload.name);
   assert.equal(fullyEncodedParsed.fileId, payload.fileId);

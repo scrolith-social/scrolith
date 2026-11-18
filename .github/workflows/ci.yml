@@ -1,243 +1,87 @@
-name: CI
+name: Frontend CI
 
 on:
   push:
-    branches: [ main, master ]
-
+    branches: [main, master, 'codex/**']
   pull_request:
-    branches: [ main, master ]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'geezle-backend/docs/**'
-
+    branches: [main, master]
   workflow_dispatch:
-    inputs:
-      run_e2e:
-        description: 'Run Cypress against the configured backend'
-        required: true
-        default: false
-        type: boolean
-
-      deploy_production:
-        description: 'Explicitly authorize production frontend deployment'
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
-jobs:
-  build:
-    name: Build and validate frontend
-    runs-on: ubuntu-latest
+concurrency:
+  group: frontend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  validate:
+    name: Typecheck, test, and build without credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
-      BACKEND_URL: ${{ secrets.BACKEND_URL }}
+      BACKEND_URL: https://backend.invalid
+      VITE_BACKEND_URL: https://backend.invalid
+      VITE_API_URL: https://backend.invalid/api
+      VITE_SCROLITH_ENV: ci
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - name: Checkout pinned backend and mobile test dependencies
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: '18'
+          repository: scrolith-social/scrolith
+          ref: 923ca7e25d4ee36ee00aa415eae2b6a60fc9777b
+          path: test-dependencies/backend
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
 
-      - name: Build frontend
-        shell: bash
+      - name: Install locked dependencies
+        run: npm ci --registry=https://registry.npmjs.org --no-audit --no-fund
+
+      - name: Production TypeScript check
+        run: npm run typecheck:production
+
+      - name: Certification unit tests
+        run: npm run test:cert:unit
+
+      - name: Mobile unit tests
+        run: npm run test:mobile:unit
         env:
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
-          DEPLOY_PRODUCTION: ${{ inputs.deploy_production }}
-        run: |
-          set -euo pipefail
+          SCROLITH_TEST_BACKEND_ROOT: ${{ github.workspace }}/test-dependencies/backend/geezle-backend
+          SCROLITH_TEST_MOBILE_ROOT: ${{ github.workspace }}/test-dependencies/backend/mobile
 
-          # Ordinary CI builds must not require a live production backend.
-          # Use a deliberately inert target when no backend URL is configured.
-          #
-          # An explicitly authorized production deployment must fail closed
-          # rather than produce a deployable build using the inert target.
-          if [ -z "$VITE_BACKEND_URL" ] && [ -z "$BACKEND_URL" ]; then
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "${DEPLOY_PRODUCTION:-false}" = "true" ]; then
-              echo "::error::BACKEND_URL must be configured before an authorized production deployment."
-              exit 1
-            fi
+      - name: Certification target safety tests
+        run: node --test scripts/certificationTarget.test.mjs
 
-            export VITE_BACKEND_URL="https://backend.invalid"
-            export BACKEND_URL="https://backend.invalid"
-          else
-            export VITE_BACKEND_URL="${VITE_BACKEND_URL:-$BACKEND_URL}"
-            export BACKEND_URL="${BACKEND_URL:-$VITE_BACKEND_URL}"
-          fi
+      - name: Build artifact policy tests
+        run: node --test scripts/verify-frontend-build-artifact.test.mjs
 
-          npm run build
+      - name: API target and feed-state unit tests
+        run: >-
+          env -u NODE_AUTH_TOKEN npx vitest run
+          src/utils/__tests__/apiBasePolicy.spec.ts
+          src/utils/__tests__/assetUrl.environment.spec.ts
+          src/utils/__tests__/oauthApiUrl.spec.ts
+          src/community/__tests__/followState.merge.spec.ts
+          src/community/__tests__/storyState.merge.spec.ts
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Build inert CI artifact
+        run: env -u NODE_AUTH_TOKEN npm run build
+
+      - name: Inspect generated bundle
+        run: node scripts/verify-frontend-build-artifact.mjs dist --expected-api-host backend.invalid --forbidden-api-hosts api.scrolith.com
+
+      - name: Upload non-deployable CI artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frontend-dist
+          name: frontend-ci-dist-${{ github.sha }}
           path: dist
           if-no-files-found: error
-
-      - name: Run frontend unit tests
-        shell: bash
-        env:
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
-        run: |
-          set -euo pipefail
-
-          export VITE_BACKEND_URL="${VITE_BACKEND_URL:-https://backend.invalid}"
-          export BACKEND_URL="${BACKEND_URL:-https://backend.invalid}"
-
-          npm run test --if-present
-
-      - name: Validate requested E2E configuration
-        if: >-
-          ${{
-            github.event_name == 'workflow_dispatch' &&
-            inputs.run_e2e == true
-          }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "$BACKEND_URL" ]; then
-            echo "::error::BACKEND_URL must be configured when run_e2e=true."
-            exit 1
-          fi
-
-      - name: Run Cypress E2E
-        if: >-
-          ${{
-            github.event_name == 'workflow_dispatch' &&
-            inputs.run_e2e == true &&
-            env.BACKEND_URL != ''
-          }}
-        shell: bash
-        env:
-          CYPRESS_apiUrl: ${{ env.BACKEND_URL }}
-          VITE_BACKEND_URL: ${{ env.BACKEND_URL }}
-        run: |
-          set -euo pipefail
-
-          npx cypress run --config baseUrl="$BACKEND_URL"
-
-      - name: Upload Cypress artifacts
-        if: >-
-          ${{
-            always() &&
-            github.event_name == 'workflow_dispatch' &&
-            inputs.run_e2e == true &&
-            env.BACKEND_URL != ''
-          }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: cypress-artifacts
-          path: |
-            cypress/videos
-            cypress/screenshots
-            cypress/results
-            cypress/report
-          if-no-files-found: ignore
-
-  deploy:
-    name: Deploy frontend to production (manual authorization required)
-    needs: build
-    runs-on: ubuntu-latest
-
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch' &&
-        github.ref == 'refs/heads/main' &&
-        inputs.deploy_production == true
-      }}
-
-    environment:
-      name: production
-
-    env:
-      S3_BUCKET: ${{ secrets.S3_BUCKET }}
-      AWS_ACCESS_KEY_ID_VALUE: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY_VALUE: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_REGION_VALUE: ${{ secrets.AWS_REGION }}
-      CLOUDFRONT_DISTRIBUTION_ID: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
-
-    steps:
-      - name: Validate deployment configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          missing=0
-
-          if [ -z "$S3_BUCKET" ]; then
-            echo "::error::S3_BUCKET is not configured."
-            missing=1
-          fi
-
-          if [ -z "$AWS_ACCESS_KEY_ID_VALUE" ]; then
-            echo "::error::AWS_ACCESS_KEY_ID is not configured."
-            missing=1
-          fi
-
-          if [ -z "$AWS_SECRET_ACCESS_KEY_VALUE" ]; then
-            echo "::error::AWS_SECRET_ACCESS_KEY is not configured."
-            missing=1
-          fi
-
-          if [ -z "$AWS_REGION_VALUE" ]; then
-            echo "::error::AWS_REGION is not configured."
-            missing=1
-          fi
-
-          if [ "$missing" -ne 0 ]; then
-            exit 1
-          fi
-
-          echo "Production frontend deployment configuration is present."
-
-      - name: Download frontend build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-dist
-          path: dist
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID_VALUE }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY_VALUE }}
-          aws-region: ${{ env.AWS_REGION_VALUE }}
-
-      - name: Sync frontend build to S3
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          aws s3 sync \
-            dist \
-            "s3://$S3_BUCKET" \
-            --delete \
-            --acl public-read \
-            --cache-control "public, max-age=31536000, immutable"
-
-          # Ensure index.html is not aggressively cached.
-          aws s3 cp \
-            dist/index.html \
-            "s3://$S3_BUCKET/index.html" \
-            --cache-control "no-cache, no-store, must-revalidate" \
-            --acl public-read
-
-      - name: Invalidate CloudFront cache
-        if: ${{ env.CLOUDFRONT_DISTRIBUTION_ID != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          aws cloudfront create-invalidation \
-            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/*"
+          retention-days: 3

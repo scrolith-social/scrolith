@@ -11,6 +11,13 @@ export type StoryTextFont = {
   fontFamily: string;
 };
 
+export type StoryTextDraft = {
+  textBackground: string;
+  textColor: string;
+  textFont: string;
+  textAlign: 'left' | 'center' | 'right';
+};
+
 export const storyTextThemes: StoryTextTheme[] = [
   {
     id: 'sunset',
@@ -93,7 +100,7 @@ export const getStoryTextStyle = (story: any) => {
   return { background, color, fontFamily, textAlign };
 };
 
-export const getDefaultStoryTextDraft = () => ({
+export const getDefaultStoryTextDraft = (): StoryTextDraft => ({
   textBackground: defaultTheme.background,
   textColor: defaultTheme.textColor,
   textFont: defaultFont.fontFamily,

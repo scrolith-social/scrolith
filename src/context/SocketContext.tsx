@@ -6,8 +6,9 @@ import { useNetworkStatus } from './NetworkStatusContext'
 import { socketService } from '../utils/socket'
 import { tokenStore } from '../services/tokenStore'
 import { getBackendOrigin } from '../utils/apiBase'
+import type { AppDistributionEvent } from '../services/appDistribution'
 
-const trackRuntimeEvent = (eventName: string, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
+const trackRuntimeEvent = (eventName: AppDistributionEvent, payload: Record<string, unknown>, options?: Record<string, unknown>) => {
   void import('../mobile/mobileTelemetry')
     .then(({ trackMobileRuntimeEvent }) => trackMobileRuntimeEvent(eventName, payload, options))
     .catch(() => {})
@@ -288,19 +289,13 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return
     }
 
-    const backendEnv =
-      import.meta.env.VITE_BACKEND_URL ||
-      import.meta.env.VITE_API_URL ||
-      import.meta.env.VITE_API_BASE_URL ||
-      import.meta.env.VITE_MOBILE_API_URL ||
-      import.meta.env.VITE_MOBILE_API_BASE_URL
-    if (import.meta.env.PROD && !backendEnv) {
-      console.error('VITE_BACKEND_URL (or VITE_API_URL) must be set in production to enable sockets')
-    }
     const connectSocket = async () => {
-      // Keep socket origin aligned with the canonical API base resolver so
-      // accidental placeholder domains (e.g. api.example.com) are ignored.
+      // REST and Socket.IO use the same validated deployment target.
       const socketUrl = getBackendOrigin() || ''
+      if (import.meta.env.PROD && !socketUrl) {
+        console.error('Socket.IO is disabled because the production API origin is not configured safely.')
+        return
+      }
       const token = (await tokenStore.get()) || ''
       const nextSignature = buildSocketSignature({
         url: socketUrl,

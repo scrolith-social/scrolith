@@ -430,9 +430,8 @@ export const AdService = {
   saveCampaign: async (campaign: AdCampaign): Promise<void> => {
     if (!campaign.id) {
       // create draft
-      const response = await api.post('/community/ads/draft', toAdPayload(campaign));
-      const data = extractData<AdCampaign>(response);
-      return data;
+      await api.post('/community/ads/draft', toAdPayload(campaign));
+      return;
     }
 
     // For existing campaigns, attempt admin actions based on status
@@ -446,9 +445,8 @@ export const AdService = {
       await api.put(`/community/ads/${campaign.id}`, toAdPayload(campaign));
     } else {
       // fallback: try to POST to draft endpoint
-      const response = await api.post('/community/ads/draft', campaign);
-      const data = extractData<AdCampaign>(response);
-      return data;
+      await api.post('/community/ads/draft', campaign);
+      return;
     }
   },
 

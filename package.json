@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --config ./vite.config.ts",
     "build": "vite build",
+    "typecheck:production": "tsc --noEmit --pretty false --project tsconfig.production.json",
     "preview": "vite preview",
     "desktop:dist": "npm run desktop:dist:nsis && npm run desktop:dist:portable",
     "desktop:dist:nsis": "electron-builder --win nsis --x64 -c.win.artifactName=Scrolith-Desktop-Setup-${version}-${arch}.${ext}",
@@ -43,6 +44,7 @@
     "@capacitor/geolocation": "^8.1.0",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/push-notifications": "^8.0.0",
+    "@google/genai": "^3.2.0",
     "@prisma/client": "^5.22.0",
     "@simplewebauthn/browser": "^14.0.0",
     "@tanstack/react-virtual": "^3.14.6",
@@ -72,6 +74,8 @@
     "@types/express": "^4.17.21",
     "@types/multer": "^1.4.11",
     "@types/node": "^22.14.0",
+    "@types/react": "19.2.3",
+    "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.0",
     "cypress": "^15.9.0",
@@ -84,7 +88,8 @@
     "to-ico": "^1.0.0",
     "tsx": "^4.7.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vitest": "^3.2.4"
   },
   "build": {
     "appId": "com.scrolith.desktop",

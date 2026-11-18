@@ -12,15 +12,12 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { requireLoopbackTestUrl } from './certificationTarget.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const certUrl = requireLoopbackTestUrl(process.env.CERT_BASE_URL, 'CERT_BASE_URL');
 const outDir = join(here, '../playwright-results/phase2116');
 mkdirSync(outDir, { recursive: true });
-
-const certUrl =
-  process.env.CERT_BASE_URL ||
-  process.env.P2115_BASE_URL ||
-  'https://p2115---scrolith-frontend-25ysnpjdda-as.a.run.app';
 
 const report = {
   phase: '21.1.6-android-prep',

@@ -7,17 +7,22 @@ import {
   assertLayoutNoProductOverflow,
   assertPostCardGeometry,
   assertPostCardNoOverflow,
+  assertRequiredPostControls,
   assertSurveyEqualButtons,
   assertTypographyScale,
   collectFeedInventory,
   expandFirstMoreIfPresent,
   measureDocumentOverflowX,
   postCards,
+  REQUIRED_LONG_CONTENT_MARKER,
+  selectCertificationPostCard,
+  skipOrFailWhenFeedFixtureMissing,
   waitForFeed,
   AI_COACH,
   SURVEY,
   TRANSLATABLE
 } from '../helpers/postCard';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 
 test.describe('Member Home — authenticated post card cert', () => {
   test.beforeEach(() => {
@@ -25,6 +30,7 @@ test.describe('Member Home — authenticated post card cert', () => {
   });
 
   test('renders enterprise post cards with design system geometry', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     await assertDesignTokenOnPage(page);
@@ -47,13 +53,17 @@ test.describe('Member Home — authenticated post card cert', () => {
     }
 
     if (count === 0) {
-      test.skip(true, 'No post cards visible — empty feed or auth gate');
+      await skipOrFailWhenFeedFixtureMissing(test, count, 'No post cards visible outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
 
-    const first = cards.first();
+    const first = await selectCertificationPostCard(page, cards.first());
     await assertPostCardGeometry(first);
     await assertTypographyScale(first);
+    await assertRequiredPostControls(first);
     await assertActionRowEqualColumns(first);
     await assertSurveyEqualButtons(first);
     await assertLayoutNoProductOverflow(page, first);
@@ -82,22 +92,30 @@ test.describe('Member Home — authenticated post card cert', () => {
     });
   });
 
-  test('long content does not overflow post card bounds', async ({ page }) => {
+  test('long content does not overflow post card bounds', async ({ page }, testInfo) => {
+    const apiWatch = watchSafeApiEvents(page);
     await page.goto(CERT_ROUTES.memberHome, { waitUntil: 'domcontentloaded' });
     await waitForFeed(page);
     const cards = postCards(page);
     if ((await cards.count()) === 0) {
-      test.skip(true, 'No post cards');
+      await skipOrFailWhenFeedFixtureMissing(test, 0, 'No post cards outside seeded CI runs', async () => {
+        await apiWatch.settle();
+        await writeSafeBrowserEvidence(page, testInfo, 'member_home_feed', apiWatch.events);
+      });
       return;
     }
-    const card = cards.first();
+    const card = await selectCertificationPostCard(page, cards.first());
     const body = card.locator(TRANSLATABLE).first();
-    if ((await body.count()) > 0) {
-      const cardBox = await card.boundingBox();
-      const bodyBox = await body.boundingBox();
-      if (cardBox && bodyBox) {
-        expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 8);
-      }
+    if (process.env.CERT_REQUIRE_FEED_FIXTURES === 'true') {
+      await expect(card).toContainText(REQUIRED_LONG_CONTENT_MARKER);
+      await expect(body).toBeVisible();
+      await expandFirstMoreIfPresent(card);
+      expect((await body.innerText()).length, 'the seeded long-content fixture must remain intact in the rendered post').toBeGreaterThan(500);
+    }
+    const cardBox = await card.boundingBox();
+    const bodyBox = await body.boundingBox();
+    if (cardBox && bodyBox) {
+      expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 8);
     }
     await assertPostCardNoOverflow(card);
     await assertLayoutNoProductOverflow(page, card);

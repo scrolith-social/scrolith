@@ -81,6 +81,7 @@ export interface MarketplaceCategory {
 }
 
 export interface MarketplaceSellerSummary extends Pick<User, 'id' | 'name' | 'username' | 'avatar' | 'role' | 'isVerified' | 'is_verified' | 'joinDate' | 'country' | 'location'> {
+  isActive?: boolean;
   verifiedBadge?: boolean;
   followersCount?: number;
   followingCount?: number;

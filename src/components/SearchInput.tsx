@@ -63,6 +63,8 @@ type SearchSuggestionVisualType =
 
 const normalizeSuggestionVisualType = (suggestion: SearchSuggestion): SearchSuggestionVisualType => {
     const normalizedGroup = normalizeGlobalSearchType((suggestion as any)?.group || suggestion.category || suggestion.type);
+    if (normalizedGroup === 'blogs') return 'posts';
+    if (normalizedGroup === 'groups') return 'pages';
     if (normalizedGroup) return normalizedGroup;
 
     const category = String(suggestion.category || '').trim().toLowerCase();

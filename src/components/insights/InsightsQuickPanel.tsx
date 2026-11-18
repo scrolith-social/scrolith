@@ -793,7 +793,7 @@ export default function InsightsQuickPanel({
             tone: actionKey === 'professional' ? 'professional' : undefined,
             goal
           });
-          if (!result.ok) {
+          if ('message' in result) {
             setCoachStatus(result.message);
             setCoachRetryable(result.retryable);
             return;

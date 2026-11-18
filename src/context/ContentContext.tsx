@@ -170,7 +170,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const headerTagline = (headerConfig as any)?.tagline || (headerConfig as any)?.siteTagline || (headerConfig as any)?.taglineText;
 
       setSettings(prev => {
-        const merged: any = { ...(prev as any) } || {};
+        const merged: any = { ...(prev as any) };
         if (headerFavicon) {
           merged.favicon_url = headerFavicon;
           merged.faviconUrl = headerFavicon;

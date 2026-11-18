@@ -5,7 +5,7 @@
  *
  * Does NOT own ranking — only transport + presentation control plane.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import {
   MemberFeedService,
   type MemberFeedSurface,
@@ -96,10 +96,10 @@ export type UseContinuousFeedResult = {
   pendingNewCount: number;
   applyPendingNew: () => void;
   dismissPendingNew: () => void;
-  setRenderedCount: React.Dispatch<React.SetStateAction<number>>;
+  setRenderedCount: Dispatch<SetStateAction<number>>;
   revealMore: () => void;
-  sentinelRef: React.RefObject<HTMLDivElement | null>;
-  scrollParentRef: React.RefObject<HTMLElement | null>;
+  sentinelRef: RefObject<HTMLDivElement | null>;
+  scrollParentRef: RefObject<HTMLElement | null>;
   retry: () => Promise<void>;
   feedVersion: string;
 };
