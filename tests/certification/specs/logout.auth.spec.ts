@@ -33,7 +33,8 @@ async function signOutFromVisibleNavigation(page: Page) {
     await mobileProfile.click();
     const accountSheet = page.getByRole('dialog', { name: 'Account' });
     await expect(accountSheet).toBeVisible();
-    await accountSheet.getByRole('button', { name: 'Logout', exact: true }).click();
+    // The accessible name includes the visible label and its explanatory text.
+    await accountSheet.getByRole('button', { name: /^Logout\b/ }).click();
     return;
   }
 
