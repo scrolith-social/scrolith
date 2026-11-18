@@ -54,7 +54,22 @@ resource scanner 'Microsoft.App/containerApps@2026-01-01' = {
       containers: [{
         name: 'clamd'
         image: '${registry.properties.loginServer}/scrolith-scanner@sha256:${scannerDigestHex}'
-        resources: { cpu: json('1.5'), memory: '3Gi' }
+        resources: { cpu: json('2.0'), memory: '4Gi' }
+        // Reviewed official ClamAV entrypoint contract. A different scanner image
+        // must implement these limits and signed-definition update settings.
+        env: [
+          { name: 'CLAMD_CONF_StreamMaxLength', value: '250M' }
+          { name: 'CLAMD_CONF_MaxFileSize', value: '250M' }
+          { name: 'CLAMD_CONF_MaxScanSize', value: '500M' }
+          { name: 'CLAMD_CONF_MaxScanTime', value: '120000' }
+          { name: 'CLAMD_CONF_MaxThreads', value: '2' }
+          { name: 'CLAMD_CONF_MaxQueue', value: '4' }
+          { name: 'CLAMD_CONF_ConcurrentDatabaseReload', value: 'no' }
+          { name: 'CLAMD_CONF_AlertExceedsMax', value: 'yes' }
+          { name: 'CLAMD_CONF_SelfCheck', value: '60' }
+          { name: 'FRESHCLAM_CHECKS', value: '12' }
+          { name: 'FRESHCLAM_CONF_TestDatabases', value: 'yes' }
+        ]
         probes: [
           { type: 'Startup', tcpSocket: { port: 3310 }, periodSeconds: 10, failureThreshold: 60 }
           { type: 'Readiness', tcpSocket: { port: 3310 }, periodSeconds: 10 }
@@ -137,6 +152,10 @@ resource jobs 'Microsoft.App/jobs@2026-01-01' = [for (mode, i) in modes: {
           { name: 'CLAMAV_HOST', value: scanner.name }
           { name: 'CLAMAV_PORT', value: '3310' }
           { name: 'CLAMAV_FAIL_OPEN', value: 'false' }
+          // A real local 250 MiB clean scan exceeded the shared 15-second
+          // default. Bound the media scan within the 180-second renewable lease.
+          { name: 'CLAMAV_TIMEOUT_MS', value: '120000' }
+          { name: 'CLAMAV_RETRIES', value: '0' }
         ]
       }]
     }

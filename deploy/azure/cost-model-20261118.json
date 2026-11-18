@@ -30,6 +30,8 @@
     "logBudgetPerGiB": 4,
     "apiReplicas": 1,
     "scannerReplicas": 1,
+    "scannerCpu": 2,
+    "scannerGiB": 4,
     "accountsDiscountsApplied": false,
     "freeGrantsApplied": false,
     "reservationsApplied": false,
