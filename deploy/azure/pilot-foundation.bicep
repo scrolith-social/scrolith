@@ -19,6 +19,14 @@ param redisApiAccessString string
 @description('Enable two-node Managed Redis. Disabling requires a staging-only availability decision.')
 param redisHa bool = true
 
+@allowed([
+  'Balanced_B0'
+  'Balanced_B1'
+])
+@description('Use a SKU that passed Southeast Asia provider capacity and budget review.')
+param redisSku string
+
+
 var location = 'southeastasia'
 var suffix = uniqueString(resourceGroup().id)
 var storageName = '${prefix}${take(suffix, 8)}'
@@ -172,7 +180,7 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-0
 resource redis 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   name: '${prefix}-redis-${take(suffix, 5)}'
   location: location
-  sku: { name: 'Balanced_B0' }
+  sku: { name: redisSku }
   properties: {
     highAvailability: redisHa ? 'Enabled' : 'Disabled'
     minimumTlsVersion: '1.2'

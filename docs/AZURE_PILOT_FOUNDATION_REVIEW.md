@@ -30,9 +30,15 @@ This PR prepares and validates the existing worker image. It does not implement 
 
 References: [Container Apps event-driven jobs](https://learn.microsoft.com/en-us/azure/container-apps/tutorial-event-driven-jobs), [secured Azure Storage queues](https://learn.microsoft.com/en-us/azure/storage/queues/secure-queues), [private DNS names](https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns), [Redis custom ACL preview](https://learn.microsoft.com/en-us/azure/redis/configure-access-permissions).
 
+## Subscription preflight
+
+The subscription reported one Container Apps environment available (0 used of 1) and PostgreSQL quota of 0/256 regional cores, including 0/32 for the burstable family. Provider validation using ARM incremental what-if with synthetic inputs returned exit 1 and `CacheCapacityUnavailable` for Managed Redis Balanced B0 in Southeast Asia. Repeating with Balanced B1 returned the same error with both one- and two-node settings. No Redis SKU in this template has passed capacity validation. The required `redisSku` parameter leaves this choice explicit. The private networking, data-plane roles and workload preview remain open.
+
+Keep the region and security settings fixed until there is an approved alternative. Ask Azure to confirm available capacity for an eligible SKU, then repeat provider validation and reprice the exact SKU. Alternatively, evaluate a different region only after confirming data residency, latency, network design and cost. Do not fall back to public Redis, an unauthenticated cache, or a different provider as an implicit substitute.
+
 ## Monthly planning model (USD)
 
-730 hours, no credits or free grants assumed. API stays at 1 vCPU and 2 GiB. Rates per second are $0.000034 for active CPU, $0.000004 for idle CPU, and $0.000004 per GiB. Active hours include requests and sustained connections. Frontend scales to zero at 0.25 vCPU and 0.5 GiB. Event-driven worker uses 1 vCPU and 2 GiB with zero idle replicas. These are planning workloads, not measured capacity.
+730 hours, no credits or free grants assumed. API stays at 1 vCPU and 2 GiB. Rates per second are $0.000034 for active CPU, $0.000004 for idle CPU, and $0.000004 per GiB. Active hours include requests and sustained connections. Frontend scales to zero at 0.25 vCPU and 0.5 GiB. Event-driven worker uses 1 vCPU and 2 GiB with zero idle replicas. These are planning workloads, not measured capacity. The B0-based model is a cost comparison because the current provider preview rejects B0.
 
 | Component | Minimal staging | Initial production | Sustained activity |
 |---|---:|---:|---:|
