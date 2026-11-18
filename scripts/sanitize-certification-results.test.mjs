@@ -33,7 +33,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
 
   const scenarios = [
     { title: 'passed', status: 'expected', expectedStatus: 'passed', results: [{ status: 'passed', duration: 1 }] },
-    { title: 'failed', status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'failed', duration: 2, errors: [{ message: 'SYNTHETIC_STACK' }] }] },
+    { title: 'failed', status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'failed', duration: 2, errors: [{ message: 'locator.click: button intercepts pointer events token=SYNTHETIC_TOKEN' }] }] },
     { title: 'timed out', status: 'unexpected', expectedStatus: 'passed', results: [{ status: 'timedOut', duration: 3 }] },
     { title: 'skipped', status: 'skipped', expectedStatus: 'skipped', annotations: [{ type: 'skip', description: 'requires local auth' }], results: [{ status: 'skipped' }] },
     { title: 'flaky', status: 'flaky', expectedStatus: 'passed', results: [{ status: 'failed' }, { status: 'passed', duration: 4 }] }
@@ -145,6 +145,33 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     pageState: { route: 'login', storedUserPresent: false, approvalDialogCount: 1 },
     apiEvents: [{ kind: 'response', route: 'approval_list', method: 'GET', status: 200 }]
   }));
+  writeFileSync(join(safeEvidenceRoot, 'logout-iphone-15.json'), JSON.stringify({
+    schemaVersion: 1,
+    scenario: 'logout',
+    project: 'iphone-15',
+    testIdHash: 'abcdef123456',
+    pageState: {
+      route: 'member_home',
+      safePath: '/member-home',
+      responsiveNavigation: {
+        viewportWidth: 393,
+        mobileProfileVisible: true,
+        desktopAccountMenuVisible: true,
+        mobileQuickMenuVisible: true,
+        accountSheetVisible: false,
+        desktopAccountMenuHitTarget: 'mobile_quick_menu',
+        accountName: 'SENSITIVE_SYNTHETIC_ACCOUNT'
+      }
+    },
+    apiEvents: [{
+      kind: 'response',
+      route: 'logout',
+      method: 'POST',
+      status: 200,
+      url: 'http://127.0.0.1/api/auth/logout?token=SYNTHETIC_TOKEN',
+      headers: { authorization: 'Bearer SYNTHETIC_TOKEN' }
+    }]
+  }));
 
   try {
     execFileSync(process.execPath, [sanitizerPath], {
@@ -170,6 +197,7 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       unknown: 0
     });
     assert.equal(summary.tests.some((item) => item.run === 'iphone-15_member-home'), true);
+    assert.equal(summary.tests.find((item) => item.status === 'failed')?.failureKind, 'ui_interception');
     const sanitizedSynthetic = JSON.parse(readFileSync(join(outputRoot, 'synthetic.json'), 'utf8'));
     assert.equal(sanitizedSynthetic.pageState.authenticatedStoragePresent, true);
     assert.equal(sanitizedSynthetic.pageState.localTokenKeyPresent, true);
@@ -201,10 +229,27 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
     assert.equal(sanitizedSynthetic.diagnostics.approvalPolling.matchingAttemptResponses, 1);
     assert.equal(Object.hasOwn(sanitizedSynthetic.diagnostics.approvalPolling, 'attemptId'), false);
     assert.equal(existsSync(join(outputRoot, 'iphone-15_member-home__device-approval-iphone-15.json')), true);
+    const sanitizedLogout = JSON.parse(readFileSync(join(outputRoot, 'logout-iphone-15.json'), 'utf8'));
+    assert.deepEqual(sanitizedLogout.pageState.responsiveNavigation, {
+      viewportWidth: 393,
+      mobileProfileVisible: true,
+      desktopAccountMenuVisible: true,
+      mobileQuickMenuVisible: true,
+      accountSheetVisible: false,
+      desktopAccountMenuHitTarget: 'mobile_quick_menu'
+    });
+    assert.deepEqual(sanitizedLogout.networkTrace, [{
+      sequence: 1,
+      kind: 'response',
+      route: 'logout',
+      method: 'POST',
+      status: 200
+    }]);
     const manifest = JSON.parse(readFileSync(join(outputRoot, 'manifest.json'), 'utf8'));
     assert.equal(manifest.isolatedRunCount, 2);
     const evidenceManifest = JSON.parse(readFileSync(join(outputRoot, 'evidence-manifest.json'), 'utf8'));
     assert.equal(evidenceManifest.files.some((item) => item.name === 'iphone-15_member-home__device-approval-iphone-15.json'), true);
+    assert.equal(evidenceManifest.files.some((item) => item.name === 'logout-iphone-15.json' && item.type === 'sanitized_network_trace_and_responsive_navigation'), true);
 
     const safeOutput = listFiles(outputRoot).map((path) => readFileSync(path, 'utf8')).join('\n');
     for (const marker of [
@@ -217,7 +262,8 @@ test('sanitizer reports Playwright outcomes and strips unapproved evidence field
       'SENSITIVE_SYNTHETIC_USER_ID',
       'RAW_TEST_OUTPUT_MUST_NOT_BE_READ',
       'RAW_HTML_REPORT_MUST_NOT_BE_READ',
-      'http://127.0.0.1/private'
+      'http://127.0.0.1/private',
+      'SENSITIVE_SYNTHETIC_ACCOUNT'
     ]) {
       assert.equal(safeOutput.includes(marker), false, `sanitized output leaked ${marker}`);
     }

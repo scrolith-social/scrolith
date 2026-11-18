@@ -3,10 +3,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page, TestInfo } from '@playwright/test';
 
-type SafeApiEvent = {
+export type SafeApiEvent = {
   kind: 'response' | 'request_failed';
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OTHER';
-  route: 'feed' | 'auth_me' | 'follow_onboarding' | 'login' | 'approval_list' | 'approval_exchange' | 'notifications' | 'human_verification';
+  route: 'feed' | 'auth_me' | 'follow_onboarding' | 'login' | 'logout' | 'approval_list' | 'approval_exchange' | 'notifications' | 'human_verification';
   status?: number;
   durationMs?: number;
   failure?: 'timeout' | 'connection' | 'aborted' | 'other';
@@ -22,6 +22,7 @@ const SAFE_ROUTES = new Map<string, SafeApiEvent['route']>([
   ['/api/auth/me', 'auth_me'],
   ['/api/auth/follow-onboarding', 'follow_onboarding'],
   ['/api/auth/login', 'login'],
+  ['/api/auth/logout', 'logout'],
   ['/api/security/login-approvals/pending', 'approval_list'],
   ['/api/auth/login/approval/exchange', 'approval_exchange'],
   ['/api/notifications', 'notifications'],
@@ -153,7 +154,7 @@ export function watchSafeApiEvents(page: Page): SafeApiWatch {
 export async function writeSafeBrowserEvidence(
   page: Page,
   testInfo: TestInfo,
-  scenario: 'device_approval' | 'member_home_feed' | 'notifications' | 'signup_hv',
+  scenario: 'device_approval' | 'member_home_feed' | 'notifications' | 'signup_hv' | 'logout',
   apiEvents: SafeApiEvent[],
   diagnostics?: SafeBrowserDiagnostics
 ) {
@@ -202,6 +203,30 @@ export async function writeSafeBrowserEvidence(
         }
       })();
       const path = location.pathname;
+      const isVisible = (element: Element | null) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+      };
+      const mobileProfile = document.querySelector('button[aria-label="Open profile"]');
+      const desktopAccountMenu = document.querySelector('button[aria-label="Open account menu"]');
+      const mobileQuickMenu = document.querySelector('button[aria-label="Open menu"]');
+      const desktopMenuRect = desktopAccountMenu?.getBoundingClientRect();
+      const desktopMenuHit = desktopMenuRect && desktopMenuRect.width > 0 && desktopMenuRect.height > 0
+        ? document.elementFromPoint(desktopMenuRect.left + desktopMenuRect.width / 2, desktopMenuRect.top + desktopMenuRect.height / 2)?.closest('button')
+        : null;
+      const hitLabel = desktopMenuHit?.getAttribute('aria-label');
+      const desktopAccountMenuHitTarget = hitLabel === 'Open account menu'
+        ? 'desktop_account_menu'
+        : hitLabel === 'Open profile'
+          ? 'mobile_profile'
+          : hitLabel === 'Open menu'
+            ? 'mobile_quick_menu'
+            : desktopMenuHit
+              ? 'other_control'
+              : 'none';
+      const accountSheet = document.querySelector('[role="dialog"][aria-label="Account"]');
       const safePath = ['/', '/member-home', '/m/home', '/auth/follow-onboarding', '/auth/login', '/auth/signup'].includes(path)
         ? path
         : 'other';
@@ -245,10 +270,18 @@ export async function writeSafeBrowserEvidence(
         loadingIndicatorCount: count('[aria-busy="true"], [role="progressbar"], [data-testid*="loading"]'),
         alertCount: count('[role="alert"]'),
         approvalDialogCount: count('[role="dialog"]'),
+        responsiveNavigation: {
+          viewportWidth: Math.min(2400, Math.max(0, Math.round(window.innerWidth))),
+          mobileProfileVisible: isVisible(mobileProfile),
+          desktopAccountMenuVisible: isVisible(desktopAccountMenu),
+          mobileQuickMenuVisible: isVisible(mobileQuickMenu),
+          accountSheetVisible: isVisible(accountSheet),
+          desktopAccountMenuHitTarget
+        },
         documentBodyPresent: Boolean(document.body)
       };
     })
-    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, localTokenKeyPresent: false, localAccessTokenKeyPresent: false, localScrolithTokenKeyPresent: false, tokenCookiePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, clientAuthState: 'unavailable', clientFollowOnboardingRequired: 'unavailable', followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, documentBodyPresent: false }));
+    .catch(() => ({ route: 'unavailable', safePath: 'other', readyState: 'unavailable', visibility: 'unavailable', authenticatedStoragePresent: false, localTokenKeyPresent: false, localAccessTokenKeyPresent: false, localScrolithTokenKeyPresent: false, tokenCookiePresent: false, storedUserPresent: false, storedUserIdPresent: false, storedUserOnboardingFlagPresent: false, storedUserOnboardingRequired: false, clientAuthState: 'unavailable', clientFollowOnboardingRequired: 'unavailable', followOnboardingRoute: false, memberHomeMarkerCount: 0, mobileHomeMarkerCount: 0, postCardCount: 0, mainCount: 0, loginFormCount: 0, loadingIndicatorCount: 0, alertCount: 0, approvalDialogCount: 0, responsiveNavigation: { viewportWidth: 0, mobileProfileVisible: false, desktopAccountMenuVisible: false, mobileQuickMenuVisible: false, accountSheetVisible: false, desktopAccountMenuHitTarget: 'none' }, documentBodyPresent: false }));
 
   const sanitizedEvents = apiEvents.slice(-120).map((event) => ({ ...event }));
   const evidencePath = join(safeDir, `${stem}.json`);

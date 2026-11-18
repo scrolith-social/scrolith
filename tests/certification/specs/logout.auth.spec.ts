@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { CERT_BASE_URL, requireAuthOrSkip } from '../helpers/env';
+import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
+import type { SafeApiWatch } from '../helpers/safeEvidence';
 
 const CERT_API_BASE = process.env.CERT_API_BASE || '';
 
@@ -18,15 +20,16 @@ const isLoopback = (value: string) => {
 };
 
 async function signOutFromVisibleNavigation(page: Page) {
-  const desktopAccountMenu = page.getByRole('button', { name: 'Open account menu', exact: true });
-  const mobileProfile = page.getByRole('button', { name: 'Open profile', exact: true });
+  const viewport = page.viewportSize();
+  const mobileViewport = Boolean(viewport && viewport.width < 768);
 
-  await expect(
-    desktopAccountMenu.or(mobileProfile).first(),
-    'the authenticated app must expose its responsive account navigation'
-  ).toBeVisible({ timeout: 30_000 });
-
-  if (await mobileProfile.isVisible()) {
+  if (mobileViewport) {
+    // MobileHome is lazy-loaded after the authenticated entry route resolves.
+    // Do not select the desktop navbar while that responsive shell is mounting:
+    // its profile button can sit beneath the mobile quick-menu hit target.
+    await expect(page.getByTestId('scrolith-mobile-home'), 'mobile account navigation requires the signed-in mobile home shell').toBeVisible({ timeout: 30_000 });
+    const mobileProfile = page.getByRole('button', { name: 'Open profile', exact: true });
+    await expect(mobileProfile, 'mobile logout must use the mobile profile control').toBeVisible({ timeout: 30_000 });
     await mobileProfile.click();
     const accountSheet = page.getByRole('dialog', { name: 'Account' });
     await expect(accountSheet).toBeVisible();
@@ -34,14 +37,32 @@ async function signOutFromVisibleNavigation(page: Page) {
     return;
   }
 
-  await expect(desktopAccountMenu, 'desktop logout must use the account menu').toBeVisible();
+  const desktopAccountMenu = page.getByRole('button', { name: 'Open account menu', exact: true });
+  await expect(desktopAccountMenu, 'desktop logout must use the desktop account menu').toBeVisible({ timeout: 30_000 });
   await desktopAccountMenu.click();
   await page.getByRole('menu', { name: 'Account menu' }).getByRole('button', { name: /^sign out$/i }).click();
 }
 
 test.describe('Logout revokes the current authenticated session', () => {
+  const safeApiWatchByPage = new WeakMap<Page, SafeApiWatch>();
+
   test.beforeEach(() => {
     requireAuthOrSkip(test);
+  });
+
+  test.beforeEach(({ page }) => {
+    safeApiWatchByPage.set(page, watchSafeApiEvents(page));
+  });
+
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const safeApiWatch = safeApiWatchByPage.get(page);
+    await safeApiWatch?.settle();
+    try {
+      await writeSafeBrowserEvidence(page, testInfo, 'logout', safeApiWatch?.events ?? []);
+    } catch {
+      // Preserve the original assertion failure if local evidence cannot be written.
+    }
   });
 
   test('network failure signs out locally and clearly reports that server revocation was not confirmed', async ({ page, request }) => {

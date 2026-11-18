@@ -48,6 +48,7 @@ function findFiles(root, predicate, files = []) {
 }
 const classifyError = (value) => {
   const text = String(value || '');
+  if (/intercepts pointer events|intercepted by .*button/i.test(text)) return 'ui_interception';
   if (/timeout|timed out/i.test(text)) return 'timeout';
   if (/expected:|received:|toBe|toEqual|assert/i.test(text)) return 'assertion';
   return 'test_error';
@@ -136,8 +137,8 @@ writeFileSync(join(outputRoot, 'test-summary.json'), JSON.stringify({ schemaVers
 
 const safeEvidencePaths = findFiles(resultsRoot, (path) => basename(dirname(path)) === 'safe-evidence');
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const allowedRoutes = new Set(['feed', 'auth_me', 'follow_onboarding', 'login', 'approval_list', 'approval_exchange', 'notifications', 'human_verification']);
-const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications', 'signup_hv']);
+const allowedRoutes = new Set(['feed', 'auth_me', 'follow_onboarding', 'login', 'logout', 'approval_list', 'approval_exchange', 'notifications', 'human_verification']);
+const allowedScenarios = new Set(['device_approval', 'member_home_feed', 'notifications', 'signup_hv', 'logout']);
 const allowedFailureKinds = new Set(['timeout', 'connection', 'aborted', 'other']);
 const evidenceManifest = [];
 
@@ -186,11 +187,27 @@ for (const source of safeEvidencePaths) {
       loadingIndicatorCount: Number.isInteger(counts.loadingIndicatorCount) ? Math.max(0, counts.loadingIndicatorCount) : 0,
       alertCount: Number.isInteger(counts.alertCount) ? Math.max(0, counts.alertCount) : 0,
       approvalDialogCount: Number.isInteger(counts.approvalDialogCount) ? Math.max(0, counts.approvalDialogCount) : 0,
+      responsiveNavigation: (() => {
+        const navigation = counts.responsiveNavigation && typeof counts.responsiveNavigation === 'object'
+          ? counts.responsiveNavigation
+          : {};
+        const allowedHitTargets = new Set(['desktop_account_menu', 'mobile_profile', 'mobile_quick_menu', 'other_control', 'none']);
+        return {
+          viewportWidth: Number.isInteger(navigation.viewportWidth) ? Math.min(2400, Math.max(0, navigation.viewportWidth)) : 0,
+          mobileProfileVisible: navigation.mobileProfileVisible === true,
+          desktopAccountMenuVisible: navigation.desktopAccountMenuVisible === true,
+          mobileQuickMenuVisible: navigation.mobileQuickMenuVisible === true,
+          accountSheetVisible: navigation.accountSheetVisible === true,
+          desktopAccountMenuHitTarget: allowedHitTargets.has(navigation.desktopAccountMenuHitTarget)
+            ? navigation.desktopAccountMenuHitTarget
+            : 'none'
+        };
+      })(),
       documentBodyPresent: counts.documentBodyPresent === true
     };
-    const apiEvents = (Array.isArray(raw.apiEvents) ? raw.apiEvents : []).slice(-120).flatMap((event) => {
+    const apiEvents = (Array.isArray(raw.apiEvents) ? raw.apiEvents : []).slice(-120).flatMap((event, index) => {
       if (!allowedRoutes.has(event.route) || !['response', 'request_failed'].includes(event.kind)) return [];
-      const item = { kind: event.kind, route: event.route, method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(event.method) ? event.method : 'OTHER' };
+      const item = { sequence: index + 1, kind: event.kind, route: event.route, method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(event.method) ? event.method : 'OTHER' };
       if (Number.isInteger(event.status) && event.status >= 100 && event.status <= 599) item.status = event.status;
       if (Number.isFinite(event.durationMs)) item.durationMs = Math.max(0, Math.round(event.durationMs));
       if (allowedFailureKinds.has(event.failure)) item.failure = event.failure;
@@ -223,10 +240,11 @@ for (const source of safeEvidencePaths) {
       testIdHash: /^[a-f0-9]{12}$/.test(raw.testIdHash) ? raw.testIdHash : undefined,
       pageState,
       apiEvents,
+      networkTrace: apiEvents,
       ...(approvalPolling ? { diagnostics: { approvalPolling } } : {})
     };
     writeFileSync(dest, JSON.stringify(sanitized, null, 2), 'utf8');
-    evidenceManifest.push({ name: safeName, type: 'safe_network_and_dom_diagnostics' });
+    evidenceManifest.push({ name: safeName, type: raw.scenario === 'logout' ? 'sanitized_network_trace_and_responsive_navigation' : 'safe_network_and_dom_diagnostics' });
   } catch {
     // Unknown or malformed evidence is excluded rather than copied raw.
   }
