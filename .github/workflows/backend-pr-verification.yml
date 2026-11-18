@@ -148,6 +148,19 @@ jobs:
         working-directory: geezle
         run: npx playwright install --with-deps chromium webkit
 
+      - name: Repeat auth readiness regression in Chromium and WebKit
+        working-directory: geezle
+        env:
+          CERT_BASE_URL: http://127.0.0.1:5173
+          CERT_API_BASE: http://127.0.0.1:5000/api
+          CERT_STORAGE_STATE: ${{ runner.temp }}/auth-readiness-unused-state.json
+          CERT_RESULTS_DIR: ${{ runner.temp }}/scrolith-auth-readiness
+        run: >-
+          node node_modules/@playwright/test/cli.js test
+          --config tests/certification/playwright.config.ts
+          --no-deps --repeat-each=3 --retries=0
+          tests/certification/specs/auth-readiness.local.spec.ts
+
       - name: Test loopback-only authenticated feed preflight
         working-directory: geezle-backend
         run: node --test scripts/verify-certification-feed.test.mjs
