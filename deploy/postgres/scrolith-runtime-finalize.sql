@@ -412,6 +412,13 @@ BEGIN
 END
 $mark_policy_finalized$;
 
+SELECT to_regclass(format('%I.azure_media_jobs', :'application_schema')) IS NOT NULL AS media_outbox_installed \gset
+\if :media_outbox_installed
+-- API may create an authoritative request but cannot forge completion or reset retries.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE :"application_schema".azure_media_jobs FROM :"runtime_role";
+GRANT INSERT (id,file_id,generation,kind) ON TABLE :"application_schema".azure_media_jobs TO :"runtime_role";
+\endif
+
 COMMIT;
 
 SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole,

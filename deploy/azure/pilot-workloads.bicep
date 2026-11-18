@@ -35,6 +35,21 @@ param migratorDatabaseVersion string
 @description('Deploy the migration job first. Enable apps only after successful migration, role finalization and data-plane verification.')
 param startApplications bool = false
 
+@description('Off until queue/scanner/roles are deployed and accepted in private staging.')
+param enableAzureMedia bool = false
+@minLength(64)
+@maxLength(64)
+param mediaWorkerDigestHex string
+@minLength(64)
+@maxLength(64)
+param scannerDigestHex string
+@minLength(32)
+@maxLength(32)
+param dispatcherDatabaseVersion string
+@minLength(32)
+@maxLength(32)
+param workerDatabaseVersion string
+
 var location = 'southeastasia'
 var suffix = uniqueString(resourceGroup().id)
 var apiName = '${prefix}-api'
@@ -155,6 +170,7 @@ resource migrator 'Microsoft.App/jobs@2026-01-01' = {
 module api './api-containerapp-single-replica.bicep' = if (startApplications) {
   name: '${prefix}-api-workload'
   params: {
+    enableAzureMedia: enableAzureMedia
     apiAppName: apiName
     location: location
     managedEnvironmentResourceId: aca.id
@@ -235,3 +251,14 @@ resource frontend 'Microsoft.App/containerApps@2026-01-01' = if (startApplicatio
 output apiUrl string = apiOrigin
 output frontendUrl string = webOrigin
 output migrationJobId string = migrator.id
+
+module media './pilot-media.bicep' = if (startApplications && enableAzureMedia) {
+  name: 'private-media-workloads'
+  params: {
+    prefix: prefix
+    workerDigestHex: mediaWorkerDigestHex
+    scannerDigestHex: scannerDigestHex
+    dispatcherDatabaseVersion: dispatcherDatabaseVersion
+    workerDatabaseVersion: workerDatabaseVersion
+  }
+}

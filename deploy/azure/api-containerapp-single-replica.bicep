@@ -1,5 +1,8 @@
 targetScope = 'resourceGroup'
 
+@description('Enable only after private scanner, roles, outbox migration and queue acceptance pass.')
+param enableAzureMedia bool = false
+
 @description('Name of the already-approved API Container App.')
 param apiAppName string
 
@@ -156,9 +159,9 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'NODE_ENV', value: 'production' }
             { name: 'PORT', value: '5000' }
             { name: 'SCROLITH_MONEY_MOVEMENT_ENABLED', value: 'false' }
-            { name: 'MEDIA_PROCESSING_MODE', value: 'disabled' }
-            { name: 'MEDIA_IMAGE_PROCESSING_ENABLED', value: 'false' }
-            { name: 'MEDIA_VIDEO_PROCESSING_ENABLED', value: 'false' }
+            { name: 'MEDIA_PROCESSING_MODE', value: enableAzureMedia ? 'azure_queue' : 'disabled' }
+            { name: 'MEDIA_IMAGE_PROCESSING_ENABLED', value: string(enableAzureMedia) }
+            { name: 'MEDIA_VIDEO_PROCESSING_ENABLED', value: string(enableAzureMedia) }
             { name: 'EXTERNAL_PLATFORM_API_ENABLED', value: 'false' }
             { name: 'REDIS_RATE_LIMIT_FAIL_CLOSED', value: 'true' }
             { name: 'FRONTEND_URL', value: frontendOrigin }

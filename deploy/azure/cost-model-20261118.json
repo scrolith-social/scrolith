@@ -1,0 +1,40 @@
+{
+  "asOf": "2026-11-18",
+  "currency": "USD",
+  "region": "southeastasia",
+  "hours": 730,
+  "contingency": 0.2,
+  "retailSource": "https://prices.azure.com/api/retail/prices",
+  "rates": {
+    "acaCpuSecond": 0.000034,
+    "acaGiBSecond": 0.000004,
+    "postgresB1msHour": 0.026,
+    "postgresD2dsHour": 0.244,
+    "redisB3NodeHour": 0.081,
+    "redisM10NodeHour": 0.268,
+    "redisB10NodeHour": 0.391,
+    "acrPremiumDay": 1.6666,
+    "blobHotLrsGiBMonth": 0.02,
+    "vmD4asHour": 0.216,
+    "bastionBasicHour": 0.19
+  },
+  "provisionalRates": {
+    "privateEndpointHour": 0.01,
+    "natHour": 0.045,
+    "publicIpHour": 0.005
+  },
+  "assumptions": {
+    "privateEndpoints": 5,
+    "operatorVmHours": 730,
+    "osDiskBudget": 15,
+    "logBudgetPerGiB": 4,
+    "apiReplicas": 1,
+    "scannerReplicas": 1,
+    "accountsDiscountsApplied": false,
+    "freeGrantsApplied": false,
+    "reservationsApplied": false,
+    "redisCapacityValidated": false,
+    "scannerDigestReviewed": false,
+    "paidProvisioningAuthorized": false
+  }
+}

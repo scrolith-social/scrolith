@@ -3639,6 +3639,8 @@ model File {
   createdAt                  DateTime                  @default(now()) @map("created_at")
   usages                     FileUsage[]
   variants                   FileVariant[]
+  mediaJobs                  AzureMediaJob[]
+  mediaScanRequired          Boolean                   @default(false) @map("media_scan_required")
   voiceNotes                 VoiceNote[]
   marketplaceMedia           MarketplaceListingMedia[]
 
@@ -8425,4 +8427,27 @@ model AILearningSignal {
 
   @@index([userId, createdAt])
   @@index([type, createdAt])
+}
+
+/// Azure-only transactional outbox and fenced processing state. Queue messages carry only id.
+model AzureMediaJob {
+  id               String    @id @default(uuid())
+  fileId           String    @map("file_id")
+  generation       Int
+  kind             String
+  status           String    @default("PENDING")
+  attempts         Int       @default(0)
+  fence            Int       @default(0)
+  leaseUntil       DateTime? @map("lease_until")
+  nextAt           DateTime  @default(now()) @map("next_at")
+  lastDispatchedAt DateTime? @map("last_dispatched_at")
+  errorCode        String?   @map("error_code")
+  sourceSha256     String?   @map("source_sha256")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+  file             File      @relation(fields: [fileId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([fileId, generation, kind])
+  @@index([status, nextAt])
+  @@map("azure_media_jobs")
 }

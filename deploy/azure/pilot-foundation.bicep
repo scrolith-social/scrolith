@@ -22,6 +22,10 @@ param redisHa bool = true
 @allowed([
   'Balanced_B0'
   'Balanced_B1'
+  'Balanced_B3'
+  'Balanced_B5'
+  'Balanced_B10'
+  'MemoryOptimized_M10'
 ])
 @description('Use a SKU that passed Southeast Asia provider capacity and budget review.')
 param redisSku string
@@ -274,6 +278,7 @@ resource vault 'Microsoft.KeyVault/vaults@2024-11-01' = {
 }
 
 var privateServices = [
+  { group: 'queue', zone: 'privatelink.queue.${environment().suffixes.storage}', id: blob.id }
   { group: 'blob', zone: 'privatelink.blob.${environment().suffixes.storage}', id: blob.id }
   { group: 'redisEnterprise', zone: 'privatelink.redis.azure.net', id: redis.id }
   { group: 'registry', zone: 'privatelink.azurecr.io', id: registry.id }
@@ -293,7 +298,7 @@ module privateEndpoints './pilot-private-endpoint.bicep' = [for service in priva
   }
 }]
 
-var identityKinds = ['pull', 'api', 'migrator', 'redis']
+var identityKinds = ['pull', 'api', 'migrator', 'redis', 'media-dispatch', 'media-worker', 'media-scale']
 resource identities 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = [for kind in identityKinds: {
   name: '${prefix}-${kind}'
   location: location
@@ -341,3 +346,85 @@ output pullIdentityId string = identities[0].id
 output apiIdentityId string = identities[1].id
 output migratorIdentityId string = identities[2].id
 output redisIdentityId string = identities[3].id
+
+// Private durable transport. API writes PostgreSQL outbox only; no queue role.
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2025-01-01' = {
+  parent: blob
+  name: 'default'
+}
+resource mediaQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2025-01-01' = {
+  parent: queueService
+  name: 'media-processing'
+}
+resource poisonQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2025-01-01' = {
+  parent: queueService
+  name: 'media-review'
+}
+resource mediaQueueRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: guid(resourceGroup().id, 'ScrolithMediaLeaseProcessor-v1')
+  properties: {
+    roleName: format('{0} media receive renew delete', prefix)
+    description: 'Message-only access; Update Message requires messages/write. No queue management.'
+    type: 'CustomRole'
+    assignableScopes: [resourceGroup().id]
+    permissions: [{
+      actions: []
+      notActions: []
+      dataActions: [
+        'Microsoft.Storage/storageAccounts/queueServices/queues/messages/read'
+        'Microsoft.Storage/storageAccounts/queueServices/queues/messages/process/action'
+        'Microsoft.Storage/storageAccounts/queueServices/queues/messages/write'
+      ]
+      notDataActions: []
+    }]
+  }
+}
+resource dispatchSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: mediaQueue
+  name: guid(mediaQueue.id, identities[4].id, 'sender')
+  properties: {
+    principalId: identities[4].properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')
+  }
+}
+resource workerProcessor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: mediaQueue
+  name: guid(mediaQueue.id, identities[5].id, 'lease-processor')
+  properties: {
+    principalId: identities[5].properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: mediaQueueRole.id
+  }
+}
+resource workerPoisonSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: poisonQueue
+  name: guid(poisonQueue.id, identities[5].id, 'sender')
+  properties: {
+    principalId: identities[5].properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a')
+  }
+}
+resource mediaScaleReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: mediaQueue
+  name: guid(mediaQueue.id, identities[6].id, 'reader')
+  properties: {
+    principalId: identities[6].properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '19e7f393-937e-4f77-808e-94535e297925')
+  }
+}
+resource workerBlob 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: uploads
+  name: guid(uploads.id, identities[5].id, 'blob-contributor')
+  properties: {
+    principalId: identities[5].properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+output queueAccountUrl string = blob.properties.primaryEndpoints.queue
+output dispatchIdentityId string = identities[4].id
+output mediaWorkerIdentityId string = identities[5].id
+output mediaScaleIdentityId string = identities[6].id

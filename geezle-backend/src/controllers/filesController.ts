@@ -1,3 +1,5 @@
+import { azureMediaEnabled, azureMediaKind, recordAzureMediaRequest } from '../services/media/azureMediaOutbox';
+import { azureMediaPublicationAllowed } from '../services/media/azureMediaPublication';
 import type { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -1939,6 +1941,8 @@ export const serveFileContent = async (req: Request, res: Response) => {
 
     const fileSelect = {
       id: true,
+      mediaScanRequired: true,
+      processingVersion: true,
       ownerId: true,
       filename: true,
       originalName: true,
@@ -2339,6 +2343,11 @@ export const serveFileContent = async (req: Request, res: Response) => {
         (await canRequesterAccessPrivateMessengerFile(file.id, String(requester?.id || ''))));
     if (isPrivate && !canAccessPrivate && !canServeAsPublicIdentityPhoto) {
       res.status(403).json({ success: false, error: 'You do not have access to this file' });
+      return;
+    }
+
+    if (!await azureMediaPublicationAllowed(file)) {
+      res.status(423).json({ success: false, error: 'MEDIA_SCAN_PENDING_OR_REJECTED' });
       return;
     }
 
@@ -3223,7 +3232,9 @@ const persistUploadedFile = async (params: {
       azureUploadedKeys.push(storageKey);
       filename = path.basename(storageKey);
       url = buildFileContentUrl(fileId, baseUrl);
-      mediaMetadata = await buildMediaMetadataForAzure({ ...file, mimetype: normalizedMimeType }, storageKey, baseUrl);
+      // Azure queued originals stay quarantined; decode only after a real clean scan.
+      mediaMetadata = azureMediaKind(normalizedMimeType) ? { width: null, height: null, duration: null, thumbnailRelativePath: null, thumbnailUrl: null } :
+        await buildMediaMetadataForAzure({ ...file, mimetype: normalizedMimeType }, storageKey, baseUrl);
       const thumbnailBlobName = extractBlobNameFromUrl(mediaMetadata.thumbnailUrl || '');
       if (thumbnailBlobName) azureUploadedKeys.push(thumbnailBlobName);
       safeUnlink(file.path);
@@ -3255,9 +3266,9 @@ const persistUploadedFile = async (params: {
 
   let created: any;
   try {
-    const createRecord = () => prisma.file.create({
-      data: {
+    const fileData = {
         id: fileId,
+        mediaScanRequired: Boolean(azureMediaKind(normalizedMimeType)),
         ownerId: userId || null,
         ownerRole,
         filename,
@@ -3273,8 +3284,14 @@ const persistUploadedFile = async (params: {
         duration: mediaMetadata.duration,
         visibility,
         createdAt: now
-      }
-    });
+    };
+    const createRecord = () => azureMediaEnabled()
+      ? prisma.$transaction(async tx => {
+          const row = await tx.file.create({ data: fileData });
+          await recordAzureMediaRequest(tx, row);
+          return row;
+        })
+      : prisma.file.create({ data: fileData });
     created = storageProvider === AZURE_BLOB_STORAGE_PROVIDER
       ? await createRecordWithAzureUploadCleanup({
           createRecord,
@@ -3308,7 +3325,7 @@ const persistUploadedFile = async (params: {
     // Queue abstraction only — Cloud Tasks can replace the queue implementation later
     // without changing this call site (see mediaProcessing.enqueue + mediaProcessingQueue).
     const { enqueueMediaProcessingSafe } = require('../services/media/mediaProcessing.enqueue');
-    void enqueueMediaProcessingSafe(created.id, {
+    if (!azureMediaEnabled()) void enqueueMediaProcessingSafe(created.id, {
       mimeType: created.mimeType,
       category
     });

@@ -5,6 +5,7 @@ jest.mock('../../utils/prismaClient', () => ({
   __esModule: true,
   default: {
     file: { findUnique: jest.fn(), findFirst: jest.fn() },
+    azureMediaJob: { findFirst: jest.fn() },
     fileUsage: { count: jest.fn(), findMany: jest.fn() },
     marketplaceListingMedia: { count: jest.fn() },
     communityBusinessPage: { count: jest.fn() },
@@ -44,6 +45,10 @@ describe('Azure private Blob file authorization', () => {
       size: 12,
       url: '/api/files/content/private-file-test-id'
     });
+    (prisma.user.count as jest.Mock).mockResolvedValue(0);
+    (prisma.profile.count as jest.Mock).mockResolvedValue(0);
+    (prisma.communityBusinessPage.count as jest.Mock).mockResolvedValue(0);
+    (prisma.fileUsage.findMany as jest.Mock).mockResolvedValue([]);
     (prisma.fileUsage.count as jest.Mock).mockResolvedValue(0);
     (prisma.marketplaceListingMedia.count as jest.Mock).mockResolvedValue(0);
   });
@@ -73,4 +78,19 @@ describe('Azure private Blob file authorization', () => {
     expect(mockBlobProperties).not.toHaveBeenCalled();
     expect(mockBlobRead).not.toHaveBeenCalled();
   });
+  it('blocks an authorized owner from reading an unscanned Azure upload', async () => {
+    (prisma.file.findUnique as jest.Mock).mockResolvedValue({
+      id:'quarantined-file',ownerId:'owner-test-id',filename:'synthetic.png',originalName:'synthetic.png',
+      mimeType:'image/png',visibility:'PRIVATE',storageProvider:'azure_blob',storageKey:'private/synthetic.png',
+      size:12,url:'/api/files/content/quarantined-file',mediaScanRequired:true,processingVersion:0
+    });
+    (prisma.azureMediaJob.findFirst as jest.Mock).mockResolvedValue(null);
+    const req={ params:{id:'quarantined-file'},query:{},headers:{},method:'GET',user:{id:'owner-test-id',role:'user'} } as any;
+    const res={headersSent:false,status:jest.fn().mockReturnThis(),json:jest.fn().mockReturnThis(),setHeader:jest.fn(),end:jest.fn()} as any;
+    await serveFileContent(req,res);
+    expect(prisma.file.findUnique).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({ mediaScanRequired: true, processingVersion: true }) }));
+    expect(res.status).toHaveBeenCalledWith(423);
+    expect(mockBlobRead).not.toHaveBeenCalled(); expect(mockBlobProperties).not.toHaveBeenCalled();
+  });
+
 });

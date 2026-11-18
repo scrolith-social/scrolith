@@ -4,6 +4,7 @@
  */
 import { Request, Response } from 'express';
 import prisma from '../utils/prismaClient';
+import { azureMediaPublicationAllowed } from '../services/media/azureMediaPublication';
 import { FileVisibility } from '@prisma/client';
 import { resolveAuthSessionToken } from '../services/authSession.service';
 import {
@@ -125,10 +126,11 @@ export const getFileProcessingStatus = async (req: Request, res: Response) => {
       select: {
         id: true,
         ownerId: true,
+        mediaScanRequired: true,
+        processingVersion: true,
         visibility: true,
         mimeType: true,
         processingStatus: true,
-        processingVersion: true,
         processingErrorCode: true,
         processingStartedAt: true,
         processingCompletedAt: true,
@@ -179,6 +181,8 @@ export const getFileManifest = async (req: Request, res: Response) => {
       select: {
         id: true,
         ownerId: true,
+        mediaScanRequired: true,
+        processingVersion: true,
         visibility: true,
         mimeType: true,
         processingStatus: true
@@ -190,6 +194,10 @@ export const getFileManifest = async (req: Request, res: Response) => {
     }
     if (!(await canAccessFile(file, req))) {
       res.status(403).json({ success: false, error: 'You do not have access to this file' });
+      return;
+    }
+    if (!await azureMediaPublicationAllowed(file)) {
+      res.status(423).json({ success: false, error: 'MEDIA_SCAN_PENDING_OR_REJECTED' });
       return;
     }
     const manifest = await buildVariantsManifest(fileId);
@@ -214,6 +222,8 @@ export const serveFileVariantContent = async (req: Request, res: Response) => {
       select: {
         id: true,
         ownerId: true,
+        mediaScanRequired: true,
+        processingVersion: true,
         visibility: true,
         mimeType: true
       }
@@ -227,6 +237,10 @@ export const serveFileVariantContent = async (req: Request, res: Response) => {
       return;
     }
 
+    if (!await azureMediaPublicationAllowed(file)) {
+      res.status(423).json({ success: false, error: 'MEDIA_SCAN_PENDING_OR_REJECTED' });
+      return;
+    }
     const variant = await findVariantById(fileId, variantId);
     if (!variant) {
       res.status(404).json({ success: false, error: 'Variant not found' });

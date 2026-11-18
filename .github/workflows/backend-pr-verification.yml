@@ -137,6 +137,14 @@ jobs:
       - name: Verify TypeScript compilation
         run: npm run build:prod
 
+      - name: Verify durable Azure media outbox and worker recovery
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y ffmpeg
+          node scripts/test-azure-media-permissions.mjs --apply-policy
+          node scripts/test-azure-media.mjs
+
       - name: Run dependency security gate
         run: npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high
 

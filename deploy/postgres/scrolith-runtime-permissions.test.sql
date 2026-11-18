@@ -561,5 +561,18 @@ BEGIN
 END
 $assert_future_defaults$;
 
+DO $assert_media_outbox_api_permissions$
+BEGIN
+  IF to_regclass('public.azure_media_jobs') IS NOT NULL THEN
+    IF NOT has_column_privilege('scrolith_runtime','public.azure_media_jobs','file_id','INSERT')
+      OR has_column_privilege('scrolith_runtime','public.azure_media_jobs','status','INSERT')
+      OR has_column_privilege('scrolith_runtime','public.azure_media_jobs','source_sha256','INSERT')
+      OR has_table_privilege('scrolith_runtime','public.azure_media_jobs','UPDATE,DELETE,TRUNCATE') THEN
+      RAISE EXCEPTION 'API role can forge media completion or cannot create an authoritative request';
+    END IF;
+  END IF;
+END
+$assert_media_outbox_api_permissions$;
+
 ROLLBACK;
 \echo 'PASS: runtime allowed-write, immutability, migration-isolation, and parent-cascade checks passed; fixtures rolled back.'

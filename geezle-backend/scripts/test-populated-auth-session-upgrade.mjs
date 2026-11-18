@@ -180,8 +180,8 @@ try {
     .map((entry) => entry.name)
     .sort();
 
-  if (migrationDirs.length !== 142 || migrationDirs.at(-1) !== finalMigration) {
-    throw new Error('Expected the reviewed 141-to-142 migration source inventory.');
+  if (migrationDirs.length !== 143 || migrationDirs[141] !== finalMigration) {
+    throw new Error('Expected the reviewed 141-to-142 upgrade plus additive media outbox migration.');
   }
 
   const tempBase = await mkdtemp(join(repoRoot, '.tmp-auth-session-upgrade-'));
@@ -191,7 +191,7 @@ try {
   await mkdir(tempMigrations, { recursive: true });
   await cp(resolve(repoRoot, 'prisma', 'schema.prisma'), join(prismaRoot, 'schema.prisma'));
   await cp(resolve(repoRoot, 'prisma', 'migrations', 'migration_lock.toml'), join(tempMigrations, 'migration_lock.toml'));
-  for (const migration of migrationDirs.slice(0, -1)) {
+  for (const migration of migrationDirs.slice(0, 141)) {
     await cp(resolve(migrationsRoot, migration), join(tempMigrations, migration), { recursive: true });
   }
   const configPath = join(tempRoot, 'prisma.config.ts');
@@ -328,6 +328,11 @@ try {
   if (result.rows.some((row) => row.authSessionVersion !== 0)) {
     throw new Error('Migration 142 did not apply the safe zero session-version default.');
   }
+
+  for (const migration of migrationDirs.slice(142)) {
+    await cp(resolve(migrationsRoot, migration), join(tempMigrations, migration), { recursive: true });
+  }
+  runPrisma(cliPath, configPath, tempRoot, migratorEnv, '143-media-outbox as scrolith_migrator');
 
   const beforeInjectedFailure = await readRolePolicyState(migratorUrl.toString());
   if (

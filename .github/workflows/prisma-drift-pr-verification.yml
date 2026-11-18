@@ -140,11 +140,11 @@ jobs:
             `);
             const row = result.rows[0];
             const checks = {
-              total: 142,
+              total: 143,
               unfinished: 0,
               rolled_back: 0,
               invalid_steps: 0,
-              distinct_names: 142
+              distinct_names: 143
             };
             for (const [key, expected] of Object.entries(checks)) {
               if (Number(row[key]) !== expected) {
@@ -154,7 +154,7 @@ jobs:
           } finally {
             await client.end();
           }
-          console.log('MIGRATION_LEDGER=142_COMPLETED_UNIQUE_ROWS');
+          console.log('MIGRATION_LEDGER=143_COMPLETED_UNIQUE_ROWS');
           NODE
 
       - name: Compare migrations with the configured database
