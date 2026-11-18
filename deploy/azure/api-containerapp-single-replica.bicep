@@ -53,6 +53,9 @@ param frontendOrigin string
 @description('Comma-separated, exact approved browser origins.')
 param corsAllowedOrigins string
 
+@description('Optional allowlist of staging reviewer IPv4 CIDRs. An empty array retains existing ingress behavior.')
+param allowedIngressCidrs string[] = []
+
 @description('Client ID of the API user-assigned identity for Blob access.')
 param apiIdentityClientId string
 
@@ -84,6 +87,11 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 5000
         transport: 'auto'
         allowInsecure: false
+        ipSecurityRestrictions: [for (cidr, i) in allowedIngressCidrs: {
+          name: 'reviewer-${i}'
+          ipAddressRange: cidr
+          action: 'Allow'
+        }]
       }
       registries: [
         {
@@ -147,6 +155,12 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
           env: [
             { name: 'NODE_ENV', value: 'production' }
             { name: 'PORT', value: '5000' }
+            { name: 'SCROLITH_MONEY_MOVEMENT_ENABLED', value: 'false' }
+            { name: 'MEDIA_PROCESSING_MODE', value: 'disabled' }
+            { name: 'MEDIA_IMAGE_PROCESSING_ENABLED', value: 'false' }
+            { name: 'MEDIA_VIDEO_PROCESSING_ENABLED', value: 'false' }
+            { name: 'EXTERNAL_PLATFORM_API_ENABLED', value: 'false' }
+            { name: 'REDIS_RATE_LIMIT_FAIL_CLOSED', value: 'true' }
             { name: 'FRONTEND_URL', value: frontendOrigin }
             { name: 'FRONTEND_ORIGIN', value: frontendOrigin }
             { name: 'PUBLIC_APP_URL', value: frontendOrigin }
