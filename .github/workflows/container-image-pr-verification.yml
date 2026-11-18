@@ -184,7 +184,7 @@ jobs:
             --env POSTGRES_USER=scrolith_test --env POSTGRES_PASSWORD=local-image-only \
             --env POSTGRES_DB=scrolith_test \
             postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
-          docker run --detach --name "$redis" --network "$network" --network-alias redis \
+          docker run --detach --name "$redis" --network "container:$pg" \
             redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
 
           for attempt in $(seq 1 60); do
@@ -198,10 +198,11 @@ jobs:
           migrator_image="$(awk -F '\t' '$1=="migrator" {print $3}' "$evidence/image-ids.tsv")"
           frontend_image="$(awk -F '\t' '$1=="frontend" {print $3}' "$evidence/image-ids.tsv")"
           worker_image="$(awk -F '\t' '$1=="media-worker" {print $3}' "$evidence/image-ids.tsv")"
-          printf '%s\n' 'DATABASE_URL=postgresql://scrolith_test:local-image-only@postgres:5432/scrolith_test' \
-            'NODE_ENV=production' 'PORT=5000' \
+          printf '%s\n' 'DATABASE_URL=postgresql://scrolith_test:local-image-only@127.0.0.1:5432/scrolith_test' \
+            'NODE_ENV=test' 'APP_RUNTIME=test' 'PORT=5000' 'TEST_DB_PORT=5432' \
+            'SCROLITH_TEST_SERVER_LISTEN=true' 'ALLOW_DEV_AUTH_BYPASS=false' \
             'JWT_SECRET=scrolith_local_image_validation_synthetic_secret_only' \
-            'REDIS_URL=redis://redis:6379' 'REDIS_RATE_LIMIT_FAIL_CLOSED=true' \
+            'REDIS_URL=redis://127.0.0.1:6379' 'REDIS_TEST_MODE=local' 'REDIS_RATE_LIMIT_FAIL_CLOSED=true' \
             'FRONTEND_ORIGIN=http://127.0.0.1:18080' 'FRONTEND_URL=http://127.0.0.1:18080' \
             'PUBLIC_API_URL=http://127.0.0.1:15000' 'CORS_ALLOWED_ORIGINS=http://127.0.0.1:18080' \
             'UPLOAD_DRIVER=local' 'SCROLITH_MONEY_MOVEMENT_ENABLED=false' \
@@ -211,9 +212,9 @@ jobs:
             'NODE_ENV=production' 'PORT=8080' 'MEDIA_PROCESSING_MODE=disabled' \
             'MEDIA_WORKER_READY_REQUIRE_DB=true' > "$RUNNER_TEMP/scrolith-worker-smoke.env"
 
-          docker run --rm --network "$network" --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" "$migrator_image" \
+          docker run --rm --network "container:$pg" --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" "$migrator_image" \
             2>&1 | tee "$evidence/migrator-disposable-replay.log"
-          docker run --detach --name "$api" --network "$network" --publish 127.0.0.1:15000:5000 \
+          docker run --detach --name "$api" --network "container:$pg" \
             --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" "$api_image"
           docker run --detach --name "$frontend" --network "$network" --publish 127.0.0.1:18080:8080 "$frontend_image"
           docker run --detach --name "$worker" --network "$network" --publish 127.0.0.1:18081:8080 \
@@ -224,7 +225,15 @@ jobs:
             local expected="$2"
             for attempt in $(seq 1 60); do
               local status
-              status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url" || true)"
+              if [[ "$url" == http://127.0.0.1:5000/* ]]; then
+                # The test listener, PostgreSQL and Redis share one disposable loopback.
+                status="$(docker exec "$api" node -e '
+                  fetch(process.argv[1], { signal: AbortSignal.timeout(4000) })
+                    .then(response => console.log(response.status)).catch(() => process.exit(1))
+                ' "$url" 2>/dev/null || true)"
+              else
+                status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url" || true)"
+              fi
               if [ "$status" = "$expected" ]; then printf '%s %s\n' "$expected" "$url"; return 0; fi
               sleep 2
             done
@@ -232,12 +241,17 @@ jobs:
             docker logs "$api" 2>&1 | tail -n 80 | sed -E 's#(postgres(ql)?://)[^[:space:]" ]+#\1[DATABASE_URL_REDACTED]#g' >&2 || true
             return 1
           }
-          wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health.txt"
-          wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness.txt"
+          wait_http http://127.0.0.1:5000/api/health 200 | tee "$evidence/api-health.txt"
+          wait_http http://127.0.0.1:5000/api/readyz 200 | tee "$evidence/api-readiness.txt"
           wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health.txt"
           wait_http http://127.0.0.1:18081/healthz 200 | tee "$evidence/media-worker-health.txt"
           wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness.txt"
           docker exec "$api" node --version | tee "$evidence/api-node-version.txt"
+          docker stop --time 10 "$redis"
+          wait_http http://127.0.0.1:5000/api/readyz 503 | tee "$evidence/api-redis-outage.txt"
+          wait_http http://127.0.0.1:5000/api/health 200 | tee "$evidence/api-health-during-redis-outage.txt"
+          docker start "$redis"
+          wait_http http://127.0.0.1:5000/api/readyz 200 | tee "$evidence/api-redis-recovery.txt"
           docker exec "$frontend" sh -c 'grep -R -F "https://api-staging.invalid/api" /usr/share/nginx/html/assets >/dev/null'
           docker exec "$worker" node --version | tee "$evidence/media-worker-node-version.txt"
           docker exec "$worker" ffmpeg -version 2>&1 | sed -n '1,2p' | tee "$evidence/media-worker-ffmpeg-version.txt"
@@ -265,11 +279,20 @@ jobs:
           docker start "$api" | tee "$evidence/api-restart.txt"
           docker start "$frontend" | tee "$evidence/frontend-restart.txt"
           docker start "$worker" | tee "$evidence/media-worker-restart.txt"
-          wait_http http://127.0.0.1:15000/api/health 200 | tee "$evidence/api-health-after-restart.txt"
-          wait_http http://127.0.0.1:15000/api/readyz 200 | tee "$evidence/api-readiness-after-restart.txt"
+          wait_http http://127.0.0.1:5000/api/health 200 | tee "$evidence/api-health-after-restart.txt"
+          wait_http http://127.0.0.1:5000/api/readyz 200 | tee "$evidence/api-readiness-after-restart.txt"
           wait_http http://127.0.0.1:18080/ 200 | tee "$evidence/frontend-health-after-restart.txt"
           wait_http http://127.0.0.1:18081/healthz 200 | tee "$evidence/media-worker-health-after-restart.txt"
           wait_http http://127.0.0.1:18081/readyz 200 | tee "$evidence/media-worker-readiness-after-restart.txt"
+
+          # Keep an explicit negative test of the production managed identity contract.
+          docker stop --time 30 "$api"
+          docker rm "$api"
+          docker run --detach --name "$api" --network "container:$pg" \
+            --env-file "$RUNNER_TEMP/scrolith-api-smoke.env" --env NODE_ENV=production \
+            --env APP_RUNTIME=production --env SCROLITH_TEST_SERVER_LISTEN=false --env REDIS_TEST_MODE= "$api_image"
+          wait_http http://127.0.0.1:5000/api/health 200 | tee "$evidence/api-production-health.txt"
+          wait_http http://127.0.0.1:5000/api/readyz 503 | tee "$evidence/api-production-plain-redis-denied.txt"
 
           stop_and_verify "$api" api-after-restart
           stop_and_verify "$frontend" frontend-after-restart
