@@ -1,16 +1,34 @@
 # Node 22 on Alpine 3.24; amd64 immutable builder/runtime manifest digest.
 FROM node:22-alpine3.24@sha256:947e5454e08bfe0b8ddda604915ad76275276c774f47da90d0137252c793a778 AS node-base
-# Install the exact official Alpine v3.24 fixed zlib archive. Its SHA-512 is
-# pinned below and apk verifies its Alpine signature; an empty repository list
-# prevents resolution against a mutable APKINDEX.
+# Install exact official Alpine v3.24 fixed package archives. Their SHA-512
+# values are pinned below; apk verifies Alpine signatures using keys shipped
+# in the digest-pinned base image. The empty repository list prevents mutable
+# APKINDEX resolution.
 RUN set -eux; \
+  fetch_apk() { \
+    url="$1"; dest="$2"; attempt=1; \
+    while [ "$attempt" -le 5 ]; do \
+      if wget -q -T 30 -O "$dest" "$url"; then return 0; fi; \
+      rm -f "$dest"; \
+      if [ "$attempt" -eq 5 ]; then return 1; fi; \
+      sleep "$attempt"; \
+      attempt=$((attempt + 1)); \
+    done; \
+    return 1; \
+  }; \
   test "$(apk --print-arch)" = "x86_64"; \
-  wget -q -O /tmp/zlib-1.4-r0.apk \
-    https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/zlib-1.4-r0.apk; \
+  fetch_apk https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/zlib-1.4-r0.apk /tmp/zlib-1.4-r0.apk; \
+  fetch_apk https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libssl3-3.5.9-r1.apk /tmp/libssl3-3.5.9-r1.apk; \
+  fetch_apk https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libcrypto3-3.5.9-r1.apk /tmp/libcrypto3-3.5.9-r1.apk; \
   echo '34F0FEE4793044C61680139BDAF635D425E25FF3A363FD3B516FE43882A35AC2361C881257748870CE9DF08B5A1352932106C73295DE097D830C6DD0A45D7F59  /tmp/zlib-1.4-r0.apk' | sha512sum -c -; \
-  apk --repositories-file /dev/null add --no-cache /tmp/zlib-1.4-r0.apk; \
+  echo 'A0B0CC88EC040D18AE8373C240A10132E3D21A7350FAEFC54327D21DC739D17CC773D68D2D0667174B64B2F1A5610AB61DC8B7317D0E0714723D275A41B38636  /tmp/libssl3-3.5.9-r1.apk' | sha512sum -c -; \
+  echo '605130CBC99DAB98DE459BDDCAD4DDEC8B1AD963FE438EEA593A28858B4144F90A154E295C08FAD7E176B3D978B2408EF3F327BDF7215790B4F37EB947FCBE3B  /tmp/libcrypto3-3.5.9-r1.apk' | sha512sum -c -; \
+  apk --repositories-file /dev/null add --no-cache \
+    /tmp/zlib-1.4-r0.apk /tmp/libssl3-3.5.9-r1.apk /tmp/libcrypto3-3.5.9-r1.apk; \
   apk list -I | grep -F 'zlib-1.4-r0 '; \
-  rm -f /tmp/zlib-1.4-r0.apk
+  apk list -I | grep -F 'libssl3-3.5.9-r1 '; \
+  apk list -I | grep -F 'libcrypto3-3.5.9-r1 '; \
+  rm -f /tmp/zlib-1.4-r0.apk /tmp/libssl3-3.5.9-r1.apk /tmp/libcrypto3-3.5.9-r1.apk
 
 FROM node-base AS builder
 WORKDIR /app/geezle-backend
