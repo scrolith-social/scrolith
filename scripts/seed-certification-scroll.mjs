@@ -1,14 +1,15 @@
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from '@playwright/test';
-import { parseLoopbackHttpUrl, readStorageStateToken } from '../../geezle-backend/scripts/verify-certification-feed.mjs';
+import { requireLoopbackTestUrl } from './certificationTarget.mjs';
+import { readStorageStateTokenFromFile } from './certificationStorageState.mjs';
+import { pickCertificationInterestSurveyCandidateIds } from './certificationInterestSurvey.mjs';
 
 const allowedProjects = new Set(['desktop-chrome', 'pixel-7', 'iphone-15', 'mobile-390']);
 const project = String(process.env.CERT_BROWSER_PROJECT || '');
 if (!allowedProjects.has(project)) throw new Error('invalid_browser_project');
 
-const appUrl = parseLoopbackHttpUrl(process.env.CERT_BASE_URL);
-const apiUrl = parseLoopbackHttpUrl(process.env.CERT_API_BASE);
+const appUrl = new URL(requireLoopbackTestUrl(process.env.CERT_BASE_URL, 'CERT_BASE_URL'));
+const apiUrl = new URL(requireLoopbackTestUrl(process.env.CERT_API_BASE, 'CERT_API_BASE'));
 if (appUrl.search || appUrl.hash || apiUrl.search || apiUrl.hash || !apiUrl.pathname.replace(/\/$/, '').endsWith('/api')) {
   throw new Error('invalid_local_endpoint');
 }
@@ -25,18 +26,8 @@ if (!process.env.CERT_STORAGE_STATE || !process.env.SCROLITH_E2E_VIEWER_STORAGE_
   throw new Error('missing_synthetic_storage_state');
 }
 
-const readToken = (path) => {
-  let state;
-  try {
-    state = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    throw new Error('storage_state_unreadable');
-  }
-  return readStorageStateToken(state, appUrl.origin);
-};
-
-const ownerToken = readToken(ownerStatePath);
-const viewerToken = readToken(viewerStatePath);
+const ownerToken = readStorageStateTokenFromFile(ownerStatePath, appUrl.origin);
+const viewerToken = readStorageStateTokenFromFile(viewerStatePath, appUrl.origin);
 const apiBase = apiUrl.toString().replace(/\/+$/, '');
 
 async function makeSyntheticVideo() {
@@ -106,47 +97,80 @@ async function requireJson(response, step) {
 }
 
 async function main() {
-  const video = await makeSyntheticVideo();
-  const form = new FormData();
-  form.append('file', new Blob([Buffer.from(video.base64, 'base64')], { type: video.mimeType }), 'certification-scroll.webm');
-
-  const uploadResponse = await fetch(`${apiBase}/files/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${ownerToken}`, Accept: 'application/json' },
-    body: form,
-    signal: AbortSignal.timeout(30_000)
-  });
-  const upload = await requireJson(uploadResponse, 'upload');
-  const fileId = String(upload?.data?.id || upload?.data?.fileId || '').trim();
-  if (upload?.success !== true || !fileId) throw new Error('upload_response_invalid');
-
-  const createResponse = await fetch(`${apiBase}/scroll/create`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${ownerToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      fileId,
-      title: `Certification interest survey fixture ${project}`,
-      description: 'Synthetic video fixture used by local authenticated browser certification.',
-      visibility: 'public'
-    }),
-    signal: AbortSignal.timeout(30_000)
-  });
-  const created = await requireJson(createResponse, 'scroll_create');
-  const scrollId = String(created?.data?.id || '').trim();
-  if (created?.success !== true || !scrollId) throw new Error('scroll_response_invalid');
-
-  const feedResponse = await fetch(`${apiBase}/scroll/feed?limit=60`, {
+  const viewerResponse = await fetch(`${apiBase}/auth/me`, {
     headers: { Authorization: `Bearer ${viewerToken}`, Accept: 'application/json' },
     signal: AbortSignal.timeout(15_000)
   });
-  const feed = await requireJson(feedResponse, 'viewer_feed');
-  const items = Array.isArray(feed?.data?.items) ? feed.data.items : [];
-  if (!items.some((item) => String(item?.id || '') === scrollId)) {
-    throw new Error('viewer_cannot_see_synthetic_scroll');
-  }
+  const viewerProfile = await requireJson(viewerResponse, 'viewer_profile');
+  const viewerId = String(viewerProfile?.data?.user?.id || viewerProfile?.user?.id || viewerProfile?.data?.id || '').trim();
+  if (!viewerId) throw new Error('viewer_profile_invalid');
 
-  console.log(`Synthetic playable Scroll fixture ready for ${project}; upload=${uploadResponse.status}, create=${createResponse.status}, viewerFeed=${feedResponse.status}.`);
-  console.log(`CERTIFICATION_SCROLL_FIXTURE_ID=${scrollId}`);
+  const fixtureIds = new Set();
+  let selectedFixtureId = '';
+  let lastFeedStatus = 0;
+  let successfulUploads = 0;
+  let successfulCreates = 0;
+  // Production shows at most four deterministically ranked Scroll surveys.
+  // Create until at least one synthetic fixture is in that eligible set.
+  for (let attempt = 0; attempt < 8 && !selectedFixtureId; attempt += 1) {
+    const video = await makeSyntheticVideo();
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from(video.base64, 'base64')], { type: video.mimeType }), `certification-scroll-${attempt + 1}.webm`);
+
+    const uploadResponse = await fetch(`${apiBase}/files/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, Accept: 'application/json' },
+      body: form,
+      signal: AbortSignal.timeout(30_000)
+    });
+    const upload = await requireJson(uploadResponse, 'upload');
+    const fileId = String(upload?.data?.id || upload?.data?.fileId || '').trim();
+    if (upload?.success !== true || !fileId) throw new Error('upload_response_invalid');
+    successfulUploads += 1;
+
+    const createResponse = await fetch(`${apiBase}/scroll/create`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileId,
+        title: `Certification interest survey fixture ${project} ${attempt + 1}`,
+        description: 'Synthetic video fixture used by local authenticated browser certification.',
+        visibility: 'public'
+      }),
+      signal: AbortSignal.timeout(30_000)
+    });
+    const created = await requireJson(createResponse, 'scroll_create');
+    const createdId = String(created?.data?.id || '').trim();
+    if (created?.success !== true || !createdId) throw new Error('scroll_response_invalid');
+    fixtureIds.add(createdId);
+    successfulCreates += 1;
+
+    // Match the default local certification profile's native Scroll page size.
+    const feedResponse = await fetch(`${apiBase}/scroll/feed?limit=20`, {
+      headers: { Authorization: `Bearer ${viewerToken}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000)
+    });
+    lastFeedStatus = feedResponse.status;
+    const feed = await requireJson(feedResponse, 'viewer_feed');
+    const items = Array.isArray(feed?.data?.items) ? feed.data.items : [];
+    if (![...fixtureIds].some((id) => items.some((item) => String(item?.id || '') === id))) {
+      throw new Error('viewer_cannot_see_synthetic_scroll');
+    }
+    selectedFixtureId = pickCertificationInterestSurveyCandidateIds(
+      items.map((item) => ({
+        id: String(item?.id || '').startsWith('post-video:') ? '' : item?.id,
+        authorId: item?.authorId,
+        initialSignal: item?.viewer?.feedbackSignal
+      })),
+      viewerId,
+      'scroll',
+      4
+    ).find((id) => fixtureIds.has(id)) || '';
+  }
+  if (!selectedFixtureId) throw new Error('synthetic_scroll_not_selected_for_interest_survey');
+
+  console.log(`Synthetic playable Scroll fixture selected for ${project}; uploads=${successfulUploads}, creates=${successfulCreates}, viewerFeed=${lastFeedStatus}.`);
+  console.log(`CERTIFICATION_SCROLL_FIXTURE_ID=${selectedFixtureId}`);
 }
 
 main().catch((error) => {

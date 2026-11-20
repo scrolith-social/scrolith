@@ -1,10 +1,14 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { existsSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { CERT_BASE_URL, requireAuthOrSkip } from '../helpers/env';
+import { completeFollowOnboardingIfRequired } from '../helpers/auth';
 import { watchSafeApiEvents, writeSafeBrowserEvidence } from '../helpers/safeEvidence';
 import type { SafeApiWatch } from '../helpers/safeEvidence';
 
 const CERT_API_BASE = process.env.CERT_API_BASE || '';
+const logoutStorageState = String(process.env.CERT_LOGOUT_STORAGE_STATE || '').trim();
 
 const isLoopback = (value: string) => {
   try {
@@ -104,56 +108,80 @@ test.describe('Logout revokes the current authenticated session', () => {
     expect(stillValid.status()).toBe(200);
   });
 
-  test('sign out revokes the server session and rejects replay of the same token', async ({ page, request }) => {
-    test.skip(!isLoopback(CERT_BASE_URL), 'Requires an explicitly configured loopback CERT_BASE_URL');
-    test.skip(!CERT_API_BASE || !isLoopback(CERT_API_BASE), 'Requires an explicitly configured loopback CERT_API_BASE');
-
-    const apiBase = CERT_API_BASE.replace(/\/+$/, '');
-    const protectedUrl = `${apiBase}/auth/me`;
-
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
-
-    // Keep the original synthetic token only in memory for the replay check;
-    // never include it in test output, annotations, or failure messages.
-    const originalToken = await page.evaluate(() => {
-      const storedToken = window.localStorage.getItem('token');
-      if (storedToken) return storedToken;
-      const tokenCookie = document.cookie
-        .split(';')
-        .map((part) => part.trim())
-        .find((part) => part.startsWith('Scrolith_token='));
-      return tokenCookie ? decodeURIComponent(tokenCookie.slice('Scrolith_token='.length)) : null;
-    });
-    expect(originalToken, 'authenticated browser state must contain a session token').toBeTruthy();
-
-    const beforeLogout = await request.get(protectedUrl, {
-      headers: { Authorization: `Bearer ${originalToken}` },
-      failOnStatusCode: false
-    });
-    expect(beforeLogout.status()).toBe(200);
-
-    const logoutResponse = page.waitForResponse((response) => {
-      try {
-        return new URL(response.url()).pathname.endsWith('/auth/logout');
-      } catch {
-        return false;
+  test.describe('isolated synthetic session', () => {
+    test.use({
+      storageState: async ({}, use, testInfo) => {
+        const projectKey = testInfo.project.name.replace(/[^a-z0-9]/gi, '_').toUpperCase();
+        const projectState = String(process.env[`CERT_LOGOUT_STORAGE_STATE_${projectKey}`] || '').trim();
+        const configuredPath = projectState || (projectKey === 'DESKTOP_CHROME' ? logoutStorageState : '');
+        if (!configuredPath) {
+          throw new Error(`logout verification requires CERT_LOGOUT_STORAGE_STATE_${projectKey} outside the source tree`);
+        }
+        const statePath = resolve(configuredPath);
+        const relativeStatePath = relative(process.cwd(), statePath);
+        const stateIsOutsideSource = relativeStatePath === '..' ||
+          relativeStatePath.startsWith(`..${sep}`) || isAbsolute(relativeStatePath);
+        if (!stateIsOutsideSource) {
+          throw new Error('logout storage state must be stored outside the source tree');
+        }
+        if (!existsSync(statePath)) {
+          throw new Error(`configured logout storage state for ${projectKey} does not exist`);
+        }
+        await use(statePath);
       }
     });
 
-    await signOutFromVisibleNavigation(page);
+    test('sign out revokes the server session and rejects replay of the same token', async ({ page, request }) => {
+      test.skip(!isLoopback(CERT_BASE_URL), 'Requires an explicitly configured loopback CERT_BASE_URL');
+      test.skip(!CERT_API_BASE || !isLoopback(CERT_API_BASE), 'Requires an explicitly configured loopback CERT_API_BASE');
 
-    const response = await logoutResponse;
-    expect(response.status()).toBe(200);
-    await expect(page).toHaveURL(/\/auth\/login(?:[/?#]|$)/);
-    await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem('token')))
-      .toBeNull();
+      const apiBase = CERT_API_BASE.replace(/\/+$/, '');
+      const protectedUrl = `${apiBase}/auth/me`;
+      await page.goto('/', { waitUntil: 'domcontentloaded' });
+      await expect(page).not.toHaveURL(/\/auth\/login(?:[/?#]|$)/);
+      await completeFollowOnboardingIfRequired(page);
 
-    const replay = await request.get(protectedUrl, {
-      headers: { Authorization: `Bearer ${originalToken}` },
-      failOnStatusCode: false
+      // Keep the synthetic token only in memory for the replay check; never
+      // include it in test output, annotations, or failure messages.
+      const originalToken = await page.evaluate(() => {
+        const storedToken = window.localStorage.getItem('token');
+        if (storedToken) return storedToken;
+        const tokenCookie = document.cookie
+          .split(';')
+          .map((part) => part.trim())
+          .find((part) => part.startsWith('Scrolith_token='));
+        return tokenCookie ? decodeURIComponent(tokenCookie.slice('Scrolith_token='.length)) : null;
+      });
+      expect(originalToken, 'authenticated browser state must contain a session token').toBeTruthy();
+
+      const beforeLogout = await request.get(protectedUrl, {
+        headers: { Authorization: `Bearer ${originalToken}` },
+        failOnStatusCode: false
+      });
+      expect(beforeLogout.status()).toBe(200);
+
+      const logoutResponse = page.waitForResponse((response) => {
+        try {
+          return new URL(response.url()).pathname.endsWith('/auth/logout');
+        } catch {
+          return false;
+        }
+      });
+
+      await signOutFromVisibleNavigation(page);
+
+      const response = await logoutResponse;
+      expect(response.status()).toBe(200);
+      await expect(page).toHaveURL(/\/auth\/login(?:[/?#]|$)/);
+      await expect
+        .poll(() => page.evaluate(() => window.localStorage.getItem('token')))
+        .toBeNull();
+
+      const replay = await request.get(protectedUrl, {
+        headers: { Authorization: `Bearer ${originalToken}` },
+        failOnStatusCode: false
+      });
+      expect(replay.status()).toBe(401);
     });
-    expect(replay.status()).toBe(401);
   });
 });

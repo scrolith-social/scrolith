@@ -839,7 +839,7 @@ const ScrolithaManagement: React.FC = () => {
                     Scrolitha Core Endpoint
                     <input
                       className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
-                      placeholder="http://127.0.0.1:11434"
+                      placeholder="Operator-configured Scrolitha Core or Ollama endpoint"
                       disabled={llmProvider === 'disabled'}
                       value={coreEndpointValue}
                       onChange={(event) =>

@@ -280,10 +280,14 @@ export const resolveResponsiveAssetUrl = (
   const isAbsolute = /^https?:\/\//i.test(resolved);
   const fallbackOrigin =
     getBackendOrigin() ||
-    (typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+    (typeof window !== 'undefined' ? window.location.origin : '');
+
+  // Server-side rendering without a configured backend origin should keep the
+  // relative URL intact instead of inventing a loopback destination.
+  if (!isAbsolute && !fallbackOrigin) return resolved;
 
   try {
-    const url = new URL(resolved, fallbackOrigin);
+    const url = isAbsolute ? new URL(resolved) : new URL(resolved, fallbackOrigin);
     if (!url.pathname.toLowerCase().includes(FILE_CONTENT_PATH)) {
       return resolved;
     }

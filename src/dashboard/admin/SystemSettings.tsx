@@ -429,7 +429,7 @@ const normalizeCacheConfig = (raw: any) => {
     return {
         driver: source.driver || 'local',
         redis: {
-            host: source.redis?.host || '127.0.0.1',
+            host: source.redis?.host || (import.meta.env.DEV ? '127.0.0.1' : ''),
             port: normalizeNumber(source.redis?.port, 6379),
             password: source.redis?.password || ''
         }
@@ -3267,7 +3267,7 @@ const SystemSettings = () => {
                                                     ...cacheConfig,
                                                     redis: { ...cacheConfig.redis, host: e.target.value }
                                                 })}
-                                                placeholder="127.0.0.1"
+                                                placeholder={import.meta.env.DEV ? '127.0.0.1' : 'Redis host configured for this environment'}
                                             />
                                         </div>
                                         <div>

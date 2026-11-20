@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isCanonicalApiUploadUrl, resolveAssetUrl } from '../assetUrl';
+import { isCanonicalApiUploadUrl, resolveAssetUrl, resolveResponsiveAssetUrl } from '../assetUrl';
 
 describe('asset URL environment isolation', () => {
   beforeEach(() => {
@@ -9,7 +9,10 @@ describe('asset URL environment isolation', () => {
     vi.stubEnv('VITE_BACKEND_URL', '');
   });
 
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
 
   it('resolves stored IDs relative to the current application instead of production', () => {
     expect(resolveAssetUrl('file_123456789012')).toBe('/api/files/content/file_123456789012');
@@ -23,6 +26,14 @@ describe('asset URL environment isolation', () => {
     const signed = 'https://storage.example.test/file.png?X-Amz-Signature=synthetic';
     expect(resolveAssetUrl(signed)).toBe(signed);
     expect(resolveAssetUrl('https://cdn.example.test/image.png')).toBe('https://cdn.example.test/image.png');
+  });
+
+  it('keeps server-rendered relative media URLs relative without a loopback origin', () => {
+    vi.stubGlobal('window', undefined);
+    const contentPath = '/api/files/content/file_123456789012';
+
+    expect(resolveResponsiveAssetUrl(contentPath, { width: 64 }))
+      .toBe(contentPath);
   });
 
   it('recognizes canonical API uploads without hardcoding an endpoint URL in callers', () => {

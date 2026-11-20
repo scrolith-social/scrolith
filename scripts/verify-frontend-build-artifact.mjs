@@ -11,6 +11,14 @@ const SENSITIVE_MARKERS = [
   ['github-token', /\bgh[pousr]_[A-Za-z0-9]{20,}\b/],
   ['private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/]
 ];
+// React Router and Axios ship a non-network browser/worker base-URL fallback
+// for URL parsing when no browser location exists. These exact dependency
+// literals are not application API destinations. Keep this exception limited
+// to the generated router/vendor chunks, and reject the same literal in app
+// chunks or any loopback URL with a path, port, query, or fragment.
+const isKnownInertLoopbackFallback = (url, artifactPath) =>
+  url === 'http://localhost' &&
+  /^assets\/(?:router|vendor)-[A-Za-z0-9_-]+\.js$/.test(artifactPath.replace(/\\/g, '/'));
 const isValidHost = (host) =>
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) ||
   isIP(host) !== 0;
@@ -47,6 +55,7 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
   const hosts = new Set();
   const forbiddenHostsFound = new Set();
   const forbiddenHostFiles = new Map();
+  const inertLoopbackFallbacks = [];
   let expectedApiHostFound = false;
   for (const file of files) {
     const text = await readFile(file, 'utf8');
@@ -57,11 +66,16 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
     for (const match of text.matchAll(/https?:\/\/[^\s"'<>`\\)\]}]+/gi)) {
       try {
         const hostname = new URL(match[0]).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+        const artifactPath = relative(directory, file).replace(/\\/g, '/');
+        if (forbiddenHosts.has(hostname) && isKnownInertLoopbackFallback(match[0], artifactPath)) {
+          inertLoopbackFallbacks.push({ host: hostname, file: artifactPath });
+          continue;
+        }
         hosts.add(hostname);
         if (forbiddenHosts.has(hostname)) {
           forbiddenHostsFound.add(hostname);
           const filesForHost = forbiddenHostFiles.get(hostname) || new Set();
-          filesForHost.add(relative(directory, file).replace(/\\/g, '/'));
+          filesForHost.add(artifactPath);
           forbiddenHostFiles.set(hostname, filesForHost);
         }
       } catch {
@@ -75,6 +89,7 @@ export async function inspectFrontendArtifact(directory, expectedApiHost, forbid
     expectedApiHostFound,
     findings,
     forbiddenApiHostsFound: [...forbiddenHostsFound].sort(),
+    inertLoopbackFallbacks,
     forbiddenApiHostFiles: Object.fromEntries(
       [...forbiddenHostFiles].map(([host, filesForHost]) => [host, [...filesForHost].sort()])
     ),
@@ -119,6 +134,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       process.exitCode = 1;
     } else {
       console.log(`Scanned ${result.fileCount} bundle files; expected API host is present; no known credential markers found.`);
+      if (result.inertLoopbackFallbacks.length) {
+        console.log(`Allowed ${result.inertLoopbackFallbacks.length} exact inert browser-library loopback fallback(s); no application API URL exception applied.`);
+      }
       console.log(`URL hosts: ${result.hosts.join(', ') || '(none)'}`);
     }
   } catch (error) {

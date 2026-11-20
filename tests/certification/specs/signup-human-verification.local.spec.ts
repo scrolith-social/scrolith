@@ -93,9 +93,20 @@ test('local signup recovers from Human Verification service failure and complete
   // trusted device for subsequent authenticated certification. This is not a
   // token-injection shortcut: the browser must already have persisted the
   // session as part of the successful registration flow.
-    await expect.poll(() => page.evaluate(() => Boolean(
-      localStorage.getItem('token') || localStorage.getItem('accessToken')
-    ))).toBe(true);
+    await expect.poll(async () => {
+      try {
+        return await page.evaluate(() => Boolean(
+          localStorage.getItem('token') || localStorage.getItem('accessToken')
+        ));
+      } catch (error) {
+        // The signup flow redirects after registration; navigation can replace
+        // the document between the poll and its localStorage read.
+        if (error instanceof Error && /Execution context was destroyed|Cannot find context/i.test(error.message)) {
+          return false;
+        }
+        throw error;
+      }
+    }, { timeout: 15_000, message: 'the real signup flow must persist its server-issued session before saving browser state' }).toBe(true);
     mkdirSync(dirname(CERT_STORAGE_STATE), { recursive: true });
     await page.context().storageState({ path: CERT_STORAGE_STATE });
   } catch (error) {

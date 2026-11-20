@@ -19,11 +19,12 @@ export async function answerLocalHumanVerification(
   const options = verification.getByRole('group', { name: 'Answer options' });
   await options.waitFor({ state: 'visible', timeout: 15_000 });
   const display = await verification.locator('p.text-2xl').innerText();
-  const expression = display.match(/^\s*(\d+)\s*([+-])\s*(\d+)\s*$/);
-  if (!expression) throw new Error('Local Human Verification fixture must render its supported visible arithmetic challenge');
+  const expression = display.match(/^\s*(\d+)\s*([+\-×])\s*(\d+)\s*$/);
+  if (!expression) throw new Error('Local Human Verification fixture must render a supported visible arithmetic challenge');
   const left = Number(expression[1]);
   const right = Number(expression[3]);
-  const answer = String(expression[2] === '+' ? left + right : left - right);
+  const operator = expression[2];
+  const answer = String(operator === '+' ? left + right : operator === '-' ? left - right : left * right);
   const answerButton = options.getByRole('button', { name: `Select ${answer}`, exact: true });
   await answerButton.scrollIntoViewIfNeeded();
   await expect(answerButton).toBeVisible();
