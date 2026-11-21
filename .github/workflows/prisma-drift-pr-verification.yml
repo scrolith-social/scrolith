@@ -123,38 +123,60 @@ jobs:
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
+          import { readdir, access } from 'node:fs/promises';
+          import path from 'node:path';
           import pg from 'pg';
+
+          const migrationRoot = 'prisma/migrations';
+          const entries = await readdir(migrationRoot, { withFileTypes: true });
+          const expectedNames = [];
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            try {
+              await access(path.join(migrationRoot, entry.name, 'migration.sql'));
+              expectedNames.push(entry.name);
+            } catch (error) {
+              if (error.code !== 'ENOENT') throw error;
+            }
+          }
+          expectedNames.sort();
+          if (expectedNames.length === 0) {
+            throw new Error('No Prisma migration files were found.');
+          }
 
           const { Client } = pg;
           const client = new Client({ connectionString: process.env.DATABASE_URL });
           await client.connect();
           try {
             const result = await client.query(`
-              SELECT
-                COUNT(*)::int AS total,
-                COUNT(*) FILTER (WHERE finished_at IS NULL)::int AS unfinished,
-                COUNT(*) FILTER (WHERE rolled_back_at IS NOT NULL)::int AS rolled_back,
-                COUNT(*) FILTER (WHERE applied_steps_count < 0)::int AS invalid_steps,
-                COUNT(DISTINCT migration_name)::int AS distinct_names
+              SELECT migration_name, finished_at, rolled_back_at, applied_steps_count
               FROM public."_prisma_migrations"
             `);
-            const row = result.rows[0];
-            const checks = {
-              total: 142,
-              unfinished: 0,
-              rolled_back: 0,
-              invalid_steps: 0,
-              distinct_names: 142
-            };
-            for (const [key, expected] of Object.entries(checks)) {
-              if (Number(row[key]) !== expected) {
-                throw new Error(`Migration ledger check failed for ${key}: expected ${expected}, got ${row[key]}`);
+            const rows = result.rows;
+            const actualNames = rows.map(row => row.migration_name);
+            const actualNameSet = new Set(actualNames);
+            const expectedNameSet = new Set(expectedNames);
+            const missing = expectedNames.filter(name => !actualNameSet.has(name));
+            const unexpected = [...actualNameSet].filter(name => !expectedNameSet.has(name));
+
+            if (rows.length !== expectedNames.length) {
+              throw new Error(`Migration ledger row count mismatch: expected ${expectedNames.length}, got ${rows.length}`);
+            }
+            if (actualNameSet.size !== rows.length) {
+              throw new Error('Migration ledger contains duplicate migration names.');
+            }
+            if (missing.length || unexpected.length) {
+              throw new Error(`Migration ledger names differ from source migrations (missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'}).`);
+            }
+            for (const row of rows) {
+              if (row.finished_at === null || row.rolled_back_at !== null || Number(row.applied_steps_count) < 0) {
+                throw new Error(`Migration ledger contains an incomplete or invalid row for ${row.migration_name}.`);
               }
             }
           } finally {
             await client.end();
           }
-          console.log('MIGRATION_LEDGER=142_COMPLETED_UNIQUE_ROWS');
+          console.log(`MIGRATION_LEDGER=${expectedNames.length}_COMPLETED_UNIQUE_SOURCE_MATCHING_ROWS`);
           NODE
 
       - name: Compare migrations with the configured database
