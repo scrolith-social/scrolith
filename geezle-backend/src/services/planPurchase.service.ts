@@ -71,6 +71,7 @@ const isSamePlanActive = (user: any, plan: PlanRecord) => {
 };
 
 export const purchaseUserPlanWithWallet = async (input: PurchaseInput) => {
+  assertMoneyMovementEnabled();
   const plan = getPlanById(String(input.planId || ''));
   if (!plan || !plan.isActive) {
     throw new PlanPurchaseError(404, 'Plan not found or inactive', 'PLAN_NOT_FOUND');
@@ -191,3 +192,4 @@ export const purchaseUserPlanWithWallet = async (input: PurchaseInput) => {
     snapshot: updated ? buildUserPlanSnapshot(updated) : null
   };
 };
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';

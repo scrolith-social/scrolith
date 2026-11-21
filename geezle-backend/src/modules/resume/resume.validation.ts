@@ -18,7 +18,7 @@ export const generateResumeSchema = z.object({
   targetIndustry: z.string().trim().max(160).optional().default(''),
   template: z.enum(resumeTemplates).optional().default('professional'),
   includePhoto: z.boolean().optional().default(false),
-  extraDetails: z.record(z.any()).optional().default({}),
+  extraDetails: z.record(z.string(), z.any()).optional().default({}),
   instructions: z.string().trim().max(4000).optional().default('')
 });
 
@@ -29,13 +29,13 @@ export const updateResumeSchema = z.object({
   template: z.enum(resumeTemplates).optional(),
   includePhoto: z.boolean().optional(),
   photoUrl: z.string().trim().max(1000).optional().nullable(),
-  editableData: z.record(z.any()).optional(),
-  aiOutput: z.record(z.any()).optional()
+  editableData: z.record(z.string(), z.any()).optional(),
+  aiOutput: z.record(z.string(), z.any()).optional()
 });
 
 export const regenerateResumeSchema = z.object({
   instructions: z.string().trim().max(4000).optional().default(''),
-  editableData: z.record(z.any()).optional()
+  editableData: z.record(z.string(), z.any()).optional()
 });
 
 export const reviewProfileUrlSchema = z.object({

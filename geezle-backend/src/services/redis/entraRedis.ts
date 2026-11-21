@@ -51,24 +51,12 @@ const connectTransport = async (redis: Redis): Promise<void> => {
     try {
       const status = String((redis as Redis & { status?: string }).status || '');
       if (status === 'ready') return;
-      if (status === 'connecting') {
-        await new Promise<void>((resolve, reject) => {
-          const onReady = () => { cleanup(); resolve(); };
-          const onError = (error: unknown) => { cleanup(); reject(error); };
-          const onEnd = () => { cleanup(); reject(new Error('Redis connection ended before ready')); };
-          const timer = setTimeout(() => { cleanup(); reject(new Error('Redis connection readiness timeout')); }, REDIS_CONNECT_TIMEOUT_MS);
-          timer.unref?.();
-          const cleanup = () => {
-            clearTimeout(timer);
-            redis.off('ready', onReady);
-            redis.off('error', onError);
-            redis.off('end', onEnd);
-          };
-          redis.once('ready', onReady);
-          redis.once('error', onError);
-          redis.once('end', onEnd);
-        });
-        return;
+      if (status === 'connecting' || status === 'reconnecting' || status === 'connect' || status === 'close') {
+        // ioredis can exhaust its bounded retry strategy while retaining a
+        // reconnecting transport state. A readiness retry must take ownership
+        // of that stale socket instead of waiting on an automatic retry that
+        // will never fire again.
+        redis.disconnect();
       }
       await redis.connect();
       return;

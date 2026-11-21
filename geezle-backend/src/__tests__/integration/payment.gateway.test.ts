@@ -3,6 +3,9 @@ import prisma from '../../utils/prismaClient';
 import app from '../../testPaymentApp';
 
 const expectedPaymentIntentId = 'fixture-payment-intent';
+const originalMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+const originalStripeSecret = process.env.STRIPE_SECRET_KEY;
+const originalStripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 // Mock Stripe package to avoid network calls and to control webhook construction
 jest.mock('stripe', () => {
@@ -26,22 +29,87 @@ jest.mock('stripe', () => {
   }));
 });
 
-describe('Payment gateway integration tests', () => {
+describe('Payment gateway integration tests (mock Stripe only)', () => {
   let adId: string | null = null;
 
   beforeAll(async () => {
+    // This opt-in is scoped to this test environment and all Stripe methods are
+    // mocked above; it cannot contact Stripe or enable runtime deployments.
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_syntheticfixtureonly';
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_syntheticfixtureonly';
     // Ensure dev user exists (auth middleware will upsert but ensure DB cleanliness)
     await prisma.user.upsert({ where: { id: 'dev-user-id-123' }, update: {}, create: { id: 'dev-user-id-123', email: 'dev@example.com', role: 'FREELANCER', passwordHash: 'seed' } });
   });
 
   afterAll(async () => {
-    if (adId) {
-      await prisma.adPayment.deleteMany({ where: { adId } });
-      await prisma.communityAd.deleteMany({ where: { id: adId } });
+    try {
+      if (adId) {
+        await prisma.adPayment.deleteMany({ where: { adId } });
+        await prisma.communityAd.deleteMany({ where: { id: adId } });
+      }
+      await prisma.transaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.wallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
+    } finally {
+      await prisma.$disconnect();
+      if (originalMoneyMovementGate === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = originalMoneyMovementGate;
+      if (originalStripeSecret === undefined) delete process.env.STRIPE_SECRET_KEY;
+      else process.env.STRIPE_SECRET_KEY = originalStripeSecret;
+      if (originalStripeWebhookSecret === undefined) delete process.env.STRIPE_WEBHOOK_SECRET;
+      else process.env.STRIPE_WEBHOOK_SECRET = originalStripeWebhookSecret;
     }
-    await prisma.transaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.wallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.$disconnect();
+  });
+
+  test('payment creation fails closed while the money-movement gate is off', async () => {
+    const enabled = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'false';
+    try {
+      const res = await request(app)
+        .post('/api/payments/create-intent')
+        .set('x-dev-role', 'freelancer')
+        .send({ orderId: 'order_disabled', amount: 50, currency: 'usd' });
+
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('MONEY_MOVEMENT_DISABLED');
+    } finally {
+      if (enabled === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = enabled;
+    }
+  });
+
+  test('payment creation fails closed when the provider secret is missing', async () => {
+    const secret = process.env.STRIPE_SECRET_KEY;
+    delete process.env.STRIPE_SECRET_KEY;
+    try {
+      const res = await request(app)
+        .post('/api/payments/create-intent')
+        .set('x-dev-role', 'freelancer')
+        .send({ orderId: 'order_unconfigured', amount: 50, currency: 'usd' });
+
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('PAYMENT_PROVIDER_UNAVAILABLE');
+    } finally {
+      if (secret === undefined) delete process.env.STRIPE_SECRET_KEY;
+      else process.env.STRIPE_SECRET_KEY = secret;
+    }
+  });
+
+  test('webhooks fail closed when the signing secret is missing', async () => {
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    delete process.env.STRIPE_WEBHOOK_SECRET;
+    try {
+      const { handleWebhook } = require('../../controllers/payment.controller');
+      const mockReq: any = { body: '{}', headers: { 'stripe-signature': 'synthetic-signature' } };
+      const mockRes: any = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+      await handleWebhook(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(503);
+      expect(mockRes.json).toHaveBeenCalledWith({ received: false, code: 'PAYMENT_PROVIDER_UNAVAILABLE' });
+    } finally {
+      if (secret === undefined) delete process.env.STRIPE_WEBHOOK_SECRET;
+      else process.env.STRIPE_WEBHOOK_SECRET = secret;
+    }
   });
 
   test('POST /api/payments/create-intent returns client secret and id', async () => {

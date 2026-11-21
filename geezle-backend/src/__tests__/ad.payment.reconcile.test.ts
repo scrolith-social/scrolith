@@ -38,27 +38,41 @@ import { reconcileAdPayments } from '../scripts/reconcileAdPayments';
 
 describe('Ad payment and reconciliation flow', () => {
   let adId: string | null = null;
+  let previousMoneyMovementGate: string | undefined;
 
   beforeAll(async () => {
+    // These tests exercise the mocked ad-payment implementation on a guarded,
+    // disposable database. Production remains fail-closed by default; only
+    // this test file temporarily opts into the mocked flow.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
     // ensure dev user exists via auth middleware behavior
     await prisma.user.upsert({ where: { id: 'dev-user-id-123' }, update: {}, create: { id: 'dev-user-id-123', email: 'dev@example.com', role: 'FREELANCER', passwordHash: 'seed' } });
   });
 
   afterAll(async () => {
-    if (adId) {
-      await prisma.adPayment.deleteMany({ where: { adId } });
-      await prisma.communityAd.deleteMany({ where: { id: adId } });
+    try {
+      if (adId) {
+        await prisma.adPayment.deleteMany({ where: { adId } });
+        await prisma.communityAd.deleteMany({ where: { id: adId } });
+      }
+      // clean up related financial records that may block user deletion
+      await prisma.transaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.wallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.gcoinConversionRequest.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.gcoinTransaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.gcoinWallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      // remove profile which has a foreign key to user
+      await prisma.profile.deleteMany({ where: { userId: 'dev-user-id-123' } });
+      await prisma.user.deleteMany({ where: { id: 'dev-user-id-123' } });
+    } finally {
+      if (previousMoneyMovementGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+      }
+      await prisma.$disconnect();
     }
-    // clean up related financial records that may block user deletion
-    await prisma.transaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.wallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.gcoinConversionRequest.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.gcoinTransaction.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.gcoinWallet.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    // remove profile which has a foreign key to user
-    await prisma.profile.deleteMany({ where: { userId: 'dev-user-id-123' } });
-    await prisma.user.deleteMany({ where: { id: 'dev-user-id-123' } });
-    await prisma.$disconnect();
   });
 
   test('payAd creates checkout session and reconciliation marks pending AdPayment completed', async () => {

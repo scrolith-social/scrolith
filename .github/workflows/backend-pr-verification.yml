@@ -16,8 +16,8 @@ concurrency:
 jobs:
   cms-and-security:
     name: CMS and backend verification
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: geezle-backend
@@ -32,13 +32,14 @@ jobs:
       TEST_DB_PROJECT: local-only
       TEST_DB_INSTANCE: local-disposable-postgres-test
       TEST_DB_NAME: scrolith_test
+      TEST_DB_PORT: '5432'
       JWT_SECRET: local_ci_only_jwt_secret
       REDIS_URL: redis://127.0.0.1:6379
       REDIS_TEST_MODE: local
       REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
     services:
       postgres:
-        image: postgres:16@sha256:65b16a8b326e0cfbdf33fa7e783f2a0cb352a61448616ccccfd616ef42aa0f65
+        image: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
         env:
           POSTGRES_USER: scrolith_test
           POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-only
@@ -66,6 +67,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          submodules: true
 
       - name: Set up Node.js 22.18.0
         uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
@@ -75,7 +77,7 @@ jobs:
           cache-dependency-path: geezle-backend/package-lock.json
 
       - name: Install locked dependencies without install scripts
-        run: npm ci --ignore-scripts --no-audit --fund=false
+        run: npm ci --registry=https://registry.npmjs.org --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --ignore-scripts --no-audit --fund=false
 
       - name: Create isolated shadow database
         run: |
@@ -111,6 +113,15 @@ jobs:
           npx prisma migrate deploy
           npx prisma migrate status
 
+      - name: Verify populated migration 141 to 142
+        run: node scripts/test-populated-auth-session-upgrade.mjs
+
+      - name: Seed the disposable backend test database
+        run: npm run test:db:seed
+
+      - name: Run the full backend Jest suite
+        run: npm run test:full
+
       - name: Run CMS transaction, governance, and controller tests
         run: |
           set -euo pipefail
@@ -124,13 +135,243 @@ jobs:
             --testTimeout=60000
 
       - name: Verify TypeScript compilation
-        run: npm run build
+        run: npm run build:prod
 
       - name: Run dependency security gate
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high
 
-      - name: Check migration files and patch formatting
+      - name: Install pinned frontend dependencies for authenticated browser validation
+        working-directory: geezle
+        run: npm ci --registry=https://registry.npmjs.org --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --no-audit --no-fund
+
+      - name: Install Chromium and WebKit for authenticated browser validation
+        working-directory: geezle
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Run local signup, Human Verification, authenticated suite, and logout regressions
+        shell: bash
+        working-directory: geezle-backend
+        env:
+          DATABASE_URL: postgresql://scrolith_test:ci-${{ github.run_id }}-${{ github.run_attempt }}-only@127.0.0.1:5432/scrolith_browser_test
+          TEST_DB_NAME: scrolith_browser_test
+          NODE_ENV: test
+          APP_RUNTIME: test
+          REDIS_TEST_MODE: local
+          REDIS_RATE_LIMIT_FAIL_CLOSED: 'true'
+          ALLOW_DEV_AUTH_BYPASS: 'false'
+          SCROLITH_TEST_SERVER_LISTEN: 'true'
+          PORT: '5000'
+          FRONTEND_ORIGIN: http://127.0.0.1:5173
+          FRONTEND_URL: http://127.0.0.1:5173
+          JWT_SECRET: scrolith_ci_only_auth_browser_secret_2026_local_validation
+          DISABLE_BACKGROUND_WORKERS: 'true'
+          SCROLITH_MONEY_MOVEMENT_ENABLED: 'false'
+          EXTERNAL_PLATFORM_API_ENABLED: 'false'
+          UPLOAD_DRIVER: local
+          SCROLITHA_PROVIDER: disabled
+          CERT_BASE_URL: http://127.0.0.1:5173
+          CERT_API_BASE: http://127.0.0.1:5000/api
+          CERT_LOCAL_HV_SOLVER: 'true'
+          CERT_RESULTS_DIR: ${{ runner.temp }}/scrolith-authenticated-browser-results
         run: |
           set -euo pipefail
-          git diff --exit-code "${{ github.event.pull_request.base.sha }}" -- prisma/migrations
-          git diff --check
+          browser_database='scrolith_browser_test'
+          if [[ "$TEST_DB_NAME" != "$browser_database" || "$DATABASE_URL" != */"$browser_database" ]]; then
+            echo 'Refusing to start browser validation with an unexpected database target.' >&2
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const name = process.env.TEST_DB_NAME;
+          if (name !== 'scrolith_browser_test') throw new Error('Unexpected browser test database name.');
+          const admin = new pg.Client({ connectionString: process.env.PG_ADMIN_URL });
+          await admin.connect();
+          try {
+            const existing = await admin.query('SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1', [name]);
+            if (existing.rowCount !== 0) throw new Error('Refusing to reuse an existing browser test database.');
+            await admin.query('CREATE DATABASE scrolith_browser_test OWNER scrolith_test');
+          } finally {
+            await admin.end();
+          }
+          NODE
+
+          NODE_ENV=test APP_RUNTIME=test npm run test:db:prepare
+          mkdir -p "$CERT_RESULTS_DIR"
+          api_log="$RUNNER_TEMP/scrolith-browser-api.log"
+          web_log="$RUNNER_TEMP/scrolith-browser-frontend.log"
+          node dist/server.js >"$api_log" 2>&1 &
+          api_pid=$!
+          (
+            cd ../geezle
+            exec env -i \
+              PATH="$PATH" \
+              HOME="$HOME" \
+              CI=true \
+              NODE_ENV=development \
+              VITE_BACKEND_URL=http://127.0.0.1:5000 \
+              VITE_API_URL=http://127.0.0.1:5000/api \
+              VITE_SCROLITH_ENV=ci \
+              ./node_modules/.bin/vite --host 127.0.0.1 --port 5173 --strictPort
+          ) >"$web_log" 2>&1 &
+          web_pid=$!
+          cleanup() {
+            kill "$web_pid" "$api_pid" 2>/dev/null || true
+            wait "$web_pid" "$api_pid" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/scrolith-certification-account-a.json" "$RUNNER_TEMP/scrolith-certification-account-b.json"
+          }
+          trap cleanup EXIT
+
+          wait_for_http() {
+            local url="$1"
+            for attempt in $(seq 1 60); do
+              if curl --silent --show-error --fail "$url" -o /dev/null; then return 0; fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! wait_for_http http://127.0.0.1:5000/api/readyz; then
+            echo 'Local API did not become ready against the disposable PostgreSQL and Redis services.' >&2
+            tail -n 60 "$api_log" | sed -E 's#(postgres(ql)?://)[^[:space:]" ]+#\1[DATABASE_URL_REDACTED]#g' >&2 || true
+            exit 1
+          fi
+          if ! wait_for_http http://127.0.0.1:5173/; then
+            echo 'Local frontend did not become available on the explicitly configured loopback URL.' >&2
+            tail -n 40 "$web_log" >&2 || true
+            exit 1
+          fi
+
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          await client.connect();
+          try {
+            const settings = {
+              masterEnabled: true,
+              emergencyDisabled: false,
+              endpoints: { login: true, signup: true, forgot_password: true, password_reset: true },
+              difficulty: 'easy',
+              challengeTypes: {
+                arithmetic: true, sequence: false, shape_count: false, icon_count: false,
+                largest_number: false, smallest_number: false, odd_even: false, color: false,
+                emoji: false, pattern: false, logic: false, time: false, object: false,
+                word: false, letter: false, common_sense: false
+              },
+              behavior: { alwaysVerify: true, riskBased: false, rememberDevice: false, skipLoggedInUsers: false, skipVerifiedSession: false }
+            };
+            await client.query(
+              `INSERT INTO "HumanVerificationSettings" ("id", "scope", "data", "createdAt", "updatedAt")
+               VALUES ('scrolith-ci-human-verification', 'default', $1::jsonb, now(), now())
+               ON CONFLICT ("scope") DO UPDATE SET "data" = EXCLUDED."data", "updatedAt" = now()`,
+              [JSON.stringify(settings)]
+            );
+          } finally {
+            await client.end();
+          }
+          NODE
+
+          signup_password="Scrolith-CI-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-desktop-chrome-a@example.invalid"
+          signup_b="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b@example.invalid"
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
+          )
+
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_b" SCROLITH_E2E_SIGNUP_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
+          )
+          (
+            cd ../geezle
+            env -i PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              node --import tsx --test scripts/seed-certification-scroll.test.mjs
+          )
+          fixture_output="$(
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_BROWSER_PROJECT=desktop-chrome \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
+              SCROLITH_E2E_VIEWER_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" \
+              node scripts/seed-certification-scroll.mjs
+          )"
+          scroll_fixture_id="$(printf '%s\n' "$fixture_output" | sed -n 's/^CERTIFICATION_SCROLL_FIXTURE_ID=//p' | tail -n 1)"
+          if [[ ! "$scroll_fixture_id" =~ ^[a-zA-Z0-9_-]{1,64}$ ]]; then
+            echo 'The disposable browser database did not produce a valid cross-account Scroll fixture ID.' >&2
+            exit 1
+          fi
+          echo 'Verified a synthetic public Scroll through the second authenticated account feed.'
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
+                --grep-invert 'local signup|Logout revokes the current authenticated session|interest survey controls are rendered for an available cross-account scroll'
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              CERT_REQUIRE_FEED_FIXTURES=true CERT_SCROLL_FIXTURE_ID="$scroll_fixture_id" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
+                --grep 'interest survey controls are rendered for an available cross-account scroll' \
+                tests/certification/specs/scroll.auth.spec.ts
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_LOGOUT_STORAGE_STATE_DESKTOP_CHROME="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
+          )
+
+      - name: Check migration files and patch formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_statuses="$(git diff --name-status --find-renames "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" -- prisma/migrations)"
+          if [[ -n "$migration_statuses" ]]; then
+            while IFS=$'\t' read -r status path; do
+              [[ -n "$status" ]] || continue
+              case "$status" in
+                A) echo "Additive migration allowed: $path" ;;
+                *) echo "Existing migration history is immutable: $status $path" >&2; exit 1 ;;
+              esac
+            done <<< "$migration_statuses"
+          fi
+          git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"

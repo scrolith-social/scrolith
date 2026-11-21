@@ -64,6 +64,7 @@ describe('loginApproval.service', () => {
     const service = await import('../loginApproval.service');
     const result = await service.evaluateLoginDevice(
       'user-1',
+      0,
       { deviceId: 'device-2', browserName: 'Chrome', platform: 'web' },
       { ip: '203.0.113.10', userAgent: 'test-agent' }
     );
@@ -73,6 +74,7 @@ describe('loginApproval.service', () => {
     expect(mockPrisma.loginApprovalAttempt.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         userId: 'user-1',
+        authSessionVersion: 0,
         requestedDeviceId: 'device-2',
         challenge: expect.any(String),
         status: 'PENDING',
@@ -89,6 +91,7 @@ describe('loginApproval.service', () => {
     const service = await import('../loginApproval.service');
     await expect(service.evaluateLoginDevice(
       'user-1',
+      0,
       { deviceId: 'device-new', platform: 'web' },
       {}
     )).resolves.toEqual(expect.objectContaining({ required: false, bypassed: true }));
@@ -98,7 +101,7 @@ describe('loginApproval.service', () => {
   test('bootstraps the first device without blocking the account', async () => {
     mockPrisma.loginTrustedDevice.count.mockResolvedValue(0);
     const service = await import('../loginApproval.service');
-    const result = await service.evaluateLoginDevice('user-1', { deviceId: 'device-1', platform: 'web' }, {});
+    const result = await service.evaluateLoginDevice('user-1', 0, { deviceId: 'device-1', platform: 'web' }, {});
     expect(result).toEqual({ required: false, bootstrapped: true });
     expect(mockPrisma.loginTrustedDevice.upsert).toHaveBeenCalled();
   });

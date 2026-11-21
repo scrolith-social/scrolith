@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getGcoinSettingsSafe } from '../utils/gcoinSettings';
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 // NOTE: Route handlers emit realtime wallet/transaction updates based on these fields.
 export type TransferResult = {
@@ -62,6 +63,7 @@ export class GcoinService {
   }
 
   async transfer(fromUserId: string, opts: { toRecipientId?: string; toEmail?: string; amount: number; note?: string; reference?: any; }) : Promise<TransferResult> {
+    assertMoneyMovementEnabled();
     // Resolve recipient
     let recipient;
     if (opts.toRecipientId) recipient = await this.getByRecipientId(opts.toRecipientId);
@@ -187,6 +189,7 @@ export class GcoinService {
   }
 
   async award(userId: string, amount: number, note?: string) {
+    assertMoneyMovementEnabled();
     const w = await this.ensureWalletForUser(userId);
     const tx = await prisma.$transaction(async (prismaTx) => {
       const gtx = await prismaTx.gcoinTransaction.create({ data: {
@@ -218,6 +221,7 @@ export class GcoinService {
   }
 
   async createConversionRequest(userId: string, amount: number, payoutMethodId: string) {
+    assertMoneyMovementEnabled();
     const req = await prisma.gcoinConversionRequest.create({ data: { userId, amountGcoin: amount, amountFiat: 0, status: 'pending' } });
     return req;
   }

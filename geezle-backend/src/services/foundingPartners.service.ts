@@ -4,6 +4,7 @@ import { Decimal } from '@prisma/client/runtime/client';
 import prisma from '../utils/prismaClient';
 import { encryptSecret } from '../utils/secretCipher';
 import { getStripeClient } from './stripeConfig.service';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 import { creditWallet } from './walletLedger.service';
 import { calculateEqualDistribution } from './foundingPartners.math';
 import { convertAmount, loadCurrencyConfig } from '../utils/currency';
@@ -84,6 +85,7 @@ export const createEnrollmentCheckout = async (input: {
   successUrl: string;
   cancelUrl: string;
 }) => {
+  assertMoneyMovementEnabled();
   if (!input.termsAccepted) throw new Error('Founding Partners terms must be accepted');
   if (!input.fullName.trim() || !input.country.trim() || !input.city.trim()) throw new Error('Full name, country, and city are required');
   if (!input.idempotencyKey.trim()) throw new Error('Idempotency-Key is required');
@@ -129,6 +131,7 @@ export const createEnrollmentCheckout = async (input: {
 };
 
 export const activateFoundingPartnerFromPayment = async (paymentId: string, providerReferenceId: string, settledAmount?: number | null, settledCurrency?: string | null, actorUserId?: string | null) => {
+  assertMoneyMovementEnabled();
   return prisma.$transaction(async (tx) => {
     const payment = await tx.foundingPartnerEnrollmentPayment.findUnique({ where: { id: paymentId } });
     if (!payment) throw new Error('Founding Partners enrollment payment was not found');
@@ -171,31 +174,80 @@ export const activateFoundingPartnerFromPayment = async (paymentId: string, prov
 export const upsertProfitPeriod = async (input: { year: number; sources: Array<{ sourceType: string; clearedAmount: number; adjustments?: number; notes?: string }>; notes?: string; actorUserId: string }) => {
   if (!Number.isInteger(input.year) || input.year < 2020 || input.year > 2200) throw new Error('Profit period year is invalid');
   if (!input.sources.length || input.sources.some((source) => !source.sourceType.trim() || !Number.isFinite(source.clearedAmount) || source.clearedAmount < 0 || !Number.isFinite(source.adjustments || 0))) throw new Error('Profit sources must contain valid non-negative cleared amounts');
-  const program = await getOrCreateProgram();
-  const period = await prisma.foundingPartnerProfitPeriod.upsert({
-    where: { programId_periodYear: { programId: program.id, periodYear: input.year } },
-    create: { programId: program.id, periodYear: input.year, notes: input.notes || null },
-    update: { notes: input.notes || null }
+  return prisma.$transaction(async (tx) => {
+    const program = await tx.foundingPartnerProgram.upsert({
+      where: { programKey: FOUNDING_PARTNERS_KEY },
+      create: { programKey: FOUNDING_PARTNERS_KEY },
+      update: {}
+    });
+    const period = await tx.foundingPartnerProfitPeriod.upsert({
+      where: { programId_periodYear: { programId: program.id, periodYear: input.year } },
+      create: { programId: program.id, periodYear: input.year, notes: input.notes || null },
+      // Do not mutate an existing period until its locked status is checked.
+      update: {}
+    });
+
+    // Save and close serialize on this row. READ COMMITTED gives a waiter a
+    // fresh status read after the transaction holding the row lock commits.
+    await tx.$queryRaw`SELECT "id" FROM "FoundingPartnerProfitPeriod" WHERE "id" = ${period.id} FOR UPDATE`;
+    const lockedPeriod = await tx.foundingPartnerProfitPeriod.findUniqueOrThrow({ where: { id: period.id } });
+    if (lockedPeriod.status !== 'OPEN') throw new Error('Only open profit periods can be edited');
+
+    await tx.foundingPartnerProfitPeriod.update({
+      where: { id: lockedPeriod.id },
+      data: { notes: input.notes || null }
+    });
+    for (const source of input.sources) {
+      await tx.foundingPartnerProfitSource.upsert({
+        where: { periodId_sourceType: { periodId: lockedPeriod.id, sourceType: source.sourceType } },
+        create: { periodId: lockedPeriod.id, sourceType: source.sourceType, clearedAmount: money(source.clearedAmount), adjustments: money(source.adjustments || 0), notes: source.notes || null },
+        update: { clearedAmount: money(source.clearedAmount), adjustments: money(source.adjustments || 0), notes: source.notes || null }
+      });
+    }
+    await tx.foundingPartnerAuditLog.create({
+      data: {
+        programId: program.id,
+        action: 'PROFIT_PERIOD_SOURCES_UPDATED',
+        entityType: 'profit_period',
+        entityId: lockedPeriod.id,
+        actorUserId: input.actorUserId,
+        metadata: { sourceCount: input.sources.length }
+      }
+    });
+    return tx.foundingPartnerProfitPeriod.findUniqueOrThrow({
+      where: { id: lockedPeriod.id },
+      include: { sources: true }
+    });
   });
-  if (period.status !== 'OPEN') throw new Error('Only open profit periods can be edited');
-  await prisma.$transaction(input.sources.map((source) => prisma.foundingPartnerProfitSource.upsert({
-    where: { periodId_sourceType: { periodId: period.id, sourceType: source.sourceType } },
-    create: { periodId: period.id, sourceType: source.sourceType, clearedAmount: money(source.clearedAmount), adjustments: money(source.adjustments || 0), notes: source.notes || null },
-    update: { clearedAmount: money(source.clearedAmount), adjustments: money(source.adjustments || 0), notes: source.notes || null }
-  })));
-  await audit(program.id, 'PROFIT_PERIOD_SOURCES_UPDATED', 'profit_period', period.id, input.actorUserId, { sourceCount: input.sources.length });
-  return prisma.foundingPartnerProfitPeriod.findUniqueOrThrow({ where: { id: period.id }, include: { sources: true } });
 };
 
 export const closeProfitPeriod = async (periodId: string, actorUserId: string) => {
-  const period = await prisma.foundingPartnerProfitPeriod.findUnique({ where: { id: periodId }, include: { sources: true } });
-  if (!period || period.status !== 'OPEN') throw new Error('Profit period is not open');
-  const clearedProfit = period.sources.reduce((sum, source) => sum.plus(source.clearedAmount).plus(source.adjustments), new Decimal(0)).toDecimalPlaces(2);
-  const program = await prisma.foundingPartnerProgram.findUniqueOrThrow({ where: { id: period.programId } });
-  const partnerPool = clearedProfit.mul(program.profitSharePercent).div(100).toDecimalPlaces(2);
-  const updated = await prisma.foundingPartnerProfitPeriod.update({ where: { id: periodId }, data: { status: 'CLOSED', clearedProfit, partnerPool, closedAt: new Date() } });
-  await audit(program.id, 'PROFIT_PERIOD_CLOSED', 'profit_period', periodId, actorUserId, { clearedProfit: clearedProfit.toFixed(2), partnerPool: partnerPool.toFixed(2) });
-  return updated;
+  return prisma.$transaction(async (tx) => {
+    const lockedRows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "FoundingPartnerProfitPeriod" WHERE "id" = ${periodId} FOR UPDATE`;
+    if (lockedRows.length === 0) throw new Error('Profit period is not open');
+    const period = await tx.foundingPartnerProfitPeriod.findUniqueOrThrow({ where: { id: periodId }, include: { sources: true } });
+    if (period.status !== 'OPEN') throw new Error('Profit period is not open');
+
+    const clearedProfit = period.sources.reduce((sum, source) => sum.plus(source.clearedAmount).plus(source.adjustments), new Decimal(0)).toDecimalPlaces(2);
+    const program = await tx.foundingPartnerProgram.findUniqueOrThrow({ where: { id: period.programId } });
+    const partnerPool = clearedProfit.mul(program.profitSharePercent).div(100).toDecimalPlaces(2);
+    const changed = await tx.foundingPartnerProfitPeriod.updateMany({
+      where: { id: periodId, status: 'OPEN' },
+      data: { status: 'CLOSED', clearedProfit, partnerPool, closedAt: new Date() }
+    });
+    if (changed.count !== 1) throw new Error('Profit period is not open');
+    await tx.foundingPartnerAuditLog.create({
+      data: {
+        programId: program.id,
+        action: 'PROFIT_PERIOD_CLOSED',
+        entityType: 'profit_period',
+        entityId: periodId,
+        actorUserId,
+        metadata: { clearedProfit: clearedProfit.toFixed(2), partnerPool: partnerPool.toFixed(2) }
+      }
+    });
+    return tx.foundingPartnerProfitPeriod.findUniqueOrThrow({ where: { id: periodId } });
+  });
 };
 
 export const approveProfitPeriod = async (periodId: string, actorUserId: string) => {
@@ -231,6 +283,7 @@ export const approveDistributionRun = async (runId: string, actorUserId: string)
 export const listProfitPeriods = async () => prisma.foundingPartnerProfitPeriod.findMany({ orderBy: { periodYear: 'desc' }, include: { sources: true, distributionRun: true } });
 
 export const executeDistributionRun = async (runId: string, actorUserId: string) => {
+  assertMoneyMovementEnabled();
   const run = await prisma.foundingPartnerDistributionRun.findUnique({ where: { id: runId }, include: { period: { include: { program: true } } } });
   if (!run || run.status !== 'APPROVED') throw new Error('Distribution run is not approved for execution');
   if (run.approvedById === actorUserId) throw new Error('Distribution execution requires a different authorized operator');
@@ -275,6 +328,7 @@ export const executeDistributionRun = async (runId: string, actorUserId: string)
 };
 
 export const handleFoundingPartnerStripeEvent = async (event: Stripe.Event) => {
+  assertMoneyMovementEnabled();
   const object: any = event.data.object;
   const paymentId = object?.metadata?.foundingPartnerPaymentId || object?.client_reference_id;
   if (!paymentId) return false;

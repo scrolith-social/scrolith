@@ -1,7 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { setSafeObjectValue } from '../utils/security/safeObjectKey';
 
 type MaintenanceCache = {
@@ -79,13 +78,13 @@ const isPrivilegedRole = (role?: string | null): boolean => {
   return normalized.includes('admin') || normalized.includes('staff');
 };
 
-const hasPrivilegedAccess = (req: Request): boolean => {
+const hasPrivilegedAccess = async (req: Request): Promise<boolean> => {
   try {
     const token = getTokenFromRequest(req);
     if (!token) return false;
-    const secret = jwtSecret();
-    const decoded = jwt.verify(token, secret) as { role?: string };
-    return isPrivilegedRole(decoded?.role);
+    if (req.user?.id) return isPrivilegedRole(req.user.role);
+    const auth = await resolveAuthSessionToken(token);
+    return Boolean(auth?.user.isActive && isPrivilegedRole(auth.user.role));
   } catch {
     return false;
   }
@@ -138,7 +137,7 @@ export const maintenanceModeMiddleware = async (req: Request, res: Response, nex
       return next();
     }
 
-    if (hasPrivilegedAccess(req)) {
+    if (await hasPrivilegedAccess(req)) {
       return next();
     }
 

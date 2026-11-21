@@ -7,6 +7,7 @@ import {
 } from '../../controllers/accountModeration.controller';
 import { requireAnyPermission, requirePermission } from '../../middleware/rbac.middleware';
 import { extractRequestAuditMeta, writeAdminAuditEvent } from '../../services/adminAudit.service';
+import { revokeAllAuthSessionsInTransaction } from '../../services/authSession.service';
 
 const router = express.Router();
 const getPrisma = () => prisma;
@@ -458,9 +459,9 @@ router.post('/:id/password', requireAnyPermission('users.update', 'users.moderat
     const hashed = await bcrypt.hash(password.trim(), 10);
 
     if (prismaClient) {
-      await prismaClient.user.update({
-        where: { id: userId },
-        data: { passwordHash: hashed }
+      await prismaClient.$transaction(async (tx) => {
+        await tx.user.update({ where: { id: userId }, data: { passwordHash: hashed } });
+        await revokeAllAuthSessionsInTransaction(tx, userId, 'admin_password_reset');
       });
     } else {
       ensureMemoryUser(req);
@@ -573,9 +574,9 @@ router.delete('/:id', requireAnyPermission('users.delete', 'users.moderate'), as
           });
         }
       }
-      await prismaClient.user.update({
-        where: { id: userId },
-        data: { isActive: false }
+      await prismaClient.$transaction(async (tx) => {
+        await tx.user.update({ where: { id: userId }, data: { isActive: false } });
+        await revokeAllAuthSessionsInTransaction(tx, userId, 'admin_account_deactivated');
       });
       applyStatusOverride(userId, 'inactive');
     } else {

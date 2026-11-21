@@ -14,7 +14,7 @@ It is written for this repository layout:
 - `deploy/docker/` -> production Dockerfiles
 
 Backend runtime note:
-- The backend container uses `ts-node` in transpile-only mode (same behavior as `npm run dev`) to keep runtime stable while legacy strict TypeScript build issues are being cleaned up.
+- The reviewed Azure backend image builds TypeScript into `dist/` and starts with `node dist/server.js`; it does not use the development `ts-node` command.
 
 ---
 
@@ -32,7 +32,7 @@ Install these tools on your machine:
 
 Accounts/services needed:
 
-- GitHub repository: `https://github.com/geezlesocial/scrolith`
+- GitHub repository: `https://github.com/scrolith-social/scrolith`
 - Managed PostgreSQL (recommended) or a secure self-managed Postgres
 - Domain + TLS certificate (production)
 
@@ -121,72 +121,7 @@ Then open a Pull Request to `main`.
 
 ## 5) Microsoft Azure deployment
 
-Recommended: Azure Container Apps + Azure Database for PostgreSQL.
-
-### 5.1 Create Azure resources
-
-```bash
-az login
-az group create --name rg-scrolith-prod --location eastus
-az acr create --name scrolithacr --resource-group rg-scrolith-prod --sku Basic
-az acr login --name scrolithacr
-```
-
-### 5.2 Build and push images
-
-```bash
-# from repository root
-docker build -f deploy/docker/backend.Dockerfile -t scrolithacr.azurecr.io/scrolith-backend:latest .
-docker build -f deploy/docker/frontend.Dockerfile -t scrolithacr.azurecr.io/scrolith-frontend:latest .
-
-docker push scrolithacr.azurecr.io/scrolith-backend:latest
-docker push scrolithacr.azurecr.io/scrolith-frontend:latest
-```
-
-### 5.3 Create Container Apps environment
-
-```bash
-az containerapp env create \
-  --name cae-scrolith-prod \
-  --resource-group rg-scrolith-prod \
-  --location eastus
-```
-
-### 5.4 Deploy backend app
-
-```bash
-az containerapp create \
-  --name scrolith-backend \
-  --resource-group rg-scrolith-prod \
-  --environment cae-scrolith-prod \
-  --image scrolithacr.azurecr.io/scrolith-backend:latest \
-  --target-port 5000 \
-  --ingress external \
-  --registry-server scrolithacr.azurecr.io \
-  --env-vars NODE_ENV=production PORT=5000 DATABASE_URL="<your-db-url>" JWT_SECRET="<your-secret>" FRONTEND_URL="https://<frontend-domain>"
-```
-
-### 5.5 Deploy frontend app
-
-Set build args before image build (`VITE_API_URL`, `VITE_BACKEND_URL`) so frontend points to your backend URL.
-
-```bash
-az containerapp create \
-  --name scrolith-frontend \
-  --resource-group rg-scrolith-prod \
-  --environment cae-scrolith-prod \
-  --image scrolithacr.azurecr.io/scrolith-frontend:latest \
-  --target-port 80 \
-  --ingress external \
-  --registry-server scrolithacr.azurecr.io
-```
-
-### 5.6 Finalize
-
-- Map custom domains
-- Enforce HTTPS
-- Configure autoscaling rules
-- Add Azure Monitor alerts/log analytics
+The old Azure sample commands in this guide have been retired: they used `eastus`, mutable `latest` tags, secret-bearing CLI arguments, and the wrong frontend container port. Follow the pinned-source, Southeast Asia runbook instead: [Azure Container Apps release guide](AZURE_CONTAINER_APPS_RELEASE_GUIDE.md). It is a review and deployment-planning document, not authorization to create resources or deploy.
 
 ---
 

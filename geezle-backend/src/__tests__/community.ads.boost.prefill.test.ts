@@ -1,14 +1,13 @@
-import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import app from '../testApp';
+import { issueAuthSessionToken } from '../services/authSession.service';
 import prisma from '../utils/prismaClient';
 
 describe('Community boost prefill', () => {
-  const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret';
   const ownerId = 'boost-community-owner';
   const viewerId = 'boost-community-viewer';
-  const ownerToken = jwt.sign({ id: ownerId }, JWT_SECRET);
-  const viewerToken = jwt.sign({ id: viewerId }, JWT_SECRET);
+  let ownerToken = '';
+  let viewerToken = '';
   const previousDevBypass = process.env.ALLOW_DEV_AUTH_BYPASS;
   let postId: string;
   let pageId: string;
@@ -41,6 +40,9 @@ describe('Community boost prefill', () => {
         isActive: true
       }
     });
+
+    ownerToken = await issueAuthSessionToken(ownerId);
+    viewerToken = await issueAuthSessionToken(viewerId);
 
     const postFile = await prisma.file.create({
       data: {

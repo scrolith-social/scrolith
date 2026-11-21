@@ -18,7 +18,41 @@ jest.mock('../../src/utils/prismaClient', () => ({
 const { processEarningForPost } = require('../../src/services/gcoinEarningEngine');
 
 describe('gcoinEarningEngine', () => {
+  let previousMoneyMovementGate: string | undefined;
+
+  beforeAll(() => {
+    // Enabled-path behavior is exercised with Prisma fully mocked. Preserve
+    // and restore the full runner's hard-off setting around this suite.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+  });
+
   beforeEach(() => jest.clearAllMocks());
+
+  afterAll(() => {
+    if (previousMoneyMovementGate === undefined) {
+      delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    } else {
+      process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+    }
+  });
+
+  test('rejects earnings before database work while money movement is disabled', async () => {
+    const enabledGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'false';
+    try {
+      await expect(processEarningForPost('post-disabled')).rejects.toMatchObject({
+        code: 'MONEY_MOVEMENT_DISABLED'
+      });
+      expect(mockPrisma.gcoinConfig.findFirst).not.toHaveBeenCalled();
+    } finally {
+      if (enabledGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = enabledGate;
+      }
+    }
+  });
 
   test('awards coins when thresholds crossed and prevents double award', async () => {
     mockPrisma.gcoinConfig.findFirst.mockResolvedValue({ data: { viewsUnit: 100, coinPerViewsUnit: 1, adminFeePercent: 0 } });

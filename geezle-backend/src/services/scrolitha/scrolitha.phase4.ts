@@ -106,7 +106,7 @@ const armSchema = z.object({
   meanTopOneAccuracy: z.number().min(0).max(1),
   safetyPassRate: z.number().min(0).max(1),
   estimatedP50LatencyMs: z.number().nonnegative(),
-  modelTiers: z.record(z.number().int().nonnegative())
+  modelTiers: z.record(z.string(), z.number().int().nonnegative())
 });
 
 const scoreTermCoverage = (text: string, terms: string[]) => {

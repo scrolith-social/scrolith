@@ -1,7 +1,9 @@
 import Stripe from 'stripe';
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 
 export async function reconcileAdPayments() {
+  assertMoneyMovementEnabled();
   console.log('Starting ad payment reconciliation...');
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   const isTest = (process.env.NODE_ENV || '') === 'test';

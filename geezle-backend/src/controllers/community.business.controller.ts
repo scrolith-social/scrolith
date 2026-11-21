@@ -2,7 +2,6 @@ import { Request, Response } from 'express';
 import prisma from '../utils/prismaClient';
 import realtime from '../utils/realtime';
 import { addFileUsage, removeUsage, syncFileUsages } from '../utils/fileUsage';
-import jwt from 'jsonwebtoken';
 import { extractLocationMutation, toLocationResponse } from '../services/location/location.service';
 import { getStorefrontSettings, isBusinessPageStorefrontEnabled } from '../services/storefront.service';
 import {
@@ -10,7 +9,7 @@ import {
   resolveSubmittedContentOfferTags
 } from '../services/contentOfferTagging.service';
 import { normalizeUploadsPath, resolveDirectMediaUrl, resolveFileBaseUrl } from '../utils/mediaUrl';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import { setSafeObjectValue } from '../utils/security/safeObjectKey';
 import { isLikelyEmail } from '../utils/security/boundedInput';
 
@@ -82,17 +81,9 @@ const resolveOptionalUserFromRequest = async (req: Request): Promise<{ id: strin
   if (!token) return null;
 
   try {
-    const secret = jwtSecret();
-    const decoded = jwt.verify(token, secret) as { id?: string };
-    const userId = String(decoded?.id || '').trim();
-    if (!userId) return null;
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, role: true, isActive: true }
-    });
-    if (!user || user.isActive === false) return null;
-    return { id: user.id, role: user.role };
+    const auth = await resolveAuthSessionToken(token);
+    if (!auth || auth.user.isActive === false) return null;
+    return { id: auth.user.id, role: auth.user.role };
   } catch {
     return null;
   }

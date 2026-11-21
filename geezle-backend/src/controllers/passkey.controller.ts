@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -10,14 +9,13 @@ import {
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 import prisma from '../utils/prismaClient';
 import {
-  JWT_EXPIRES_IN,
-  JWT_SECRET,
   getClientMeta,
   logAuthEvent,
   mapUserPayload,
   safeFindUserByEmail,
   safeFindUserById
 } from './auth.controller';
+import { issueAuthSessionToken } from '../services/authSession.service';
 import {
   PASSKEY_PURPOSE,
   consumePasskeyChallenge,
@@ -66,12 +64,8 @@ const clientMetadata = (req: Request) => {
   };
 };
 
-const issueSession = (res: Response, user: any) => {
-  const token = (jwt as any).sign(
-    { id: user.id, email: user.email, role: user.role },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN as string }
-  );
+const issueSession = async (res: Response, user: any) => {
+  const token = await issueAuthSessionToken(user.id);
   res.cookie('Scrolith_token', token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -292,7 +286,7 @@ export const completePasskeyAuthentication = async (req: Request, res: Response)
 
     const user = await safeFindUserById(stored.userId);
     if (!user || user.isActive === false) return res.status(403).json({ success: false, error: 'Account unavailable' });
-    const token = issueSession(res, user);
+    const token = await issueSession(res, user);
     void logAuthEvent({ userId: user.id, email: user.email, event: 'passkey_authenticated', meta: { credentialId: stored.credentialId, deviceType: verification.authenticationInfo.credentialDeviceType, backedUp: verification.authenticationInfo.credentialBackedUp } }, req);
     return res.json({ success: true, user: mapUserPayload(user), token, accessToken: token });
   } catch (error: any) {

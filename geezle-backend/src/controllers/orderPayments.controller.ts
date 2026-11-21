@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 import { configuredHttpsHosts, validateHttpsOutboundUrl } from '../utils/security/safeOutboundUrl';
 import { initiateHostedCheckout } from '../services/payments/providers/payoneer';
 import { createFxLock } from '../services/fxLock.service';
@@ -267,6 +268,7 @@ const resolveExtrasTotal = (gig: any, selectedExtras: any[]) => {
 
 export const purchaseGig = async (req: Request, res: Response) => {
   try {
+    assertMoneyMovementEnabled();
     const user = req.user as { id: string; role?: string; email?: string; country?: string | null } | undefined;
     if (!user?.id) return fail(res, 401, 'Unauthorized', 'ERR_UNAUTHORIZED');
 

@@ -2,15 +2,18 @@
 -- confirms the staging database, schema, table, effective ACLs, and RLS policy.
 -- The guard intentionally stops psql unless an operator explicitly supplies
 -- G1_ROLE_TEMPLATE_APPROVED=true after separate change approval.
+\set _scrolith_guard_failed true
 \if :{?G1_ROLE_TEMPLATE_APPROVED}
-\if :G1_ROLE_TEMPLATE_APPROVED
+  \if :G1_ROLE_TEMPLATE_APPROVED
+    \set _scrolith_guard_failed false
+  \else
+    \echo 'STOP: explicit role-template approval is required.'
+  \endif
 \else
-\echo 'STOP: explicit role-template approval is required.'
-\quit 3
+  \echo 'STOP: explicit role-template approval is required.'
 \endif
-\else
-\echo 'STOP: explicit role-template approval is required.'
-\quit 3
+\if :_scrolith_guard_failed
+DO $psql_guard_failure$ BEGIN RAISE EXCEPTION 'explicit role-template approval is required'; END $psql_guard_failure$;
 \endif
 
 -- Replace these placeholders only after database-owner verification.

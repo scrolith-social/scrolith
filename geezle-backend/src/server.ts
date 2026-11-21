@@ -9,19 +9,25 @@ import helmet from 'helmet';
 import { createHash, randomUUID } from 'crypto';
 import prisma, { ensurePrismaReady, getPrismaConnectionState } from './utils/prismaClient';
 import fs from 'fs';
-import jwt from 'jsonwebtoken'; // Ensure jwt import exists
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import validateEnv from './utils/validateEnv';
 import { resolveDirectMediaUrl, resolveFileBaseUrl } from './utils/mediaUrl';
-import { runtimePolicy } from './config/runtimePolicy';
+import { runtimePolicy, shouldListenForTestServer } from './config/runtimePolicy';
+import { isMoneyMovementEnabled } from './config/moneyMovement';
 import { getRuntimeStartupPlan } from './config/runtimeStartup';
 import { isScrolithFrontendRevisionOrigin } from './config/cors';
 import { classifyApiRateLimitRoute } from './middleware/apiRateLimitPolicy';
 import { createDistributedRateLimitStore } from './middleware/distributedRateLimitStore';
-import { jwtSecret } from './utils/security/requiredSecret';
+import {
+  attachSocketAuthSessionGuard,
+  isAuthSessionRecordActive,
+  pruneExpiredAuthSessions,
+  resolveAuthSessionToken
+} from './services/authSession.service';
 import { getTrustedClientIp } from './utils/security/clientIdentity';
-import { handleBasicHealth, isBasicHealthPath } from './middleware/basicHealth';
+import { handleBasicHealth, isBasicHealthPath, isReadinessPath } from './middleware/basicHealth';
 import { safeLogLine } from './utils/security/safeLog';
+import { moneyMovementHardOff } from './middleware/moneyMovementHardOff';
 
 // Import routes
 import cmsRoutes from './routes/cms';
@@ -130,6 +136,7 @@ import { reconcileAdPayments } from './scripts/reconcileAdPayments';
 import { registerInsightsJobs } from './modules/insights/jobs/insights.jobs';
 import { registerFxJobs } from './services/fx.service';
 import { startDemoAutomationScheduler } from './services/systemDemoAccounts.service';
+import { withDistributedJobLock } from './services/distributedJobLock.service';
 import { clientResumeReviewRoutes, freelancerResumeRoutes, resumePublicRoutes } from './modules/resume/resume.routes';
 import fxAdminRoutes from './routes/admin/fx.routes';
 import { insightsActionTrackerMiddleware } from './modules/insights/realtime/insights.tracker.middleware';
@@ -699,6 +706,10 @@ const emitVoiceEventToUsers = (userIds: string[], event: string, payload: Record
 
 const resolveSocketUserId = (socket: any) => String(socket?.data?.user?.id || '').trim();
 const resolveSocketRole = (socket: any) => String(socket?.data?.user?.role || '').trim().toLowerCase();
+const sanitizeSocketHandshakeQuery = (query: Record<string, unknown> | undefined) =>
+  Object.fromEntries(Object.entries(query || {}).filter(([key]) =>
+    !/(token|authorization|secret|credential|password)/i.test(key)
+  ));
 /** Admin from authenticated DB principal only — never client query.role / headers. */
 const isAdminRoleValue = (role: string) => {
   try {
@@ -741,19 +752,25 @@ const authenticateSocketFromHandshake = async (socket: any) => {
     : tokenRaw;
   if (!token) return null;
 
-  const secret = jwtSecret();
-  const decoded = jwt.verify(token, secret) as any;
-  if (!decoded || !decoded.id) return null;
-
-  const user = await prisma.user.findUnique({
-    where: { id: decoded.id },
-    select: { id: true, email: true, role: true, isActive: true }
+  const auth = await resolveAuthSessionToken(String(token));
+  if (!auth || !auth.user.isActive) throw new Error('unauthorized');
+  const user = auth.user;
+  const sessionActive = await isAuthSessionRecordActive({
+    sessionId: auth.sessionId,
+    userId: auth.userId,
+    sessionVersion: auth.sessionVersion,
+    role: user.role
   });
-  if (!user || !user.isActive) return null;
+  if (!sessionActive) throw new Error('unauthorized');
 
   (socket as any).data = (socket as any).data || {};
   // Authoritative principal only — never copy handshake.query.role
   (socket as any).data.user = { id: user.id, role: user.role, email: user.email };
+  (socket as any).data.authSession = {
+    sessionId: auth.sessionId,
+    userId: auth.userId,
+    sessionVersion: auth.sessionVersion
+  };
   return (socket as any).data.user;
 };
 const toVoiceSocketError = (error: any, fallbackMessage: string) => {
@@ -1154,6 +1171,7 @@ communityNs.use(async (socket, next) => {
 });
 
 communityNs.on('connection', (socket) => {
+  attachSocketAuthSessionGuard(socket);
   // Never log handshake query values because legacy clients may send tokens there.
   console.log('Client connected to /community namespace', { id: socket.id });
   traceMessages('socket.connected', {
@@ -1241,7 +1259,7 @@ communityNs.on('connection', (socket) => {
     authSource: 'jwt',
     isAuthenticated: Boolean((socket as any).data?.user?.id),
     rooms: Array.from(socket.rooms.values()).filter((room) => room !== socket.id),
-    handshakeQuery: socket.handshake.query,
+    handshakeQuery: sanitizeSocketHandshakeQuery(socket.handshake.query),
     metadata: {
       address: socket.handshake.address || null,
       userAgent: String(socket.handshake.headers?.['user-agent'] || '')
@@ -3684,10 +3702,23 @@ communityNs.on('connection', (socket) => {
 let voiceCallSweepInterval: NodeJS.Timeout | null = null;
 if (runtimePolicy.backgroundWorkersEnabled) {
   voiceCallSweepInterval = setInterval(() => {
-    void markExpiredRingingCallsAsMissed();
+    void withDistributedJobLock('voice:expired-ringing-call-sweep', () => markExpiredRingingCallsAsMissed())
+      .catch((error) => console.error('[voice] scheduled sweep failed:', error));
   }, VOICE_CALL_RING_SWEEP_MS);
   voiceCallSweepInterval.unref?.();
 }
+
+// Session rows are needed only until token expiry plus a short operational
+// retention window. Multiple API instances may run this idempotent cleanup.
+const authSessionCleanupInterval = setInterval(() => {
+  void pruneExpiredAuthSessions().catch(() => {
+    console.warn('[auth-session] Expired session cleanup deferred; protected auth remains fail-closed');
+  });
+}, 6 * 60 * 60 * 1000);
+authSessionCleanupInterval.unref?.();
+void pruneExpiredAuthSessions().catch(() => {
+  console.warn('[auth-session] Initial cleanup deferred; protected auth remains fail-closed');
+});
 
 // Socket auth: verify JWT if provided, attach user to socket.data.user
 io.use(async (socket, next) => {
@@ -3845,8 +3876,9 @@ const isAuthCriticalPath = (req: { path?: string; originalUrl?: string; baseUrl?
   return false;
 };
 
+const apiRateLimitStore = createDistributedRateLimitStore();
 const limiter = rateLimit({
-  store: createDistributedRateLimitStore(),
+  store: apiRateLimitStore,
   windowMs: apiRateLimitWindowMs,
   max: (req) => {
     const auth = String(req.headers.authorization || '').trim();
@@ -3903,7 +3935,7 @@ const limiter = rateLimit({
   // Skip rate limiting only for non-production local/dev — never via client headers.
   skip: (req) => {
     try {
-      if (isBasicHealthPath(req)) return true;
+      if (isBasicHealthPath(req) || isReadinessPath(req)) return true;
       if (req.path.includes('/socket.io/')) return true;
       // OAuth start is a browser redirect, not an API thrash vector.
       const originalUrl = String(req.originalUrl || '').toLowerCase();
@@ -3958,9 +3990,17 @@ app.use((req: Request, res: Response, next) => {
   next();
 });
 
+// Fail closed on financial mutations before raw-body webhook or API handlers.
+// Reads and unrelated community/account operations remain available.
+app.use(moneyMovementHardOff);
+
 // Stripe webhook for wallet top-ups (must be raw body)
 app.post('/api/payments/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWalletWebhook);
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWalletWebhook);
+
+// The legacy payment router is mounted below the global JSON parser. Preserve
+// the signed raw payload for its Stripe webhook before express.json consumes it.
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -4329,14 +4369,41 @@ app.get('/api/health/details', authMiddleware, adminMiddleware, (_req: Request, 
 });
 
 // Readiness probe (additive; does not change /api/health status codes)
-const readinessHandler = (req: Request, res: Response) => {
+const withReadinessTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Readiness dependency timeout')), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const readinessHandler = async (req: Request, res: Response) => {
   try {
     res.setHeader('Cache-Control', 'no-store');
     const dbState = getPrismaConnectionState();
-    const ready = dbState !== 'degraded';
+    let databaseReady = false;
+    try {
+      await withReadinessTimeout(prisma.$queryRaw`SELECT 1`, 2500);
+      databaseReady = true;
+    } catch {
+      databaseReady = false;
+    }
+
+    const redisUrlConfigured = Boolean(String(process.env.REDIS_URL || process.env.REDIS || '').trim());
+    const redisRequired = redisUrlConfigured || ['production', 'staging'].includes(String(process.env.NODE_ENV || '').toLowerCase());
+    const redisReady = apiRateLimitStore ? await apiRateLimitStore.checkHealth() : !redisRequired;
+    const ready = databaseReady && redisReady;
     const payload = {
       status: ready ? 'READY' : 'NOT_READY',
-      database: { status: dbState },
+      database: { status: databaseReady ? 'up' : dbState === 'degraded' ? 'degraded' : 'down' },
+      redis: { status: apiRateLimitStore ? (redisReady ? 'up' : 'down') : redisRequired ? 'down' : 'skipped' },
       timestamp: new Date().toISOString(),
       requestId: (req as any).requestId || null
     };
@@ -4722,6 +4789,7 @@ app.get('/api/_routes', (req: Request, res: Response) => {
 // Socket.io connection with enhanced logging and error handling
 io.on('connection', (socket) => {
   try {
+    attachSocketAuthSessionGuard(socket);
     console.log(`Socket connected: ${socket.id} - Transport: ${socket.conn.transport.name}`);
     console.log(`Total connections: ${io.engine.clientsCount}`);
     const syncRootRealtimeRooms = () => {
@@ -4752,7 +4820,7 @@ io.on('connection', (socket) => {
       authSource: (socket as any).data?.user?.id ? 'jwt' : 'guest',
       isAuthenticated: Boolean((socket as any).data?.user?.id),
       rooms: Array.from(socket.rooms.values()).filter((room) => room !== socket.id),
-      handshakeQuery: socket.handshake.query,
+      handshakeQuery: sanitizeSocketHandshakeQuery(socket.handshake.query),
       metadata: {
         address: socket.handshake.address || null,
         userAgent: String(socket.handshake.headers?.['user-agent'] || '')
@@ -5051,9 +5119,10 @@ app.use((err: Error, req: Request, res: Response, next: any) => {
   });
 });
 
-// Start server (skip auto-listen during test runs to avoid port conflicts)
+// Test runs require an explicit safe opt-in before the server binds a loopback port.
 const PORT = parseInt(process.env.PORT!) || 5000;
-if (!runtimePolicy.isTest) {
+const allowTestServerListen = shouldListenForTestServer();
+if (!runtimePolicy.isTest || allowTestServerListen) {
   void (async () => {
     let prismaReady = false;
     try {
@@ -5069,7 +5138,8 @@ if (!runtimePolicy.isTest) {
       prismaReady
     });
 
-    server.listen(PORT, async () => {
+    const listenOptions = runtimePolicy.isTest ? { port: PORT, host: '127.0.0.1' } : PORT;
+    server.listen(listenOptions, async () => {
     console.log(`========================================`);
     console.log(`🚀 Scrolith Marketplace Backend Started`);
     console.log(`📍 Port: ${PORT}`);
@@ -5105,18 +5175,20 @@ if (!runtimePolicy.isTest) {
       console.warn('[startup] background workers are disabled or Prisma is not ready.');
     }
 
-    // Initialize AdPayment reconciliation: run once and schedule periodically
-    if (startupPlan.startBackgroundWorkers) {
+    // Payment reconciliation can change paid/activated state, so it follows the
+    // same default-off server policy as request-driven money movement.
+    if (startupPlan.startBackgroundWorkers && isMoneyMovementEnabled()) {
       try {
       if (process.env.STRIPE_SECRET_KEY) {
         // Run an initial reconciliation on startup
-        reconcileAdPayments().catch(err => console.error('Initial reconcileAdPayments failed:', err));
+        withDistributedJobLock('payments:ad-reconciliation', () => reconcileAdPayments())
+          .catch(err => console.error('Initial reconcileAdPayments failed:', err));
 
         // Schedule reconciliation every 5 minutes
         const reconcileTask = cron.schedule('*/5 * * * *', async () => {
           console.log(`[cron] Running reconcileAdPayments at ${new Date().toISOString()}`);
           try {
-            await reconcileAdPayments();
+            await withDistributedJobLock('payments:ad-reconciliation', () => reconcileAdPayments());
           } catch (err) {
             console.error('[cron] reconcileAdPayments error:', err);
           }
@@ -5133,7 +5205,7 @@ if (!runtimePolicy.isTest) {
         console.error('Failed to initialize reconcileAdPayments cron job:', err);
       }
     } else {
-      console.warn('[cron] AdPayment reconciliation not started because workers are disabled or Prisma is not ready.');
+      console.warn('[cron] AdPayment reconciliation not started because workers or money movement are disabled, or Prisma is not ready.');
     }
 
     if (startupPlan.startBackgroundWorkers) {
@@ -5141,9 +5213,8 @@ if (!runtimePolicy.isTest) {
       const talentCloudSettings = await getTalentCloudSettings();
       if (talentCloudSettings.enabled && talentCloudSettings.webhooksEnabled) {
         setInterval(() => {
-          dispatchQueuedWebhookDeliveries(10).catch((error) => {
-            console.error('[webhooks] failed to dispatch queued deliveries', error);
-          });
+          withDistributedJobLock('talent-cloud:webhook-delivery-dispatch', () => dispatchQueuedWebhookDeliveries(10))
+            .catch((error) => console.error('[webhooks] failed to dispatch queued deliveries', error));
         }, 30 * 1000);
       } else {
         console.log('[webhooks] Talent cloud webhooks disabled; dispatcher not started.');
@@ -5164,15 +5235,17 @@ if (!runtimePolicy.isTest) {
         const digestTask = cron.schedule(
           '*/15 * * * *',
           async () => {
-            console.log(`[cron] processDueDigests at ${new Date().toISOString()}`);
             try {
-              const { NotificationDigestEngine } = await import('./services/notificationCenter/digestEngine.service');
-              const result = await NotificationDigestEngine.processDueDigests(50);
-              if (result?.processed) {
-                console.log(
-                  `[cron] processDueDigests processed=${result.processed} allowlistMode=${(result as any).allowlistMode || 'n/a'}`
-                );
-              }
+              await withDistributedJobLock('notifications:due-digest-processing', async () => {
+                console.log(`[cron] processDueDigests at ${new Date().toISOString()}`);
+                const { NotificationDigestEngine } = await import('./services/notificationCenter/digestEngine.service');
+                const result = await NotificationDigestEngine.processDueDigests(50);
+                if (result?.processed) {
+                  console.log(
+                    `[cron] processDueDigests processed=${result.processed} allowlistMode=${(result as any).allowlistMode || 'n/a'}`
+                  );
+                }
+              });
             } catch (err) {
               console.error('[cron] processDueDigests error:', err);
             }
@@ -5203,15 +5276,17 @@ if (!runtimePolicy.isTest) {
         const purgeTask = cron.schedule(
           String(process.env.NOTIFICATION_RETENTION_CRON || '15 3 * * *'),
           async () => {
-            console.log(`[cron] retentionPurge at ${new Date().toISOString()}`);
             try {
-              const { NotificationRetentionPurgeService } = await import(
-                './services/notificationCenter/ops/retentionPurge.service'
-              );
-              const result = await NotificationRetentionPurgeService.execute({ maxBatches: 3 });
-              console.log(
-                `[cron] retentionPurge executed=${result.executed} deleted=${JSON.stringify(result.deleted || {})}`
-              );
+              await withDistributedJobLock('notifications:retention-purge', async () => {
+                console.log(`[cron] retentionPurge at ${new Date().toISOString()}`);
+                const { NotificationRetentionPurgeService } = await import(
+                  './services/notificationCenter/ops/retentionPurge.service'
+                );
+                const result = await NotificationRetentionPurgeService.execute({ maxBatches: 3 });
+                console.log(
+                  `[cron] retentionPurge executed=${result.executed} deleted=${JSON.stringify(result.deleted || {})}`
+                );
+              });
             } catch (err) {
               console.error('[cron] retentionPurge error:', err);
             }
@@ -5235,7 +5310,7 @@ if (!runtimePolicy.isTest) {
   });
   })();
 } else {
-  console.log('Server auto-start skipped during test runtime.');
+  console.log('Server auto-start skipped during test runtime without explicit safe listen opt-in.');
 }
 
 export default app;

@@ -1,6 +1,7 @@
 import express from 'express';
 import { body } from 'express-validator';
 import prisma from '../../../prisma';
+import { removeCommunityAdPreservingPayments } from '../../../services/communityAdRetention.service';
 
 const router = express.Router();
 
@@ -83,9 +84,9 @@ router.put('/:id', async (req: any, res) => {
 router.delete('/:id', async (req: any, res) => {
   try {
     const id = req.params.id;
-    await prisma.communityAd.delete({ where: { id } });
-    (global as any).appCommunityIo?.emit('community:ad_status_updated', { adId: id, status: 'DELETED' });
-    return res.json({ success: true });
+    const result = await removeCommunityAdPreservingPayments(id, req.user?.id || null, 'ADMIN_DELETE');
+    (global as any).appCommunityIo?.emit('community:ad_status_updated', { adId: id, status: result.archived ? 'ENDED' : 'DELETED' });
+    return res.json({ success: true, data: { id, deleted: !result.archived, archived: result.archived } });
   } catch (e: any) { return res.status(500).json({ success:false, error:{code:'ERR_INTERNAL', message:e.message} }); }
 });
 

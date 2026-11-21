@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prismaClient';
+import { assertMoneyMovementEnabled } from '../config/moneyMovement';
 import realtime from '../utils/realtime';
 import { notifyUser } from '../utils/notify';
 import {
@@ -807,6 +808,7 @@ export const enableStripePayoutForUserAdmin = async (req: AuthRequest, res: Resp
 };
 
 export const handleStripeConnectWebhookEvent = async (event: any) => {
+  assertMoneyMovementEnabled();
   try {
     if (!event || !event.type) return;
     if (event.type === 'account.updated') {

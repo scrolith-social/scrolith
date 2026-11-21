@@ -2,8 +2,10 @@ const mockPrisma = {
   appSetting: {
     findUnique: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     upsert: jest.fn(),
-    delete: jest.fn()
+    delete: jest.fn(),
+    deleteMany: jest.fn()
   },
   user: {
     findUnique: jest.fn(),
@@ -16,6 +18,13 @@ const mockPrisma = {
     findUnique: jest.fn()
   },
   $transaction: jest.fn()
+};
+const mockTx: any = {
+  $queryRaw: jest.fn(),
+  appSetting: { updateMany: jest.fn(), deleteMany: jest.fn() },
+  user: { update: jest.fn() },
+  userSettings: { upsert: jest.fn() },
+  authSession: { create: jest.fn() }
 };
 
 const mockVerifyTotp = jest.fn();
@@ -51,6 +60,7 @@ const user = {
   email: 'admin@example.invalid',
   role: 'ADMIN',
   isActive: true,
+  authSessionVersion: 0,
   twoFactorEnabled: false,
   twoFactorSecret: 'SYNTHETIC_EXISTING_SECRET',
   twoFactorWaivedUntil: null
@@ -75,6 +85,7 @@ const validChallenge = (overrides: Record<string, unknown> = {}) => ({
   scope: `2fa_challenge_${challengeToken}`,
   data: {
     userId: user.id,
+    authSessionVersion: user.authSessionVersion,
     exp: Date.now() + 60_000,
     needsSetup: true,
     ...overrides
@@ -91,6 +102,24 @@ describe('privileged MFA setup challenge', () => {
     mockPrisma.appSetting.update.mockResolvedValue({});
     mockPrisma.appSetting.upsert.mockResolvedValue({});
     mockPrisma.appSetting.delete.mockResolvedValue({});
+    mockPrisma.appSetting.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.appSetting.deleteMany.mockResolvedValue({ count: 1 });
+    mockPrisma.$transaction.mockImplementation(async (callback: any) => {
+      mockTx.$queryRaw.mockResolvedValue([{
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        authSessionVersion: 0,
+        isActive: true,
+        twoFactorBackupCodes: []
+      }]);
+      mockTx.appSetting.updateMany.mockResolvedValue({ count: 1 });
+      mockTx.appSetting.deleteMany.mockResolvedValue({ count: 1 });
+      mockTx.user.update = mockPrisma.user.update;
+      mockTx.userSettings.upsert = mockPrisma.userSettings.upsert;
+      mockTx.authSession.create.mockResolvedValue({ id: 'session-1' });
+      return typeof callback === 'function' ? callback(mockTx) : Promise.all(callback);
+    });
     mockPrisma.staffUser.findUnique.mockResolvedValue({
       status: 'ACTIVE',
       require2FA: false,
@@ -113,7 +142,7 @@ describe('privileged MFA setup challenge', () => {
         data: expect.objectContaining({ twoFactorEnabled: false })
       })
     );
-    expect(mockPrisma.appSetting.update).toHaveBeenCalled();
+    expect(mockTx.appSetting.updateMany).toHaveBeenCalled();
   });
 
   test('allows an Analyst under the same enforced setup policy', async () => {
@@ -135,6 +164,7 @@ describe('privileged MFA setup challenge', () => {
     const gate = await evaluateAdmin2FAGate({
       id: user.id,
       role: 'MODERATOR',
+      authSessionVersion: 0,
       twoFactorEnabled: false,
       twoFactorSecret: null,
       twoFactorBackupCodes: [],
@@ -149,6 +179,7 @@ describe('privileged MFA setup challenge', () => {
     const gate = await evaluateAdmin2FAGate({
       id: user.id,
       role: 'MODERATOR',
+      authSessionVersion: 0,
       twoFactorEnabled: false,
       twoFactorSecret: null,
       twoFactorBackupCodes: [],
@@ -200,13 +231,6 @@ describe('privileged MFA setup challenge', () => {
       require2FA: true,
       role: { isActive: true }
     });
-    mockPrisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<void>) =>
-      callback({
-        appSetting: { deleteMany: jest.fn().mockResolvedValue({ count: 1 }) },
-        user: { update: jest.fn().mockResolvedValue(user) },
-        userSettings: { upsert: jest.fn().mockResolvedValue({}) }
-      })
-    );
     const res = response();
 
     await confirm2FAEnrollmentFromSetup(setupRequest({ code: '654321' }), res);
@@ -219,7 +243,7 @@ describe('privileged MFA setup challenge', () => {
   test('valid MFA verification after enrollment creates the normal authenticated session', async () => {
     process.env.JWT_SECRET = 'local-test-only';
     mockPrisma.appSetting.findUnique.mockResolvedValueOnce({
-      data: { userId: user.id, exp: Date.now() + 60_000, needsSetup: false }
+      data: { userId: user.id, authSessionVersion: 0, exp: Date.now() + 60_000, needsSetup: false }
     });
     mockPrisma.user.findUnique.mockResolvedValueOnce({
       ...user,
@@ -236,13 +260,11 @@ describe('privileged MFA setup challenge', () => {
   });
 
   test('rejects replay when the challenge cannot be atomically claimed', async () => {
-    mockPrisma.$transaction.mockImplementation(async (callback: (tx: any) => Promise<void>) =>
-      callback({
-        appSetting: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
-        user: { update: jest.fn() },
-        userSettings: { upsert: jest.fn() }
-      })
-    );
+    mockPrisma.$transaction.mockImplementationOnce(async (callback: (tx: any) => Promise<void>) => {
+      mockTx.$queryRaw.mockResolvedValue([{ id: user.id, authSessionVersion: 0, isActive: true }]);
+      mockTx.appSetting.deleteMany.mockResolvedValueOnce({ count: 0 });
+      return callback(mockTx);
+    });
     const res = response();
 
     await confirm2FAEnrollmentFromSetup(setupRequest({ code: '654321' }), res);

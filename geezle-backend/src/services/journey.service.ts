@@ -4,6 +4,7 @@ import { runtimePolicy } from '../config/runtimePolicy';
 import { sendSystemEmail } from './email.service';
 import { sendPushToUser } from './pushNotifications';
 import { createJourneyRuntimeController } from './journeyRuntime';
+import { withDistributedJobLock } from './distributedJobLock.service';
 import {
   buildNotificationActionUrl,
   normalizeNotificationActionUrl,
@@ -1023,7 +1024,7 @@ export const processDueJourneyStepRuns = async () => {
 
 const journeyRuntime = createJourneyRuntimeController({
   enabled: () => runtimePolicy.backgroundWorkersEnabled,
-  poll: processDueJourneyStepRuns,
+  poll: () => withDistributedJobLock('journeys:due-step-runs', processDueJourneyStepRuns),
   intervalMs: JOURNEY_POLL_INTERVAL_MS,
   onError: (error) => {
     console.error('[journeys] failed to process due journey step runs', error);

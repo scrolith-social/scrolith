@@ -3,10 +3,9 @@
  * Authorization mirrors original File visibility rules used by serveFileContent.
  */
 import { Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import prisma from '../utils/prismaClient';
 import { FileVisibility } from '@prisma/client';
-import { jwtSecret } from '../utils/security/requiredSecret';
+import { resolveAuthSessionToken } from '../services/authSession.service';
 import {
   buildVariantsManifest,
   MediaProcessingService
@@ -21,7 +20,7 @@ import {
 } from '../services/storage/gcsMediaStorage';
 import { downloadMediaByProvider } from '../services/storage/mediaStorage.service';
 
-const resolveOptionalRequester = (req: Request) => {
+const resolveOptionalRequester = async (req: Request) => {
   if (req.user?.id) {
     return { id: String(req.user.id), role: String(req.user.role || '').toLowerCase() };
   }
@@ -41,10 +40,9 @@ const resolveOptionalRequester = (req: Request) => {
   }
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   try {
-    const decoded = jwt.verify(authHeader.split(' ')[1], jwtSecret()) as any;
-    const id = String(decoded?.id || '').trim();
-    if (!id) return null;
-    return { id, role: String(decoded?.role || '').toLowerCase() };
+    const auth = await resolveAuthSessionToken(authHeader.slice('Bearer '.length).trim());
+    if (!auth || !auth.user.isActive) return null;
+    return { id: auth.user.id, role: String(auth.user.role || '').toLowerCase() };
   } catch {
     return null;
   }
@@ -59,7 +57,7 @@ const canAccessFile = async (file: {
   const visibility = String(file.visibility || 'PUBLIC').toUpperCase();
   if (visibility === FileVisibility.PUBLIC || visibility === 'PUBLIC') return true;
 
-  const requester = resolveOptionalRequester(req);
+  const requester = await resolveOptionalRequester(req);
   const isAdmin = Boolean(requester?.role && requester.role.includes('admin'));
   if (isAdmin) return true;
   if (requester?.id && requester.id === file.ownerId) return true;
@@ -244,7 +242,7 @@ export const serveFileVariantContent = async (req: Request, res: Response) => {
 
     const isPrivate = String(file.visibility || '').toUpperCase() === 'PRIVATE';
     // Public-identity exceptions still use public cache when canAccessFile allowed without owner
-    const requester = resolveOptionalRequester(req);
+    const requester = await resolveOptionalRequester(req);
     const ownerMatch = requester?.id && requester.id === file.ownerId;
     const cacheControl =
       isPrivate && ownerMatch

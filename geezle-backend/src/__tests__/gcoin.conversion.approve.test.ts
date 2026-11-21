@@ -38,23 +38,32 @@ describe('Gcoin conversion approval flow', () => {
   });
 
   test('Admin approve conversion creates Transaction and credits Wallet', async () => {
-    const res = await request(app).post(`/api/gcoin/conversions/${convId}`).set('x-dev-role', 'admin').send({ action: 'approve' });
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    const gate = 'SCROLITH_MONEY_MOVEMENT_ENABLED';
+    const previousGate = process.env[gate];
+    process.env[gate] = 'true';
 
-    // verify conversion marked approved
-    const rec = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
-    expect(rec?.status).toBe('approved');
+    try {
+      const res = await request(app).post(`/api/gcoin/conversions/${convId}`).set('x-dev-role', 'admin').send({ action: 'approve' });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
 
-    // verify user's gcoin decreased
-    const gw = await prisma.gcoinWallet.findUnique({ where: { userId } });
-    expect(gw?.balance).toBeCloseTo(90);
+      // verify conversion marked approved
+      const rec = await prisma.gcoinConversionRequest.findUnique({ where: { id: convId } });
+      expect(rec?.status).toBe('approved');
 
-    // verify fiat wallet updated and transaction created
-    const w = await prisma.wallet.findUnique({ where: { userId } });
-    expect(w).toBeTruthy();
-    const txs = await prisma.transaction.findMany({ where: { userId } });
-    const found = txs.find(t => t.referenceId === convId);
-    expect(found).toBeTruthy();
+      // verify user's gcoin decreased
+      const gw = await prisma.gcoinWallet.findUnique({ where: { userId } });
+      expect(gw?.balance).toBeCloseTo(90);
+
+      // verify fiat wallet updated and transaction created
+      const w = await prisma.wallet.findUnique({ where: { userId } });
+      expect(w).toBeTruthy();
+      const txs = await prisma.transaction.findMany({ where: { userId } });
+      const found = txs.find(t => t.referenceId === convId);
+      expect(found).toBeTruthy();
+    } finally {
+      if (previousGate === undefined) delete process.env[gate];
+      else process.env[gate] = previousGate;
+    }
   });
 });

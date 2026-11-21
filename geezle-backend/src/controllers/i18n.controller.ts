@@ -117,12 +117,13 @@ const parseCsv = (csvText: string) => {
 };
 
 const getLanguageConfig = async () => {
-  let config = await prisma.languageConfig.findUnique({
+  const existing = await prisma.languageConfig.findUnique({
     where: { scope: DEFAULT_SCOPE }
   });
+  if (existing) return existing;
 
-  if (!config) {
-    config = await prisma.languageConfig.create({
+  try {
+    return await prisma.languageConfig.create({
       data: {
         scope: DEFAULT_SCOPE,
         defaultLocale: DEFAULT_LOCALE,
@@ -130,8 +131,17 @@ const getLanguageConfig = async () => {
         rtlLocales: DEFAULT_RTL_LOCALES
       }
     });
+  } catch (error: any) {
+    // Multiple API replicas can observe the missing singleton concurrently.
+    // Let the unique scope constraint choose the winner, then re-read it. This
+    // requires only the runtime role's INSERT/SELECT privileges (not UPDATE).
+    if (error?.code !== 'P2002') throw error;
+    const createdByConcurrentRequest = await prisma.languageConfig.findUnique({
+      where: { scope: DEFAULT_SCOPE }
+    });
+    if (createdByConcurrentRequest) return createdByConcurrentRequest;
+    throw error;
   }
-  return config;
 };
 
 const emitI18n = (req: Request, event: string, payload: Record<string, any>) => {

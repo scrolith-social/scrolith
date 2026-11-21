@@ -6,6 +6,7 @@ import {
   getFollowOnboardingController,
   completeFollowOnboardingController,
   logout,
+  logoutAllDevices,
   forgotPassword,
   resetPassword
 } from '../controllers/auth.controller';
@@ -101,6 +102,7 @@ router.post('/2fa/disable', authMiddleware, disableMy2FA);
 router.get('/follow-onboarding', authMiddleware, getFollowOnboardingController);
 router.post('/follow-onboarding/complete', authMiddleware, completeFollowOnboardingController);
 router.post('/logout', authMiddleware, logout);
+router.post('/logout-all', authMiddleware, logoutAllDevices);
 router.post('/passkeys/registration/options', authMiddleware, passkeyOptionsRateLimiter, passkeyOptionsIdentifierRateLimiter, beginPasskeyRegistration);
 router.post('/passkeys/registration/verify', authMiddleware, passkeyVerifyRateLimiter, passkeyVerifyIdentifierRateLimiter, completePasskeyRegistration);
 router.get('/passkeys', authMiddleware, listPasskeys);

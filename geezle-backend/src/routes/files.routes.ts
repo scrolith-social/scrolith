@@ -1,6 +1,11 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import multer from 'multer';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { createConcurrencyLimit } from '../middleware/concurrencyLimit';
+import { MAX_CONCURRENT_AZURE_UPLOADS, MAX_UPLOAD_BYTES } from '../config/uploadLimits';
 import {
   deleteFile,
   getUploadDir,
@@ -16,18 +21,31 @@ import {
 } from '../controllers/files.mediaManifest.controller';
 
 const router = express.Router();
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 const uploadDir = getUploadDir();
+const azureTempUploadDir = path.join(uploadDir, '.tmp');
+if (!fs.existsSync(azureTempUploadDir)) fs.mkdirSync(azureTempUploadDir, { recursive: true });
+
+const isAzureUploadDriver = () =>
+  ['azure_blob', 'azure', 'blob'].includes(
+    String(process.env.UPLOAD_DRIVER || process.env.STORAGE_DRIVER || '').trim().toLowerCase()
+  );
+
+const limitAzureUploadConcurrency = createConcurrencyLimit({
+  max: MAX_CONCURRENT_AZURE_UPLOADS,
+  shouldLimit: isAzureUploadDriver,
+  message: 'Upload capacity is temporarily full; retry shortly',
+  retryAfterSeconds: 5
+});
 
 /** Memory multer for GCS/DB/Firebase/Azure — never write product media to Cloud Run uploads/. */
 const isMemoryUploadDriver = () => shouldUseMemoryUploadMulter();
 
 const diskStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
+  destination: (_req, _file, cb) => cb(null, isAzureUploadDriver() ? azureTempUploadDir : uploadDir),
   filename: (_req, file, cb) => {
     const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]+/g, '_');
-    cb(null, `${Date.now()}-${safeName}`);
+    cb(null, `${Date.now()}-${crypto.randomUUID()}-${safeName}`);
   }
 });
 
@@ -76,8 +94,8 @@ router.get('/:fileId/variants/:variantId/content', serveFileVariantContent);
 router.use(authMiddleware);
 
 router.get('/', listFiles);
-router.post('/upload', handleSingleUpload, uploadFile);
-router.post('/', handleSingleUpload, uploadFile);
+router.post('/upload', limitAzureUploadConcurrency, handleSingleUpload, uploadFile);
+router.post('/', limitAzureUploadConcurrency, handleSingleUpload, uploadFile);
 router.delete('/:id', deleteFile);
 
 export { upload };

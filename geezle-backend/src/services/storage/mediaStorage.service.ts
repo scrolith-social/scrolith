@@ -35,10 +35,12 @@ import {
   uploadBufferToFirebaseStorage
 } from './firebaseStorage';
 import {
+  blobExistsByName,
   deleteBlobByName,
   downloadBlobByName,
   isAzureBlobConfigured,
-  uploadBufferToBlob
+  uploadBufferToBlob,
+  uploadStreamToBlob
 } from './blobStorage';
 import prisma from '../../utils/prismaClient';
 import { resolveFileBaseUrl } from '../../utils/mediaUrl';
@@ -61,6 +63,8 @@ export type MediaStorageUploadInput = {
   visibility?: 'PUBLIC' | 'PRIVATE';
   /** Optional size hint for streaming uploads */
   sizeBytes?: number;
+  /** A caller-generated object key, used when preserving an existing storage key contract. */
+  objectKey?: string;
 };
 
 export type MediaStorageObject = {
@@ -112,6 +116,11 @@ export const resolveWriteStorageProvider = (): MediaStorageProvider => {
       'UPLOAD_DRIVER=gcs requires explicit STORAGE_BUCKET=scrolith-prod-media (or GCS_MEDIA_BUCKET). Refusing silent local fallback.'
     );
   }
+  if (isAzureUploadDriver(driver) && !isAzureBlobConfigured()) {
+    throw new Error(
+      'UPLOAD_DRIVER=azure_blob requires AZURE_STORAGE_ACCOUNT_URL and an approved Azure identity configuration. Refusing silent local fallback.'
+    );
+  }
   return DEFAULT_PROVIDER;
 };
 
@@ -121,8 +130,7 @@ export const shouldUseMemoryUploadMulter = () => {
   return (
     isGcsUploadDriver(driver) ||
     isDatabaseUploadDriver(driver) ||
-    isFirebaseUploadDriver(driver) ||
-    isAzureUploadDriver(driver)
+    isFirebaseUploadDriver(driver)
   );
 };
 
@@ -178,7 +186,7 @@ const streamToBuffer = async (stream: NodeJS.ReadableStream): Promise<Buffer> =>
 export const uploadMediaObject = async (input: MediaStorageUploadInput): Promise<MediaStorageObject> => {
   const provider = resolveWriteStorageProvider();
   const contentType = input.contentType || 'application/octet-stream';
-  const objectKey = buildMediaObjectKey({
+  const objectKey = input.objectKey || buildMediaObjectKey({
     originalName: input.originalName,
     ownerId: input.ownerId,
     category: input.category
@@ -259,23 +267,35 @@ export const uploadMediaObject = async (input: MediaStorageUploadInput): Promise
   }
 
   if (provider === AZURE_PROVIDER) {
-    let buffer = input.buffer;
-    if (!buffer && input.filePath && fs.existsSync(input.filePath)) {
-      buffer = fs.readFileSync(input.filePath);
+    let uploadedKey = objectKey;
+    let sizeBytes = input.sizeBytes || input.buffer?.length || 0;
+    try {
+      if (input.buffer) {
+        await uploadBufferToBlob({ buffer: input.buffer, contentType, fileName: objectKey });
+        sizeBytes = input.buffer.length;
+      } else {
+        const stream = input.stream || (input.filePath && fs.existsSync(input.filePath)
+          ? fs.createReadStream(input.filePath)
+          : undefined);
+        if (!stream) throw new Error('Azure blob upload requires a file path, readable stream, or buffer');
+        const uploaded = await uploadStreamToBlob({ stream, contentType, fileName: objectKey });
+        uploadedKey = uploaded.blobName;
+      }
+      if (!(await blobExistsByName(uploadedKey))) {
+        throw new Error(`Azure Blob upload verification failed for ${uploadedKey}`);
+      }
+    } catch (error) {
+      try {
+        await deleteBlobByName(uploadedKey);
+      } catch {
+        // A failed best-effort cleanup is surfaced through the original upload failure.
+      }
+      throw error;
     }
-    if (!buffer && input.stream) {
-      buffer = await streamToBuffer(input.stream);
-    }
-    if (!buffer) throw new Error('Azure blob upload requires a buffer');
-    await uploadBufferToBlob({
-      buffer,
-      contentType,
-      fileName: objectKey
-    });
     return {
       storageProvider: AZURE_PROVIDER,
-      storageKey: objectKey,
-      sizeBytes: buffer.length,
+      storageKey: uploadedKey,
+      sizeBytes,
       contentType
     };
   }

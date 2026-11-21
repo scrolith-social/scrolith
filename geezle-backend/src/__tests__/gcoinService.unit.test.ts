@@ -17,10 +17,43 @@ jest.mock('../utils/prismaClient', () => ({
 const gcoinService = require('../../src/services/gcoinService').default;
 
 describe('GcoinService (unit)', () => {
+  let previousMoneyMovementGate: string | undefined;
+
+  beforeAll(() => {
+    // These cases exercise enabled-mode business behavior with mocks only.
+    // Keep the runner's default hard-off setting and restore it after the suite.
+    previousMoneyMovementGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'true';
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockPrisma.gcoinConfig.findFirst.mockResolvedValue(null);
     mockPrisma.user.findFirst.mockResolvedValue(null);
+  });
+
+  afterAll(() => {
+    if (previousMoneyMovementGate === undefined) {
+      delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    } else {
+      process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = previousMoneyMovementGate;
+    }
+  });
+
+  test('rejects transfer before wallet reads while money movement is disabled', async () => {
+    const enabledGate = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = 'false';
+    try {
+      await expect(gcoinService.transfer('sender', { toRecipientId: 'r1', amount: 1 }))
+        .rejects.toMatchObject({ code: 'MONEY_MOVEMENT_DISABLED' });
+      expect(mockPrisma.gcoinWallet.findUnique).not.toHaveBeenCalled();
+    } finally {
+      if (enabledGate === undefined) {
+        delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      } else {
+        process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = enabledGate;
+      }
+    }
   });
 
   test('transfer throws on insufficient funds', async () => {
