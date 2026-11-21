@@ -180,8 +180,13 @@ try {
     .map((entry) => entry.name)
     .sort();
 
-  if (migrationDirs.length !== 142 || migrationDirs.at(-1) !== finalMigration) {
-    throw new Error('Expected the reviewed 141-to-142 migration source inventory.');
+  const targetMigrationIndex = migrationDirs.indexOf(finalMigration);
+  if (
+    migrationDirs.length !== 143 ||
+    migrationDirs.at(-1) !== '20261122100000_restrict_order_gig_history' ||
+    targetMigrationIndex !== 141
+  ) {
+    throw new Error('Expected the current 143-migration source inventory with auth-session migration 142 preserved.');
   }
 
   const tempBase = await mkdtemp(join(repoRoot, '.tmp-auth-session-upgrade-'));
@@ -191,7 +196,7 @@ try {
   await mkdir(tempMigrations, { recursive: true });
   await cp(resolve(repoRoot, 'prisma', 'schema.prisma'), join(prismaRoot, 'schema.prisma'));
   await cp(resolve(repoRoot, 'prisma', 'migrations', 'migration_lock.toml'), join(tempMigrations, 'migration_lock.toml'));
-  for (const migration of migrationDirs.slice(0, -1)) {
+  for (const migration of migrationDirs.slice(0, targetMigrationIndex)) {
     await cp(resolve(migrationsRoot, migration), join(tempMigrations, migration), { recursive: true });
   }
   const configPath = join(tempRoot, 'prisma.config.ts');

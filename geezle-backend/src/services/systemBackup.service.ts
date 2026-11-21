@@ -22,6 +22,7 @@ import {
 import { getSystemBackupRootDir } from '../utils/systemBackupPaths';
 import { requiredSecret } from '../utils/security/requiredSecret';
 import { writeFileAtomicallySync } from '../utils/atomicFile';
+import { connectSystemBackupDatabase } from './systemBackupDatabase';
 
 export type BackupMode = 'full' | 'partial';
 export type RestoreMode = 'replace' | 'append';
@@ -1214,95 +1215,7 @@ const collectFileSnapshots = async () => {
   return allFiles;
 };
 
-const normalizeBackupDatabaseUrl = (raw: string) => {
-  const normalized = String(raw || '').trim();
-  if (!normalized) return normalized;
-
-  try {
-    const parsed = new URL(normalized);
-    // Keep the backup connection transport aligned with the server's actual
-    // capabilities. If the source URL includes any SSL hints, strip them so we
-    // do not inherit a forced SSL handshake from the pooled/proxy URL.
-    parsed.searchParams.delete('sslmode');
-    parsed.searchParams.delete('ssl');
-    parsed.searchParams.delete('sslrootcert');
-    parsed.searchParams.delete('sslcert');
-    parsed.searchParams.delete('sslkey');
-    parsed.searchParams.delete('sslpassword');
-
-    return parsed.toString();
-  } catch {
-    return normalized;
-  }
-};
-
-const buildBackupDbClientConfig = (raw: string, forceDisableSsl = false) => {
-  const normalized = normalizeBackupDatabaseUrl(raw);
-  if (!normalized) {
-    throw toError('DATABASE_URL is not configured for backup operations.', 500, 'BACKUP_DATABASE_URL_MISSING');
-  }
-
-  const parsed = new URL(normalized);
-  const socketHost = String(parsed.searchParams.get('host') || '').trim();
-  const explicitPort = Number(parsed.port || 0);
-  const useSsl = !forceDisableSsl && String(process.env.BACKUP_DATABASE_SSL || '').trim().toLowerCase() === 'true';
-
-  const config = {
-    host: socketHost || parsed.hostname || undefined,
-    port: Number.isFinite(explicitPort) && explicitPort > 0 ? explicitPort : undefined,
-    user: decodeURIComponent(parsed.username || ''),
-    password: decodeURIComponent(parsed.password || ''),
-    database: decodeURIComponent(parsed.pathname || '').replace(/^\/+/, '') || undefined,
-    ssl: useSsl
-      ? {
-          rejectUnauthorized: false
-        }
-      : false
-  } as const;
-
-  return config;
-};
-
-const isSslConnectionError = (error: unknown) => {
-  const message = String((error as any)?.message || '').toLowerCase();
-  return message.includes('ssl') && (message.includes('does not support') || message.includes('handshake'));
-};
-
-const createDbClient = (forceDisableSsl = false) => {
-  return new Client(buildBackupDbClientConfig(process.env.DATABASE_URL || '', forceDisableSsl));
-};
-
-const connectBackupDbClient = async () => {
-  const primary = createDbClient();
-  try {
-    console.info('[system-backup] connecting backup DB client', { ssl: 'primary' });
-    await primary.connect();
-    console.info('[system-backup] connected backup DB client', { ssl: 'primary' });
-    return primary;
-  } catch (error) {
-    console.warn('[system-backup] primary backup DB client connect failed', {
-      message: (error as any)?.message || error,
-      stack: (error as any)?.stack || null,
-      ssl: 'primary'
-    });
-    await primary.end().catch(() => undefined);
-    const fallback = createDbClient(true);
-    try {
-      console.info('[system-backup] retrying backup DB client connect with ssl disabled');
-      await fallback.connect();
-      console.info('[system-backup] connected backup DB client', { ssl: 'disabled' });
-      return fallback;
-    } catch (fallbackError) {
-      console.warn('[system-backup] fallback backup DB client connect failed', {
-        message: (fallbackError as any)?.message || fallbackError,
-        stack: (fallbackError as any)?.stack || null,
-        ssl: 'disabled'
-      });
-      await fallback.end().catch(() => undefined);
-      throw fallbackError;
-    }
-  }
-};
+const connectBackupDbClient = () => connectSystemBackupDatabase();
 
 const listPublicTables = async (client: Client) => {
   const result = await client.query<{ table_name: string }>(
@@ -1369,32 +1282,6 @@ const loadTableRows = async (client: Client, tableName: string) => {
   }
   const result = await client.query(`SELECT * FROM "${tableName}"`);
   return result.rows;
-};
-
-const listPublicTablesWithPrisma = async () => {
-  const rows = await prisma.$queryRaw<{ table_name: string }[]>`
-    SELECT table_name
-    FROM information_schema.tables
-    WHERE table_schema = 'public'
-      AND table_type = 'BASE TABLE'
-    ORDER BY table_name ASC
-  `;
-  return rows
-    .map((row) => String(row.table_name || '').trim())
-    .filter((tableName) => tableName && !EXCLUDED_TABLES.has(tableName) && isSafeIdentifier(tableName));
-};
-
-const loadTableRowsWithPrisma = async (tableName: string) => {
-  if (!isSafeIdentifier(tableName)) {
-    throw toError(`Unsafe table identifier detected: ${tableName}`, 400, 'BACKUP_UNSAFE_TABLE');
-  }
-  if (tableName === 'AppSetting') {
-    return prisma.$queryRawUnsafe(
-      'SELECT * FROM "AppSetting" WHERE scope NOT LIKE $1 ORDER BY "createdAt" ASC',
-      `${DATABASE_BACKUP_SCOPE_PREFIX}.%`
-    ) as Promise<any[]>;
-  }
-  return prisma.$queryRawUnsafe(`SELECT * FROM "${tableName}"`) as Promise<any[]>;
 };
 
 const parseBackupBuffer = (buffer: Buffer): BackupPackage => {
@@ -2168,21 +2055,28 @@ export const createSystemBackup = async (input: CreateBackupInput, hooks?: Backu
     customTables: customTables.length
   });
   await signalProgress('create:db-connected');
-  const allTables = await listPublicTablesWithPrisma();
-  await signalProgress(`create:tables-enumerated:${allTables.length}`);
-  console.info('[system-backup] tables enumerated', { count: allTables.length });
-  const selectedTables = resolveTargetTables(allTables, mode, sections, customTables);
-  await signalProgress(`create:tables-selected:${selectedTables.length}`);
-  console.info('[system-backup] tables selected', { count: selectedTables.length });
-  const exportTables =
-    includeFiles && selectedTables.includes(MANAGED_UPLOAD_OBJECT_TABLE)
-      ? selectedTables.filter((table) => table !== MANAGED_UPLOAD_OBJECT_TABLE)
-      : selectedTables;
+  const backupDbClient = await connectBackupDbClient();
+  let selectedTables: string[];
+  let exportTables: string[];
   const database: Record<string, any[]> = {};
-  for (const table of exportTables) {
-    await signalProgress(`create:loading-table:${table}`);
-    console.info('[system-backup] loading table rows', { table });
-    database[table] = await loadTableRowsWithPrisma(table);
+  try {
+    const allTables = await listPublicTables(backupDbClient);
+    await signalProgress(`create:tables-enumerated:${allTables.length}`);
+    console.info('[system-backup] tables enumerated', { count: allTables.length });
+    selectedTables = resolveTargetTables(allTables, mode, sections, customTables);
+    await signalProgress(`create:tables-selected:${selectedTables.length}`);
+    console.info('[system-backup] tables selected', { count: selectedTables.length });
+    exportTables =
+      includeFiles && selectedTables.includes(MANAGED_UPLOAD_OBJECT_TABLE)
+        ? selectedTables.filter((table) => table !== MANAGED_UPLOAD_OBJECT_TABLE)
+        : selectedTables;
+    for (const table of exportTables) {
+      await signalProgress(`create:loading-table:${table}`);
+      console.info('[system-backup] loading table rows', { table });
+      database[table] = await loadTableRows(backupDbClient, table);
+    }
+  } finally {
+    await backupDbClient.end().catch(() => undefined);
   }
 
   await signalProgress('create:file-snapshots');
@@ -2588,7 +2482,6 @@ export const restoreSystemBackup = async (input: RestoreBackupInput) => {
   let restoredFileRows: any[] = [];
   const skippedTables: string[] = [];
   let remappedUserIds = 0;
-  await dbClient.connect();
   try {
     const existingTables = new Set(await listPublicTables(dbClient));
     const restorableTables = selectedTables.filter((table) => existingTables.has(table));
