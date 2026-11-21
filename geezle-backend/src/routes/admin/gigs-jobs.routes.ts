@@ -4,6 +4,7 @@ import prisma from '../../utils/prismaClient';
 import { listPlans, savePlan, togglePlanActive } from '../../services/planStore';
 import { notifyFollowersAboutPublication } from '../../services/followPublicationNotifications.service';
 import { STANDARD_LISTING_CATEGORIES } from '../../config/listingCategories';
+import { removeGigPreservingOrderHistory } from '../../services/gigDeletion.service';
 import {
   ensureStandardListingCategoriesSeeded,
   syncStandardListingCategories
@@ -1013,13 +1014,14 @@ router.delete('/gigs/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: 'Gig not found' });
     }
 
-    await prisma.gig.delete({ where: { id } });
+    const removal = await removeGigPreservingOrderHistory(id);
 
     return res.json({
       success: true,
-      message: `Gig ${id} has been deleted`,
+      message: removal.retainedForOrderHistory ? `Gig ${id} was deactivated to preserve order history` : `Gig ${id} has been deleted`,
       data: {
         id,
+        retainedForOrderHistory: removal.retainedForOrderHistory,
         reason,
         deleted_at: nowIso()
       }

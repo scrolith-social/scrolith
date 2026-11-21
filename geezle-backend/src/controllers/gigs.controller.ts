@@ -5,6 +5,7 @@ import { notifyFollowersAboutPublication } from '../services/followPublicationNo
 import { resolveFeaturedListingEligibility } from '../services/listingFeaturePolicy.service';
 import { computeListingTrustSummary, getTrustScoreSettings } from '../services/trustScore.service';
 import { publishIntegrationEvent } from '../services/talentCloud.service';
+import { removeGigPreservingOrderHistory } from '../services/gigDeletion.service';
 import { DEFAULT_TRUST_SCORE_SETTINGS, TrustScoreSettings } from '../utils/trustScoreSettings';
 
 const getAutoApproveGigs = async () => {
@@ -489,8 +490,8 @@ export const deleteGig = async (req: Request, res: Response) => {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
 
-    await prisma.gig.delete({ where: { id: req.params.id } });
-    return res.json({ success: true, data: null });
+    const removal = await removeGigPreservingOrderHistory(req.params.id);
+    return res.json({ success: true, data: null, retainedForOrderHistory: removal.retainedForOrderHistory });
   } catch (error: any) {
     console.error('Delete gig error:', error);
     return res.status(500).json({ success: false, error: error.message || 'Failed to delete gig' });

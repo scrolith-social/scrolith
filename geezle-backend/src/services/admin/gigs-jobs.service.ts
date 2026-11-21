@@ -2,6 +2,7 @@ import { ListingCategory, Plan, ApiResponse } from '../../types/index';
 import prisma from '../../utils/prismaClient';
 import { ensureStandardListingCategoriesSeeded } from '../defaultCategorySeed.service';
 import { listPlans, savePlan as saveStoredPlan } from '../planStore';
+import { removeGigPreservingOrderHistory } from '../gigDeletion.service';
 
 type CategoryKind = 'gig' | 'job';
 
@@ -144,8 +145,12 @@ export class GigsJobsAdminService {
     }
     const gig = await prisma.gig.findUnique({ where: { id } });
     if (!gig) return { success: false, error: 'Gig not found' };
-    await prisma.gig.delete({ where: { id } });
-    return { success: true, data: { id }, message: 'Gig deleted successfully' };
+    const removal = await removeGigPreservingOrderHistory(id);
+    return {
+      success: true,
+      data: { id, retainedForOrderHistory: removal.retainedForOrderHistory },
+      message: removal.retainedForOrderHistory ? 'Gig deactivated to preserve order history' : 'Gig deleted successfully'
+    };
   }
 
   async saveGig(gigData: any): Promise<ApiResponse> {

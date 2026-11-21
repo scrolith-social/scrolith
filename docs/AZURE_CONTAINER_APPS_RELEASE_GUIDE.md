@@ -112,13 +112,198 @@ Set the backend environment to `NODE_ENV=production` and `PORT=5000`. Set the fr
 
 ### PostgreSQL
 
-1. Create a new PostgreSQL Flexible Server 17 in Southeast Asia on private networking. Do not use an existing database unless the data owner explicitly approves the migration and rollback plan.
-2. Require TLS (`sslmode=require`) and use private DNS/networking from the ACA environment.
-3. Create separate `scrolith_runtime` and `scrolith_migrator` login roles. The templates [`scrolith-runtime-migrator-roles.sql`](../deploy/postgres/scrolith-runtime-migrator-roles.sql) and [`scrolith-runtime-finalize.sql`](../deploy/postgres/scrolith-runtime-finalize.sql) contain no passwords and stop unless an operator explicitly opts in. They are for a **fresh disposable/new database only**, not an existing database. Runtime receives application DML but no schema `CREATE`, object ownership, `TRIGGER`, or `TRUNCATE` privileges; default privileges cover migrator-created objects, and the finalizer removes runtime access to `_prisma_migrations`. The migrator is used only for reviewed one-shot migrations. Verify effective grants and ownership after replay; local tests do not verify Azure's deployed roles.
-4. Store separate full connection URLs as Key Vault secrets, for example `scrolith-database-runtime-url` and `scrolith-database-migrator-url`. Do not put either URL in shell history, a Bicep parameter file, source, an image, or logs. Each URL includes a different database user; set the migrator URL as the `DATABASE_URL` environment variable only for the one-off migrator job.
-5. Apply migrations with the exact approved migrator image digest using `prisma migrate deploy`. Do not run `migrate dev`, `migrate reset`, `db push`, seeds, or repair scripts against production. Review migration SQL and the backup/restore plan before the first application.
+Use only the production-specific scripts below for a freshly provisioned, empty PostgreSQL 17 `scrolith` database. The older [`scrolith-runtime-migrator-roles.sql`](../deploy/postgres/scrolith-runtime-migrator-roles.sql), handoff, finalizer, enable, and permission-test files intentionally remain disposable-test-only. Do not pass their test guards, edit them, or run them against Azure.
 
-The repository has 141 Prisma migration directories. A clean local PostgreSQL 17 replay completed all 141, and a synthetic populated-schema upgrade from 140 to 141 completed. This is not a review of every migration's effect on pre-existing production data and does not verify managed-database behavior or production roles. Historical migration SQL includes drops/renames. Use only a new database for initial launch unless a separate migration review approves otherwise.
+The production sequence is fail-closed: bootstrap creates both application roles as `NOLOGIN`; the migrator is enabled separately; it configures its own default privileges without creating any public-schema object; Prisma applies the reviewed migrations to the still-empty schema; the ownership handoff then verifies the ledger and object owners and creates the protected release marker transactionally; the existing reviewed grant-policy finalizer must commit; only then does one final transaction disable migrator login and enable runtime login. A failed step stops the sequence. Do not manually advance the policy marker, repair the ledger, transfer ownership broadly, or enable either role to “get past” a failed check.
+
+The Azure Flexible Server administrator is not a PostgreSQL superuser. It must be the server administrator with `CREATEROLE`, membership in the restricted, Microsoft-managed `azure_pg_admin`, and ownership of this new database. PostgreSQL 17 automatically gives a non-superuser `CREATEROLE` role `ADMIN OPTION` membership on roles it creates, with `INHERIT FALSE` and `SET FALSE`; the scripts explicitly verify exactly those two creator-to-application-role memberships and reject other memberships. This administrative membership does not make the application roles inherit into or become settable by the administrator; it does mean that the creating administrator retains role-administration capability, so protect that administrator identity accordingly. During the post-migration handoff, the migrator grants that same administrator `SELECT` only on the migration ledger and policy marker, so the final role-enable transaction can independently check them; the runtime role receives neither grant. The procedure does not request superuser access, modify `azure_pg_admin`, grant the application roles membership in another role, or use `REASSIGN OWNED`. PostgreSQL objects are created by `scrolith_migrator`, so ownership is established at creation and then verified; no blanket owner transfer is needed. PostgreSQL requires a role to set its own default privileges (or be a member of that role), which is why `scrolith-production-migration-init.sql` must run as the migrator. Check Azure-specific behavior manually; local PostgreSQL cannot prove Azure administrator capabilities.
+
+This account model follows [Microsoft's Flexible Server access-control guidance](https://learn.microsoft.com/en-us/azure/postgresql/security/security-access-control) and [PostgreSQL 17 role-creation semantics](https://www.postgresql.org/docs/17/role-attributes.html). In particular, `ADMIN OPTION` is powerful: the bootstrap administrator can grant a created role to another role (including itself), even though the automatic membership uses `INHERIT FALSE` and `SET FALSE`. The SQL verifies the expected membership state but cannot remove the administrator's underlying role-administration capability. Keep that credential in the restricted operator path and audit its use.
+
+The runtime receives no table or sequence default privileges during migration. After the 143 migrations and ownership handoff, `scrolith-production-runtime-finalize.sql` loads the explicit [`scrolith-production-runtime-grants.sql`](../deploy/postgres/scrolith-production-runtime-grants.sql) inventory. The source-derived matrix in [`POSTGRES_RUNTIME_PERMISSION_MATRIX.md`](POSTGRES_RUNTIME_PERMISSION_MATRIX.md) records the reviewed operation by table: SELECT on 335 of 355 Prisma models, INSERT on 325, DELETE on 70, and column-scoped UPDATE on 227. The other models receive no such grant. Runtime has no table-level UPDATE, sequence UPDATE, TRUNCATE, REFERENCES, or TRIGGER privilege; financial history, account parents, settlements, wallets, and other protected tables have no direct DELETE. The finalizer and the separate runtime-enable transaction also reject any runtime-deletable parent whose `ON DELETE CASCADE`, `SET NULL`, or `SET DEFAULT` action could delete or rewrite a protected financial/history row.
+
+The matrix is operation-level, not row-level authorization: table SELECT and INSERT are granted at table scope where production Prisma call sites require them, so the database role can read or insert any column on those granted tables. API authorization and validation remain essential. Financial balances are included only when the source has a corresponding write flow: wallet balance snapshots are updated by posting transactions; ledger amounts/currencies are insert-only; wallet identity/currency are not updateable; ad-payment amount/currency/status updates are used by provider reconciliation; and funding, order-payment, withdrawal, Gcoin, and settlement fields have explicit allowlists. AdPayment cannot be deleted, and its restrictive CommunityAd foreign key preserves paid-ad history while the ad-retention service archives paid ads and removes only unpaid ads. Read the matrix before changing a model write; this is a reviewed, fail-closed DML allowlist, not a claim of protection from a compromised API process that already holds the runtime credential.
+
+### Preconditions and read-only target checks
+
+- Provision PostgreSQL Flexible Server **17** with private VNet integration and a new, empty database named `scrolith`. The server administrator must own that database. Do not run this bootstrap on an existing database or on a server with pre-existing Scrolith roles or public-schema objects.
+- Place the operator and any one-shot migrator job on a network path to the private server (same VNet, peered VNet, or approved VPN/ExpressRoute). Link the PostgreSQL private DNS zone to the client VNet and resolve the canonical server FQDN to the expected private address. Do not open public database access for this procedure. Cloud Shell must be attached to a network that can reach the private endpoint; a default ephemeral Cloud Shell without that route is not suitable.
+- Install `psql` 17 and use Microsoft's currently supported root CA bundle. The command-line client must use `sslmode=verify-full`; the SQL guard also rejects a non-TLS session. If the selected private DNS setup prevents hostname validation, stop and review the DNS/certificate design rather than silently downgrading TLS.
+- Confirm the exact approved source SHA below is the SHA containing these scripts and the 143-migration release. The SQL guard checks the declared SHA's format and stores it in a protected database marker; it cannot prove that a remote Git checkout or Azure resource is that SHA. Compare the Azure resource ID/FQDN, Git SHA, and migration image digest yourself.
+- Obtain approval for the production database change and backup/restore plan before running the production bootstrap. The approval variable is an explicit operator acknowledgement, not an authorization mechanism.
+
+The following PowerShell commands are **instructions for the authorized operator to run later**; they were not run for this local validation. The Azure CLI calls are read-only. The checks fail before SQL if subscription target, resource ID, region, server state/version, database, DNS route, or TLS CA file do not match. Enter the actual expected server resource ID and approved release SHA when prompted.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$ExpectedSubscriptionId = Read-Host 'Owner-approved Azure subscription ID'
+$ResourceGroup = Read-Host 'Azure resource group'
+$ServerName = Read-Host 'PostgreSQL Flexible Server name'
+$ExpectedServerResourceId = Read-Host 'Expected full PostgreSQL server resource ID'
+$ExpectedPrivateAddress = Read-Host 'Expected PostgreSQL private IPv4 address from the approved network configuration'
+$AdminLogin = Read-Host 'PostgreSQL server administrator login'
+$ReleaseSha = Read-Host 'Approved 40-character Scrolith release SHA'
+$ExpectedMigratorImage = Read-Host 'Approved migrator image reference including immutable sha256 digest'
+$CaBundle = Read-Host 'Path to the current Microsoft/Azure PostgreSQL root CA bundle'
+$MigrationJob = Read-Host 'Existing manually triggered migrator Container Apps Job name'
+
+if ($ReleaseSha -notmatch '^[0-9a-f]{40}$') { throw 'Release SHA must be 40 lowercase hexadecimal characters.' }
+if ($ExpectedMigratorImage -notmatch '^.+@sha256:[0-9a-f]{64}$') { throw 'Migrator image must be pinned by an exact sha256 digest.' }
+if (-not (Test-Path -LiteralPath $CaBundle -PathType Leaf)) { throw 'The trusted root CA bundle is not available.' }
+
+$activeSubscription = az account show --query id -o tsv
+if ($LASTEXITCODE -ne 0 -or $activeSubscription -ne $ExpectedSubscriptionId) {
+  throw 'The active Azure subscription does not match the owner-approved subscription.'
+}
+
+$serverJson = az postgres flexible-server show `
+  --resource-group $ResourceGroup --name $ServerName `
+  --query '{id:id,location:location,fqdn:fullyQualifiedDomainName,version:version,state:state,network:network}' -o json
+if ($LASTEXITCODE -ne 0) { throw 'Could not read the target Flexible Server.' }
+$server = ConvertFrom-Json -InputObject ($serverJson -join [Environment]::NewLine)
+if ($server.id -ne $ExpectedServerResourceId) { throw 'Server resource ID differs from the owner-approved target.' }
+if ($server.location -ne 'southeastasia' -or [string]$server.version -notmatch '^17' -or $server.state -ne 'Ready') {
+  throw 'Server must be Ready, PostgreSQL 17, and in Southeast Asia.'
+}
+if ($server.fqdn -notmatch '^[a-z0-9-]+\.postgres\.database\.azure\.com$') { throw 'Unexpected server FQDN.' }
+
+$databaseJson = az postgres flexible-server db show `
+  --resource-group $ResourceGroup --server-name $ServerName --database-name scrolith -o json
+if ($LASTEXITCODE -ne 0) { throw 'The scrolith database is not visible on the selected server.' }
+$database = ConvertFrom-Json -InputObject ($databaseJson -join [Environment]::NewLine)
+if ($database.name -ne 'scrolith') { throw 'Database name does not match the approved target.' }
+
+$resolvedAddresses = @(Resolve-DnsName -Name $server.fqdn -Type A -ErrorAction Stop |
+  Where-Object IPAddress | Select-Object -ExpandProperty IPAddress -Unique)
+if ($resolvedAddresses.Count -ne 1 -or $resolvedAddresses[0] -ne $ExpectedPrivateAddress) {
+  throw 'Private DNS does not resolve to the owner-approved database address.'
+}
+if (-not (Test-NetConnection -ComputerName $server.fqdn -Port 5432 -InformationLevel Quiet)) {
+  throw 'The private PostgreSQL endpoint is not reachable on TCP 5432 from this network.'
+}
+Write-Output 'Private DNS address and TCP 5432 reachability verified.'
+```
+
+Proceed only when the expected private address is approved for the server's VNet and the checks succeed from the intended operator or job network. Azure Flexible Server private VNet access depends on the VNet route and linked private DNS zone; see [Microsoft's private networking guide](https://learn.microsoft.com/en-us/azure/postgresql/network/concepts-networking-private). This DNS/TCP evidence plus certificate-verifying TLS binds the client connection to the server identity; see [Microsoft's current TLS guidance](https://learn.microsoft.com/en-us/azure/postgresql/security/security-tls) and [psql TLS connection example](https://learn.microsoft.com/en-us/azure/postgresql/security/security-tls-how-to-connect). The SQL scripts' `expected_server_fqdn` is an operator-declared record, not a claim that SQL can inspect its DNS target.
+
+Before any SQL changes, inspect the already-provisioned one-shot migration job and its history. This check is read-only and deliberately omits environment and secret values. The command fails closed unless the job is manual, has exactly one container with the exact owner-approved digest, uses only the image's built-in migration command, and resolves `DATABASE_URL` through a Key Vault secret reference. The Key Vault secret must be versioned, use the reviewed job identity, and grant that identity only the required secret-read permission. Confirm those identity/scope/version details in the portal without opening or copying the secret value. A new-database rollout expects no prior executions; if any history exists, stop and review it before bootstrapping.
+
+```powershell
+$jobJson = az containerapp job show --name $MigrationJob --resource-group $ResourceGroup `
+  --query '{name:name,trigger:properties.configuration.triggerType,identity:identity,containers:properties.template.containers[].{name:name,image:image,command:command,args:args,env:env[].{name:name,secretRef:secretRef,hasInlineValue:contains(keys(@),''value'')}},secrets:properties.configuration.secrets[].{name:name,hasKeyVaultRef:contains(keys(@),''keyVaultUrl''),hasInlineValue:contains(keys(@),''value''),identity:identity}}' -o json
+if ($LASTEXITCODE -ne 0) { throw 'The migrator job cannot be read; do not begin the database procedure.' }
+$job = ConvertFrom-Json -InputObject ($jobJson -join [Environment]::NewLine)
+if ($job.name -ne $MigrationJob -or $job.trigger -ne 'Manual' -or $job.containers.Count -ne 1) {
+  throw 'The existing job identity, manual trigger, or single-container contract does not match.'
+}
+$container = $job.containers[0]
+if ($container.image -ne $ExpectedMigratorImage -or $container.command -or $container.args) {
+  throw 'The job image digest or its default Prisma migration command was overridden.'
+}
+$dbEnv = @($container.env | Where-Object name -eq 'DATABASE_URL')
+if ($dbEnv.Count -ne 1 -or -not $dbEnv[0].secretRef -or $dbEnv[0].hasInlineValue) {
+  throw 'DATABASE_URL must be provided only by a Container Apps secret reference.'
+}
+$dbSecret = @($job.secrets | Where-Object name -eq $dbEnv[0].secretRef)
+if ($dbSecret.Count -ne 1 -or -not $dbSecret[0].hasKeyVaultRef -or $dbSecret[0].hasInlineValue) {
+  throw 'DATABASE_URL secret must reference Key Vault; inline secret values are prohibited.'
+}
+$historyJson = az containerapp job execution list --name $MigrationJob --resource-group $ResourceGroup `
+  --query '[].{name:name,status:properties.status}' -o json
+if ($LASTEXITCODE -ne 0) { throw 'Could not read prior migration executions.' }
+$history = @(ConvertFrom-Json -InputObject ($historyJson -join [Environment]::NewLine))
+if ($history.Count -ne 0) { throw 'This fresh-database procedure requires no prior job executions; stop for owner review.' }
+Write-Output 'Migrator job is manually triggered, digest-pinned, Key Vault-backed, and has no prior executions.'
+```
+
+### Bootstrap, migrate, and enable sequence
+
+Run these commands from the exact approved checkout. `psql` prompts for the database account password; no password is passed as a command argument or environment variable. `PSQL_HISTORY=NUL` disables a local psql history file, and `-X` prevents local startup files from injecting commands. Do not enable PowerShell transcription for these interactive password steps. The `\password` meta-command prompts for the new role password without placing it in SQL history or logs. Enter the resulting connection secret only in the approved Key Vault secret UI/workflow, never in a CLI `--value` argument.
+
+```powershell
+$env:PGSSLMODE = 'verify-full'
+$env:PGSSLROOTCERT = $CaBundle
+$env:PSQL_HISTORY = 'NUL'
+$SqlRoot = (Resolve-Path '.\deploy\postgres').Path
+
+function Invoke-ScrolithRoleSql {
+  param([string]$Role, [string]$File, [string[]]$Extra = @())
+  $psqlArgs = @(
+    '-X', '-W', '-h', $server.fqdn, '-p', '5432', '-U', $Role, '-d', 'scrolith',
+    '-v', 'ON_ERROR_STOP=1',
+    '-v', 'SCROLITH_PRODUCTION_CHANGE_APPROVED=true',
+    '-v', "expected_server_fqdn=$($server.fqdn)",
+    '-v', "expected_source_commit=$ReleaseSha"
+  ) + $Extra + @('-f', $File)
+  & psql @psqlArgs
+  if ($LASTEXITCODE -ne 0) { throw "Role SQL failed: $([IO.Path]::GetFileName($File)) (exit $LASTEXITCODE). Stop; do not continue to the next phase." }
+}
+
+# 1. Bootstrap: both roles are created NOLOGIN. Any existing role/object aborts.
+Invoke-ScrolithRoleSql $AdminLogin (Join-Path $SqlRoot 'scrolith-production-role-bootstrap.sql')
+
+# 2. In an interactive psql session, set the migrator password securely:
+psql -X -W -h $server.fqdn -p 5432 -U $AdminLogin -d scrolith
+# At the psql prompt, type:  \password scrolith_migrator
+# Enter the generated password at the hidden prompts, then type:  \q
+# Store the full migrator database URL as a Key Vault secret using the secure UI.
+
+# 3. Enable only the one-shot migrator. Runtime remains NOLOGIN.
+Invoke-ScrolithRoleSql $AdminLogin (Join-Path $SqlRoot 'scrolith-production-migrator-enable.sql')
+
+# 4. As the migrator, configure default privileges. This creates no public
+#    object; Prisma must see an empty target schema for the first deploy.
+Invoke-ScrolithRoleSql 'scrolith_migrator' (Join-Path $SqlRoot 'scrolith-production-migration-init.sql') `
+  @('-v', "bootstrap_admin_role=$AdminLogin")
+
+# 5. Start the already-verified manual job exactly once. Azure permits multiple
+#    concurrent executions, so only one owner/operator may run this procedure.
+$ExecutionName = [string](az containerapp job start --name $MigrationJob --resource-group $ResourceGroup --query name -o tsv)
+if ($LASTEXITCODE -ne 0) { throw 'Migration job did not start.' }
+$ExecutionName = $ExecutionName.Trim()
+if ([string]::IsNullOrWhiteSpace($ExecutionName)) { throw 'Azure did not return this execution name; do not retry start blindly.' }
+Write-Output "Started migration execution: $ExecutionName"
+
+# Repeat this read-only status check until this exact execution is Succeeded.
+# It fails closed on Running/Processing, Failed/Stopped, or unknown status.
+$executionJson = az containerapp job execution show --name $MigrationJob --resource-group $ResourceGroup `
+  --job-execution-name $ExecutionName `
+  --query '{name:name,status:properties.status,startTime:properties.startTime,endTime:properties.endTime}' -o json
+if ($LASTEXITCODE -ne 0) { throw 'Could not read the exact migration execution status.' }
+$execution = ConvertFrom-Json -InputObject ($executionJson -join [Environment]::NewLine)
+if ($execution.name -ne $ExecutionName) { throw 'Azure returned a different execution; stop and investigate.' }
+if ($execution.status -ne 'Succeeded') { throw "The exact migration execution is $($execution.status); stop and do not continue." }
+
+# 6. Once the migration job has exited successfully, verify ownership and the
+#    full migration ledger. This transaction creates the marker only now.
+Invoke-ScrolithRoleSql 'scrolith_migrator' (Join-Path $SqlRoot 'scrolith-production-role-handoff.sql') `
+  @('-v', "bootstrap_admin_role=$AdminLogin")
+# Apply the reviewed runtime grant policy only after the handoff commits.
+Invoke-ScrolithRoleSql 'scrolith_migrator' (Join-Path $SqlRoot 'scrolith-production-runtime-finalize.sql')
+
+# 7. Set the runtime password interactively, store its full URL as a separate
+#    Key Vault secret, and verify the reference before enabling app traffic.
+psql -X -W -h $server.fqdn -p 5432 -U $AdminLogin -d scrolith
+# At the psql prompt, type:  \password scrolith_runtime
+# Enter the generated password at the hidden prompts, then type:  \q
+
+# 8. This is the only step that enables runtime login. It checks the exact
+#    migration count, release marker, ownership, privilege policy and no sessions.
+Invoke-ScrolithRoleSql $AdminLogin (Join-Path $SqlRoot 'scrolith-production-runtime-enable.sql')
+
+# 9. Afterward, verify a successful TLS login as runtime using the Key Vault
+#    reference in the approved application/job environment; query current_user,
+#    current_database(), pg_stat_ssl for this session, and the approved grants.
+Remove-Item Env:PGSSLMODE, Env:PGSSLROOTCERT, Env:PSQL_HISTORY
+```
+
+The manual migrator job must be configured outside this procedure with the exact immutable image digest, private network access, a versioned Key Vault reference, and no schedule or automatic trigger. Verify its managed identity and narrow Key Vault scope in the owner-approved portal. Do not put `DATABASE_URL` in a job command/argument, Bicep parameter, image, or log. If the job does not already exist with those properties, stop: the guide does not authorize creating Azure resources. Enter separate runtime and migrator full database URLs as Key Vault secret values through its secure UI. Use certificate validation (`verify-full`) and the official current root CA; never use `require` as a substitute for server identity verification. Microsoft documents manual job start and per-execution inspection in its [Container Apps job quickstart](https://learn.microsoft.com/en-us/azure/container-apps/jobs-get-started-cli) and [CLI reference](https://learn.microsoft.com/en-us/cli/azure/containerapp/job/execution?view=azure-cli-latest). Job starts can create concurrent executions, so capture the exact returned execution name and never infer success from a different/newest execution.
+
+The new production SQL files are [`scrolith-production-target-guard.sql`](../deploy/postgres/scrolith-production-target-guard.sql), `scrolith-production-role-bootstrap.sql`, `scrolith-production-migrator-enable.sql`, `scrolith-production-migration-init.sql`, `scrolith-production-role-handoff.sql`, `scrolith-production-runtime-grants.sql`, `scrolith-production-runtime-finalize.sql`, and `scrolith-production-runtime-enable.sql`. Every production script requires explicit psql approval, the declared Azure FQDN, the approved release SHA, the exact writable database name, PostgreSQL 17, and a TLS session. The FQDN is syntax-checked by SQL; actual endpoint and certificate validation is performed by the operator's read-only Azure lookup, private DNS check, and `psql` `verify-full` connection.
+
+This policy is pinned to **143 Prisma migration directories**, ending in `20261122100000_restrict_order_gig_history`. Migration 143 changes the `Order.gigId` foreign key from `ON DELETE SET NULL` to `ON DELETE RESTRICT`: the API hard-deletes only gigs without orders and deactivates linked gigs with `isActive=false` and `status=PAUSED`. This closes the race that previously detached order history. A later release with a changed migration set needs a separately reviewed production gate update; do not edit count/marker values ad hoc. The checked-in migration history includes drops/renames, so this first-launch sequence is for the verified fresh database only. Never run `migrate dev`, `migrate reset`, `db push`, seeds, or repair commands against production.
+
+Local PostgreSQL 17 replay and permission checks do not establish that Azure's restricted administrator can perform every operation in the scripts, that ACA private networking/Key Vault references work, or that the deployed role grants match. Complete the manual Azure smoke and role/grant verification before application traffic is allowed. If any SQL phase fails, leave runtime `NOLOGIN`, stop the job if it is still running, preserve redacted diagnostics, and have the database owner review the failed phase before recovery; do not rerun bootstrap against partially initialized state.
 
 ### Blob Storage
 
@@ -168,6 +353,30 @@ Confirm Azure's Custom Domains blade specifies the record type/value for each ho
 The current Nginx config uses `api.scrolith.com` for preconnect and the frontend build uses the same API origin. Do not point public DNS to an ACA default FQDN permanently or alter MX, SPF, DKIM, or DMARC records used by Zoho.
 
 ## 9. Release validation and go/no-go gates
+
+### Additional disposable PostgreSQL 17 role-procedure validation (2026-11-21)
+
+This evidence is from a task-owned local PostgreSQL 17.11 container on an isolated Docker network. It does not verify Azure Flexible Server's restricted administrator behavior, Azure private networking, Container Apps, Key Vault, or any production database. The synthetic database was freshly created for this run and contained only the candidate schema/migration data.
+
+- The production SQL contract suite passed **6/6 tests** with `node --test --test-reporter=spec scripts/production-role-sql-contract.test.mjs` after the runbook exact-execution check was added. Earlier in this task, the five SQL/migration contract cases passed before that documentation regression was added.
+- Bootstrap created `scrolith_runtime` and `scrolith_migrator` with `NOLOGIN` and without superuser, createdb, createrole, replication, bypass-RLS, or inherited privileges. The separate migrator enable succeeded while runtime remained `NOLOGIN`; an attempted runtime connection before finalization was rejected by PostgreSQL as expected.
+- Migration initialization succeeded without creating any public-schema object. Prisma `migrate deploy` applied **142/142** migrations, latest `20261116120000_add_durable_auth_sessions`; the second deploy replay exited successfully with no pending migrations. The first local implementation placed the marker before Prisma and produced Prisma P3005; it was corrected so marker creation occurs only in the post-migration ownership handoff.
+- The handoff verified the complete migration ledger and migrator ownership, then committed a local test marker using `15ca15c9b1ce462a8a140090cf45c0354d762ce6` as a **synthetic input value**. The new SQL files are uncommitted and are not contained in that SHA; the test marker is not evidence that the SHA contains this procedure. For a separately approved operator run, use the exact commit that contains the reviewed SQL, application source, and migrator image build inputs, plus the immutable image digest built from that source. The runtime finalizer committed its grant policy. A synthetic exception injected into a temporary copy of the separate enable script after both role changes caused PostgreSQL to roll back the transaction: migrator stayed `LOGIN`, runtime stayed `NOLOGIN`. The subsequent normal enable succeeded, atomically setting migrator `NOLOGIN` and runtime `LOGIN`.
+- Final runtime checks: database TLS session succeeded; runtime had schema USAGE but no schema CREATE or database TEMP, no superuser/role/database/replication/RLS bypass attributes, no migration-ledger or policy-marker read access, and could not `SET ROLE` to the migrator. Runtime was denied direct DELETE/TRUNCATE/TRIGGER on the inspected Wallet, Gcoin, transaction, funding, withdrawal, order-payment, settlement, ad-payment, and Gcoin-earning-history relations. It was denied UPDATE to protected amount/currency fields while selected workflow fields (for example transaction status, wallet balance, funding/payment status and FX lock, withdrawal details/status) remained updateable. The finalizer itself includes a broader schema-specific privilege assertion set; this local test is not proof that every application route works under the deployed role.
+- An earlier closeout reported a nonfatal `no privileges could be revoked from public` notice during finalization. The exact line is not present in the retained evidence logs available for this review, so its originating statement is not independently confirmed. In the current scripts, bootstrap checks database/schema ACLs before any `PUBLIC` revoke, and the runtime finalizer checks each relation/column/sequence ACL before revoking; a no-op notice is therefore not expected on the fresh PostgreSQL 17 path. PostgreSQL's notice can mean a REVOKE matched no grant, but that alone does not prove the resulting policy is correct: inspect the source SHA, command, ACL, and effective privileges. The fresh 2026-11-22 run below did not emit the notice and verified the resulting `PUBLIC` ACL count. Azure ACL behavior remains untested.
+- No Azure command, Azure SQL connection, live provider credential, database containing owner data, image push, or application deployment was used. The runbook's Azure CLI/portal instructions below remain unexecuted operator steps.
+
+### Current disposable PostgreSQL 17 runtime-permission validation (2026-11-22)
+
+This is local disposable-database evidence for the role procedure and current source changes. The test used the already available local PostgreSQL `17` Docker image, a task-owned container with tmpfs data and an ephemeral loopback-only port, and synthetic data. The recorded source SHA passed into the database marker was the base commit `15ca15c9b1ce462a8a140090cf45c0354d762ce6`; it identifies the test input only and does not contain these uncommitted changes. The test must be rerun with the final local commit SHA before treating that SHA as the tested source marker. No Azure-managed PostgreSQL behavior is established.
+
+- PowerShell command: `$env:SCROLITH_RUN_PRODUCTION_ROLE_PG17='1'; $env:SCROLITH_ROLE_VALIDATION_EVIDENCE_DIR='D:\scrolith-role-validation-evidence-20261121'; $env:SCROLITH_ROLE_TEST_SOURCE_SHA='15ca15c9b1ce462a8a140090cf45c0354d762ce6'; node --test --test-reporter=spec scripts/production-role-postgres17.test.mjs`. Exit code **0**; Node test runner **1 passed, 0 failed, 0 skipped**; PostgreSQL 17 migration/permission sequence completed in approximately 59 seconds. Raw log: `pg17-role-validation-6604-1795279310640-f38905.log`, SHA-256 `36814BB4275576521FF3B50B67CD367B69FE00664784E2A5FF3589B959AD1E16`; structured summary: `pg17-role-validation-6604-1795279310640-f38905.json`, SHA-256 `684D90620D4F1D874D2868CA2E1D7F1E4DDEA09AB4CE32ED2B7226D497390EC1`. Both are outside the worktree.
+- The fresh setup applied **143/143** migrations, then replayed `migrate deploy` with no pending migrations. The ownership handoff verified migration 143 (`20261122100000_restrict_order_gig_history`) and the policy marker. Final role state was runtime `LOGIN`, migrator `NOLOGIN`, and backup role `NOLOGIN`; no runtime ownership, schema-create, temp, migration-ledger, marker, role-switch, or DDL access was granted.
+- Failure injection after grants caused the finalizer transaction to fail and roll back: runtime remained `NOLOGIN`, the policy marker remained pending, and none of that attempt's column grants persisted. Retrying the normal finalizer succeeded. A separate injected failure in runtime enable rolled back both login changes, leaving migrator `LOGIN` and runtime `NOLOGIN`; the subsequent normal enable succeeded. These injected SQL errors are expected negative-test outcomes; the harness itself exited 0.
+- Effective grants matched the 355-model reviewed matrix: `SELECT=335`, `INSERT=325`, `DELETE=70`, table-level `UPDATE=0`, and explicit column-level `UPDATE` grants on **227** tables. The test found **0** runtime-deletable parent cascades into the protected financial/history relations and **0** explicit `PUBLIC` object/column ACL entries in `public`.
+- Representative supported synthetic inserts and balance/status/provider/FX/withdrawal-detail/Gcoin/AdPayment updates succeeded. Tests denied sensitive balance identity, immutable amount/currency, ownership, settlement/ledger changes, direct history deletes, parent deletes that could erase history, `TRUNCATE`, migration-ledger changes, schema DDL, and `SET ROLE`. Deleting an order-linked gig failed under `Order_gigId_fkey` while preserving the link; an unlinked gig delete succeeded. A paid community-ad delete failed under `AdPayment_adId_fkey` and retained payment history; the supported unpaid-ad delete succeeded.
+- The reported `no privileges could be revoked from public` notice was **not observed** during bootstrap, handoff, or finalization. The scripts conditionally issue `PUBLIC` revokes only when the corresponding ACL exists; the effective-ACL query then returned zero explicit public-schema object/column grants. If an Azure run emits the notice, the operator must stop and retain the exact SQL statement and server output for review; a benign no-op notice must not be inferred without confirming final effective privileges. Azure Flexible Server ACL and administrator behavior remains unverified.
+- Harness cleanup removed its labeled task container. No persistent volume was used. This test does not prove every HTTP route succeeds under the deployed runtime role, Azure private connectivity/TLS/DNS, or the permissions available to the actual Azure server administrator.
 
 ### Historical local validation (through 2026-11-06; superseded below)
 

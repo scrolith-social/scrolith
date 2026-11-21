@@ -826,7 +826,7 @@ model Order {
   updatedAt      DateTime    @updatedAt
 
   // Relationships
-  gig             Gig?                 @relation(fields: [gigId], references: [id])
+  gig             Gig?                 @relation(fields: [gigId], references: [id], onDelete: Restrict)
   client          User                 @relation("OrderClient", fields: [clientId], references: [id])
   freelancer      User                 @relation("OrderFreelancer", fields: [freelancerId], references: [id])
   escrow          Escrow?
