@@ -271,7 +271,7 @@ jobs:
           NODE
 
           signup_password="Scrolith-CI-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a@example.invalid"
+          signup_a="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-desktop-chrome-a@example.invalid"
           signup_b="scrolith-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b@example.invalid"
           (
             cd ../geezle
@@ -284,6 +284,7 @@ jobs:
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/signup-human-verification.local.spec.ts
           )
+
           (
             cd ../geezle
             env -i \
@@ -297,6 +298,28 @@ jobs:
           )
           (
             cd ../geezle
+            env -i PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              node --import tsx --test scripts/seed-certification-scroll.test.mjs
+          )
+          fixture_output="$(
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_BROWSER_PROJECT=desktop-chrome \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-a.json" \
+              SCROLITH_E2E_VIEWER_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              SCROLITH_E2E_SIGNUP_EMAIL="$signup_a" \
+              node scripts/seed-certification-scroll.mjs
+          )"
+          scroll_fixture_id="$(printf '%s\n' "$fixture_output" | sed -n 's/^CERTIFICATION_SCROLL_FIXTURE_ID=//p' | tail -n 1)"
+          if [[ ! "$scroll_fixture_id" =~ ^[a-zA-Z0-9_-]{1,64}$ ]]; then
+            echo 'The disposable browser database did not produce a valid cross-account Scroll fixture ID.' >&2
+            exit 1
+          fi
+          echo 'Verified a synthetic public Scroll through the second authenticated account feed.'
+          (
+            cd ../geezle
             env -i \
               PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
               CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
@@ -306,7 +329,7 @@ jobs:
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
-                --grep-invert 'local signup|Logout revokes the current authenticated session'
+                --grep-invert 'local signup|Logout revokes the current authenticated session|interest survey controls are rendered for an available cross-account scroll'
           )
           (
             cd ../geezle
@@ -316,6 +339,22 @@ jobs:
               CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
               CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
               CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
+              CERT_REQUIRE_FEED_FIXTURES=true CERT_SCROLL_FIXTURE_ID="$scroll_fixture_id" \
+              ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
+                --project=desktop-chrome --project=pixel-7 --project=iphone-15 --project=mobile-390 \
+                --grep 'interest survey controls are rendered for an available cross-account scroll' \
+                tests/certification/specs/scroll.auth.spec.ts
+          )
+          (
+            cd ../geezle
+            env -i \
+              PATH="$PATH" HOME="$HOME" CI=true NODE_ENV=test \
+              CERT_BASE_URL="$CERT_BASE_URL" CERT_API_BASE="$CERT_API_BASE" \
+              CERT_LOCAL_HV_SOLVER="$CERT_LOCAL_HV_SOLVER" \
+              CERT_RESULTS_DIR="$CERT_RESULTS_DIR" \
+              CERT_STORAGE_STATE="$RUNNER_TEMP/scrolith-certification-account-b.json" \
+              CERT_LOGOUT_STORAGE_STATE_DESKTOP_CHROME="$RUNNER_TEMP/scrolith-certification-account-b.json" \
               CERT_EMAIL="$signup_b" CERT_PASSWORD="$signup_password" \
               ./node_modules/.bin/playwright test --config tests/certification/playwright.config.ts \
                 --project=desktop-chrome tests/certification/specs/logout.auth.spec.ts
