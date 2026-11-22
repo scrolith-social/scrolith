@@ -101,7 +101,7 @@ export class DistributedRateLimitStore implements Store {
     if (this.connectionPromise) return this.connectionPromise;
 
     this.state = 'connecting';
-    const username = String(process.env.REDIS_ENTRA_OBJECT_ID || '').trim() || undefined;
+    const username = String(process.env.REDIS_ENTRA_OBJECT_ID || '').trim();
     const localCiRedis = process.env.NODE_ENV === 'test' && process.env.REDIS_TEST_MODE === 'local';
     const attempt = (async () => {
       try {
