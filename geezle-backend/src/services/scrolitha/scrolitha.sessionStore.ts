@@ -178,7 +178,7 @@ class RedisSessionStore implements DistributedSessionStore {
     if (this.redis.status === 'ready') return;
     if (!this.connectionPromise) {
       const clientId = String(process.env.REDIS_ENTRA_CLIENT_ID || '').trim();
-      const username = String(process.env.REDIS_ENTRA_OBJECT_ID || '').trim() || undefined;
+      const username = String(process.env.REDIS_ENTRA_OBJECT_ID || '').trim();
       this.connectionPromise = connectRedisClient(
         this.redis,
         clientId ? { clientId, username } : undefined,

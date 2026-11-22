@@ -31,7 +31,7 @@ async function acquireToken(credential: ManagedIdentityCredential): Promise<Mana
 
 export type EntraRedisConfig = {
   clientId: string;
-  username?: string;
+  username: string;
   audience?: string;
 };
 
@@ -133,8 +133,8 @@ export async function connectRedisClient(redis: Redis, config: EntraRedisConfig 
 }
 
 /**
- * Authenticates an ioredis connection with the staging user-assigned managed
- * identity. Tokens are held in memory only and refreshed before expiry.
+ * Authenticates an ioredis connection with the configured user-assigned
+ * managed identity. Tokens are held in memory only and refreshed before expiry.
  */
 export async function connectWithManagedIdentity(redis: Redis, config: EntraRedisConfig): Promise<() => void> {
   lifecycleStates.set(redis, 'connecting');
@@ -142,14 +142,17 @@ export async function connectWithManagedIdentity(redis: Redis, config: EntraRedi
   redis.on?.('end', () => lifecycleStates.set(redis, 'closed'));
   redis.on?.('close', () => lifecycleStates.set(redis, 'unavailable'));
   redis.on?.('reconnecting', () => undefined);
-  const username = String(config.username || config.clientId).trim();
-  if (!username) throw new Error('Redis Entra username is required');
-  const credential = new ManagedIdentityCredential(config.clientId);
-  const token = await acquireToken(credential);
+  const clientId = String(config.clientId || '').trim();
+  const username = String(config.username || '').trim();
+  if (!clientId) throw new RedisUnavailableError('Redis managed identity client ID is missing');
+  if (!username) throw new RedisUnavailableError('Redis Entra object ID username is missing');
+  if (!redis.options.tls) throw new RedisUnavailableError('Redis Entra authentication requires TLS');
   // Azure Managed Redis accepts the Redis resource token as the password.
   // The audience is fixed by the provider contract; keep the option explicit
   // so callers cannot silently select an unrelated resource.
   if ((config.audience || DEFAULT_AUDIENCE) !== DEFAULT_AUDIENCE) throw new Error('Unsupported Redis Entra audience');
+  const credential = new ManagedIdentityCredential(clientId);
+  const token = await acquireToken(credential);
   redis.options.username = username;
   redis.options.password = token.access_token;
   try {
@@ -169,6 +172,10 @@ export async function connectWithManagedIdentity(redis: Redis, config: EntraRedi
       if (stopped) return;
       try {
         const next = await acquireToken(credential);
+        // Keep ioredis's reconnect AUTH options in sync before reauthenticating
+        // the live connection. Otherwise a later socket reconnect could reuse
+        // the original, now-expired token even though AUTH refresh succeeded.
+        redis.options.password = next.access_token;
         await redis.auth(username, next.access_token);
         lifecycleStates.set(redis, 'ready');
         schedule(next.expires_in);
