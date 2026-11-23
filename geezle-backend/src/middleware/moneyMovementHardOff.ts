@@ -25,6 +25,11 @@ const MONEY_ACTION_PATHS = [
 export const isMoneyMovementMutation = (request: Pick<Request, 'method' | 'originalUrl'>): boolean => {
   const method = String(request.method || '').toUpperCase();
   const path = String(request.originalUrl || '').split('?')[0].replace(/\/+$/, '') || '/';
+  // Saving encrypted gateway configuration is an admin settings operation, not
+  // a transfer or payment. The controller preserves activation state and
+  // rejects activation changes; the dedicated activation endpoint remains
+  // covered by the hard-off policy below.
+  if (method === 'POST' && path === '/api/wallet/admin/gateways') return false;
   if (!WRITE_METHODS.has(method)) return (method === 'GET' || method === 'HEAD') && CALLBACK_PATH.test(path);
   return FINANCIAL_NAMESPACE.test(path) || ADMIN_FINANCIAL_NAMESPACE.test(path) || MONEY_ACTION_PATHS.some((pattern) => pattern.test(path));
 };

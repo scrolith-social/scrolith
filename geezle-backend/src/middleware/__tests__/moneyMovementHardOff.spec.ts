@@ -11,6 +11,7 @@ describe('server-side money-movement hard-off', () => {
   });
 
   test.each([
+    ['POST', '/api/wallet/admin/gateways/activation'],
     ['POST', '/api/wallet/topup/initiate'],
     ['POST', '/api/payments/create-intent'],
     ['POST', '/api/payments/webhook'],
@@ -40,6 +41,7 @@ describe('server-side money-movement hard-off', () => {
   });
 
   test.each([
+    ['POST', '/api/wallet/admin/gateways'],
     ['GET', '/api/wallet/me'],
     ['GET', '/api/payments/methods/active'],
     ['GET', '/api/wallet/topup/status/intent-1'],
@@ -78,6 +80,30 @@ describe('server-side money-movement hard-off', () => {
       moneyMovementHardOff({ method: 'POST', originalUrl: '/api/feed/posts' } as any, res, next);
       expect(next).toHaveBeenCalledTimes(1);
       expect(res.status).not.toHaveBeenCalled();
+    } finally {
+      if (oldValue === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+      else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = oldValue;
+    }
+  });
+
+  test('allows gateway credential settings while keeping gateway activation blocked', () => {
+    const oldValue = process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
+    const settingsResponse: any = { setHeader: jest.fn(), status: jest.fn(), json: jest.fn() };
+    const activationResponse: any = { setHeader: jest.fn(), status: jest.fn(), json: jest.fn() };
+    settingsResponse.status.mockReturnValue(settingsResponse);
+    activationResponse.status.mockReturnValue(activationResponse);
+    const settingsNext = jest.fn();
+    const activationNext = jest.fn();
+    try {
+      moneyMovementHardOff({ method: 'POST', originalUrl: '/api/wallet/admin/gateways' } as any, settingsResponse, settingsNext);
+      expect(settingsNext).toHaveBeenCalledTimes(1);
+      expect(settingsResponse.status).not.toHaveBeenCalled();
+
+      moneyMovementHardOff({ method: 'POST', originalUrl: '/api/wallet/admin/gateways/activation' } as any, activationResponse, activationNext);
+      expect(activationResponse.status).toHaveBeenCalledWith(503);
+      expect(activationResponse.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MONEY_MOVEMENT_DISABLED' }));
+      expect(activationNext).not.toHaveBeenCalled();
     } finally {
       if (oldValue === undefined) delete process.env.SCROLITH_MONEY_MOVEMENT_ENABLED;
       else process.env.SCROLITH_MONEY_MOVEMENT_ENABLED = oldValue;
