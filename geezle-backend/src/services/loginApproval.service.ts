@@ -70,7 +70,7 @@ const hasValidPossessionProof = (metadata: LoginDeviceMetadata) => {
     return crypto.verify(
       'sha256',
       Buffer.from(payload),
-      key,
+      { key, dsaEncoding: 'ieee-p1363' },
       Buffer.from(String(proof.signature), 'base64url')
     );
   } catch {

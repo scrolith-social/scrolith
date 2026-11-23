@@ -1,3 +1,5 @@
+import { webcrypto } from 'crypto';
+
 export {};
 
 const mockPrisma: any = {
@@ -53,7 +55,7 @@ describe('loginApproval.service', () => {
     expect(service.normalizeLoginDeviceMetadata({})).not.toHaveProperty('secret');
   });
 
-  test('creates a password-verified approval request for an untrusted device', async () => {
+  test('requires approval for new devices and accepts only valid proofs from trusted browsers', async () => {
     mockPrisma.loginApprovalAttempt.create.mockResolvedValue({
       id: 'approval-1',
       status: 'PENDING',
@@ -81,6 +83,48 @@ describe('loginApproval.service', () => {
         requestedIp: '203.0.113.10'
       })
     }));
+
+    const keyPair = await webcrypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify']
+    );
+    const publicKey = JSON.stringify(await webcrypto.subtle.exportKey('jwk', keyPair.publicKey));
+    const deviceId = 'device-trusted';
+    const timestamp = Date.now();
+    const payload = new TextEncoder().encode('scrolith-device-proof:v1\n' + deviceId + '\n' + timestamp);
+    const signatureBytes = await webcrypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      keyPair.privateKey,
+      payload
+    );
+    const signature = Buffer.from(new Uint8Array(signatureBytes)).toString('base64url');
+    mockPrisma.loginTrustedDevice.findUnique.mockResolvedValue({
+      id: 'trusted-1',
+      isTrusted: true,
+      publicKey
+    });
+
+    await expect(service.evaluateLoginDevice('user-1', 0, {
+      deviceId,
+      publicKey,
+      possessionProof: { algorithm: 'ECDSA_P256_SHA256', timestamp, signature }
+    }, {})).resolves.toEqual({ required: false, trustedDevice: true });
+    expect(mockPrisma.loginApprovalAttempt.create).toHaveBeenCalledTimes(1);
+
+    const tamperedSignature = Buffer.from(new Uint8Array(signatureBytes));
+    tamperedSignature[0] ^= 1;
+    const tamperedResult = await service.evaluateLoginDevice('user-1', 0, {
+      deviceId,
+      publicKey,
+      possessionProof: {
+        algorithm: 'ECDSA_P256_SHA256',
+        timestamp,
+        signature: tamperedSignature.toString('base64url')
+      }
+    }, {});
+    expect(tamperedResult.required).toBe(true);
+    expect(mockPrisma.loginApprovalAttempt.create).toHaveBeenCalledTimes(2);
   });
 
   test('active emergency waiver bypasses approval without trusting the new device', async () => {
