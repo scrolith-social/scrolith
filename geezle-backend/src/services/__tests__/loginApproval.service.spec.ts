@@ -104,7 +104,6 @@ describe('loginApproval.service', () => {
       isTrusted: true,
       publicKey
     });
-    const service = await import('../loginApproval.service');
 
     await expect(service.evaluateLoginDevice('user-1', 0, {
       deviceId,
