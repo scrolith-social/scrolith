@@ -386,6 +386,48 @@ const secretFieldMap: Record<string, string[]> = {
   antom: ['merchantPrivateKey', 'antomPublicKey']
 };
 
+const requiredGatewayFields: Record<string, string[]> = {
+  stripe: ['secretKey'],
+  paypal: ['clientId', 'clientSecret'],
+  paystack: ['secretKey'],
+  flutterwave: ['secretKey'],
+  paymongo: ['secretKey'],
+  xendit: ['secretKey'],
+  monnify: ['apiKey', 'secretKey', 'contractCode'],
+  opay: ['merchantId', 'secretKey'],
+  dragonpay: ['merchantId', 'secretKey'],
+  payoneer: ['clientId', 'clientSecret', 'apiBaseUrl', 'authToken'],
+  antom: ['clientId', 'merchantPrivateKey']
+};
+
+const getMissingGatewayFields = (providerId: string, config: Record<string, any>, settings: any) => {
+  const legacyFallbacks: Record<string, Record<string, unknown>> = {
+    stripe: {
+      secretKey: settings?.paymentStripeSecret,
+      publishableKey: settings?.paymentStripeKey
+    },
+    paypal: {
+      clientId: settings?.paymentPaypalClientId,
+      clientSecret: settings?.paymentPaypalSecret
+    }
+  };
+  const legacy = legacyFallbacks[providerId] || {};
+  return (requiredGatewayFields[providerId] || []).filter((field) => !config[field] && !legacy[field]);
+};
+
+const safeGatewayErrorCode = (error: unknown) => {
+  const code = String((error as any)?.code || 'UNKNOWN');
+  return /^[a-z0-9_-]{1,40}$/i.test(code) ? code : 'UNKNOWN';
+};
+
+const logGatewaySettingsFailure = (action: string, req: Request, error: unknown) => {
+  // Never log the thrown message: database and provider errors can contain sensitive connection data.
+  console.error(`Payment gateway settings ${action} failed`, {
+    requestId: String((req as any).requestId || ''),
+    errorCode: safeGatewayErrorCode(error)
+  });
+};
+
 const sanitizeConfigForAdmin = (providerId: string, entry: any) => {
   const secretFields = secretFieldMap[providerId] || [];
   const sanitized: any = { ...(entry || {}) };
@@ -413,8 +455,10 @@ const mapGateway = (gateway: any, settings: any) => {
 
   if (gateway.id === 'stripe') {
     const rawConnectEnabled = sanitizedConfig.connectEnabled ?? sanitizedConfig.connect_enabled;
-    sanitizedConfig.environment =
-      sanitizedConfig.environment || sanitizedConfig.mode || (resolvedMode === 'live' ? 'live' : 'sandbox');
+    const providerEnvironment = String(sanitizedConfig.environment || sanitizedConfig.mode || '').toLowerCase();
+    sanitizedConfig.environmentConfigured = Boolean(entry?.environment || entry?.mode);
+    // Display a safe form default without persisting or activating a provider-specific mode.
+    sanitizedConfig.environment = providerEnvironment === 'live' ? 'live' : 'sandbox';
     sanitizedConfig.connectEnabled = toBoolean(rawConnectEnabled, false);
     sanitizedConfig.connectType =
       String(
@@ -429,7 +473,8 @@ const mapGateway = (gateway: any, settings: any) => {
   }
 
   if (gateway.id === 'antom') {
-    const envRaw = String(sanitizedConfig.environment || sanitizedConfig.mode || resolvedMode || 'sandbox').toLowerCase();
+    const envRaw = String(sanitizedConfig.environment || sanitizedConfig.mode || process.env.ANTOM_ENV || 'sandbox').toLowerCase();
+    sanitizedConfig.environmentConfigured = Boolean(entry?.environment || entry?.mode || process.env.ANTOM_ENV);
     sanitizedConfig.environment = envRaw === 'live' ? 'live' : 'sandbox';
     sanitizedConfig.defaultPaymentMethodType = String(
       sanitizedConfig.defaultPaymentMethodType || 'CARD'
@@ -453,8 +498,8 @@ export const listFundingGatewaysAdmin = async (req: Request, res: Response) => {
     const data = paymentGatewayCatalog.map((gw) => mapGateway(gw, settings));
     return ok(res, data);
   } catch (error: any) {
-    console.error('Failed to load payment gateways:', error);
-    return fail(res, 500, error?.message || 'Failed to load gateways', 'ERR_GATEWAYS');
+    logGatewaySettingsFailure('read', req, error);
+    return fail(res, 500, 'Unable to load payment gateway settings', 'ERR_GATEWAYS');
   }
 };
 
@@ -506,20 +551,6 @@ export const saveFundingGatewaysAdmin = async (req: Request, res: Response) => {
         'logo'
       ]
     };
-    const requiredFields: Record<string, string[]> = {
-      stripe: ['secretKey'],
-      paypal: ['clientId', 'clientSecret'],
-      paystack: ['secretKey'],
-      flutterwave: ['secretKey'],
-      paymongo: ['secretKey'],
-      xendit: ['secretKey'],
-      monnify: ['apiKey', 'secretKey', 'contractCode'],
-      opay: ['merchantId', 'secretKey'],
-      dragonpay: ['merchantId', 'secretKey'],
-      payoneer: ['clientId', 'clientSecret', 'apiBaseUrl', 'authToken'],
-      antom: ['clientId', 'merchantPrivateKey']
-    };
-
     const updatedProviders = { ...existing };
     for (const item of incoming) {
       if (!item?.id) continue;
@@ -532,8 +563,17 @@ export const saveFundingGatewaysAdmin = async (req: Request, res: Response) => {
       const current = existing[providerId] || {};
       const next = { ...current };
 
-      const enabled = Boolean(item.isEnabled ?? item.is_enabled ?? item.enabled ?? current.enabled ?? false);
-      next.enabled = enabled;
+      const requestedEnabled = item.isEnabled ?? item.is_enabled ?? item.enabled;
+      if (requestedEnabled !== undefined && toBoolean(requestedEnabled) !== Boolean(current.enabled)) {
+        return fail(
+          res,
+          409,
+          'Gateway activation is managed separately. Refresh settings and use the activation control; no configuration was saved.',
+          'ERR_GATEWAY_ACTIVATION_SEPARATE'
+        );
+      }
+      // A credential/configuration save never changes activation state.
+      next.enabled = Boolean(current.enabled);
 
       const config = item.config && typeof item.config === 'object' ? item.config : {};
       const payloadConfig = { ...item, ...config };
@@ -548,19 +588,7 @@ export const saveFundingGatewaysAdmin = async (req: Request, res: Response) => {
       }
 
       if (next.enabled) {
-        const required = requiredFields[providerId] || [];
-        const legacyFallbacks: Record<string, any> = {
-          stripe: {
-            secretKey: settings?.paymentStripeSecret,
-            publishableKey: settings?.paymentStripeKey
-          },
-          paypal: {
-            clientId: settings?.paymentPaypalClientId,
-            clientSecret: settings?.paymentPaypalSecret
-          }
-        };
-        const legacy = legacyFallbacks[providerId] || {};
-        const missing = required.filter((field) => !next[field] && !legacy[field]);
+        const missing = getMissingGatewayFields(providerId, next, settings);
         if (missing.length) {
           return fail(res, 400, `Missing required credentials for ${providerId}: ${missing.join(', ')}`, 'ERR_GATEWAY_CONFIG');
         }
@@ -578,8 +606,47 @@ export const saveFundingGatewaysAdmin = async (req: Request, res: Response) => {
     const data = paymentGatewayCatalog.map((gw) => mapGateway(gw, { ...settings, walletFundingProviders: updatedProviders }));
     return ok(res, data);
   } catch (error: any) {
-    console.error('Failed to save payment gateways:', error);
-    return fail(res, 500, error?.message || 'Failed to save gateways', 'ERR_GATEWAYS_SAVE');
+    logGatewaySettingsFailure('save', req, error);
+    return fail(res, 500, 'Unable to save payment gateway settings', 'ERR_GATEWAYS_SAVE');
+  }
+};
+
+export const setFundingGatewayActivationAdmin = async (req: Request, res: Response) => {
+  try {
+    const providerId = String(req.body?.id || '');
+    const isEnabled = req.body?.isEnabled;
+    if (!isSafeObjectKey(providerId) || !PAYMENT_GATEWAY_IDS.has(providerId)) {
+      return fail(res, 400, 'Unsupported payment provider', 'ERR_GATEWAY_PROVIDER');
+    }
+    if (typeof isEnabled !== 'boolean') {
+      return fail(res, 400, 'isEnabled must be a boolean', 'ERR_GATEWAY_ACTIVATION');
+    }
+
+    const settings = await getOrCreateSettings();
+    const existing = normalizeProvidersConfig(settings);
+    const current = existing[providerId] || {};
+    if (isEnabled) {
+      const missing = getMissingGatewayFields(providerId, current, settings);
+      if (missing.length) {
+        return fail(res, 400, `Missing required credentials for ${providerId}: ${missing.join(', ')}`, 'ERR_GATEWAY_CONFIG');
+      }
+    }
+
+    const updatedProviders = {
+      ...existing,
+      [providerId]: { ...current, enabled: isEnabled }
+    };
+    await prisma.settings.update({
+      where: { id: settings.id },
+      data: { walletFundingProviders: updatedProviders }
+    });
+    invalidateStripeConfigCache();
+
+    const data = paymentGatewayCatalog.map((gw) => mapGateway(gw, { ...settings, walletFundingProviders: updatedProviders }));
+    return ok(res, data);
+  } catch (error: unknown) {
+    logGatewaySettingsFailure('activation', req, error);
+    return fail(res, 500, 'Unable to update payment gateway activation', 'ERR_GATEWAY_ACTIVATION');
   }
 };
 

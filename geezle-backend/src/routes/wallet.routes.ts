@@ -21,7 +21,8 @@ import {
   listWalletTopupProviders,
   listFundingGatewaysAdmin,
   listFundingGatewaysPublic,
-  saveFundingGatewaysAdmin
+  saveFundingGatewaysAdmin,
+  setFundingGatewayActivationAdmin
 } from '../controllers/walletFunding.controller';
 import { authMiddleware } from '../middleware/auth.middleware';
 import { adminMiddleware } from '../middleware/admin.middleware';
@@ -47,6 +48,7 @@ router.post('/settings/commission', authMiddleware, saveCommissionSettings);
 router.get('/admin/transactions', authMiddleware, adminMiddleware, getAllTransactionsAdmin);
 router.get('/admin/gateways', authMiddleware, adminMiddleware, listFundingGatewaysAdmin);
 router.post('/admin/gateways', authMiddleware, adminMiddleware, saveFundingGatewaysAdmin);
+router.post('/admin/gateways/activation', authMiddleware, adminMiddleware, setFundingGatewayActivationAdmin);
 router.get('/platform-financials', authMiddleware, adminMiddleware, getPlatformFinancials);
 router.post('/transactions/:id/reverse', authMiddleware, adminMiddleware, reverseTransaction);
 router.post('/:userId/adjust', authMiddleware, adminMiddleware, adjustWalletBalance);
