@@ -26,6 +26,7 @@ const GatewaysTab = () => {
     const { showNotification } = useNotification();
     const [selectedGateway, setSelectedGateway] = useState<PaymentGateway | null>(null);
     const [configDraft, setConfigDraft] = useState<Record<string, any>>({});
+    const [touchedConfigFields, setTouchedConfigFields] = useState<Set<string>>(new Set());
     const [isSaving, setIsSaving] = useState(false);
     const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
 
@@ -50,8 +51,8 @@ const GatewaysTab = () => {
             config: gw.config || {}
         } as PaymentGateway;
         try {
-            await PaymentService.updateGateway(updated);
-            setGateways(prev => prev.map(g => g.id === gw.id ? updated : g));
+            const fresh = await PaymentService.setGatewayEnabled(gw.id, enabled);
+            setGateways((fresh || []).map(normalizeGateway));
             showNotification('success', 'Gateway Updated', `${r.name ?? gw.name} is now ${updated.isEnabled ? 'Active' : 'Disabled'}`);
         } catch (e: any) {
             showNotification('error', 'Update Failed', e?.message || 'Unable to update gateway.');
@@ -60,11 +61,13 @@ const GatewaysTab = () => {
 
     const openConfigure = (gw: PaymentGateway) => {
         setSelectedGateway(gw);
+        setTouchedConfigFields(new Set());
         const baseDraft = { ...(gw.config || {}), logo: gw.logo || gw.config?.logo } as Record<string, any>;
         if (gw.id === 'stripe') {
             const rawEnvironment = String(baseDraft.environment || '').toLowerCase();
             if (!baseDraft.environment) {
-                baseDraft.environment = gw.mode === 'live' ? 'live' : 'sandbox';
+                // Never infer a provider's live mode from the platform-wide mode.
+                baseDraft.environment = 'sandbox';
             } else if (rawEnvironment === 'test') {
                 baseDraft.environment = 'sandbox';
             } else if (rawEnvironment !== 'live') {
@@ -88,11 +91,13 @@ const GatewaysTab = () => {
     const closeConfigure = () => {
         setSelectedGateway(null);
         setConfigDraft({});
+        setTouchedConfigFields(new Set());
     };
 
     const handleSaveConfig = async () => {
         if (!selectedGateway) return;
         setIsSaving(true);
+        let saveCompleted = false;
         try {
             const mergedConfig: Record<string, any> = {
                 ...(selectedGateway.config || {}),
@@ -110,6 +115,11 @@ const GatewaysTab = () => {
                 mergedConfig.connectType = String(mergedConfig.connectType || 'express').toLowerCase() === 'standard' ? 'standard' : 'express';
             }
 
+            const preserveInheritedEnvironment =
+                selectedGateway.config?.environmentConfigured === false && !touchedConfigFields.has('environment');
+            delete mergedConfig.environmentConfigured;
+            if (preserveInheritedEnvironment) delete mergedConfig.environment;
+
             const payload: PaymentGateway = {
                 ...selectedGateway,
                 isEnabled: (selectedGateway as any).isEnabled ?? (selectedGateway as any).is_enabled ?? false,
@@ -117,12 +127,23 @@ const GatewaysTab = () => {
             } as PaymentGateway;
 
             await PaymentService.updateGateway(payload);
-            showNotification('success', 'Saved', `${selectedGateway.name} settings updated.`);
+            saveCompleted = true;
             const fresh = await PaymentService.getGateways();
             setGateways((fresh || []).map(normalizeGateway));
             closeConfigure();
+            showNotification(
+                'success',
+                'Credentials Saved',
+                `${selectedGateway.name} settings were saved. This does not enable the gateway; use its activation control separately.`
+            );
         } catch (e: any) {
-            showNotification('error', 'Save Failed', e?.message || 'Unable to save gateway settings.');
+            showNotification(
+                saveCompleted ? 'warning' : 'error',
+                saveCompleted ? 'Saved, Reload Not Verified' : 'Save Failed',
+                saveCompleted
+                    ? `The server accepted the settings, but they could not be reloaded for verification. Refresh before relying on them. ${e?.message || ''}`.trim()
+                    : e?.message || 'Unable to save gateway settings.'
+            );
         } finally {
             setIsSaving(false);
         }
@@ -224,7 +245,10 @@ const GatewaysTab = () => {
     };
 
     const resolveFieldValue = (key: string) => configDraft[key] ?? '';
-    const updateField = (key: string, value: any) => setConfigDraft(prev => ({ ...prev, [key]: value }));
+    const updateField = (key: string, value: any) => {
+        setConfigDraft(prev => ({ ...prev, [key]: value }));
+        setTouchedConfigFields(prev => new Set(prev).add(key));
+    };
 
     const hasSecretSaved = (key: string) => {
         const camel = `has${key.charAt(0).toUpperCase()}${key.slice(1)}`;
@@ -334,6 +358,12 @@ const GatewaysTab = () => {
                         </div>
 
                         <div className="p-5 space-y-5">
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                Saving credentials does not enable this gateway. Its environment changes only if you explicitly change the Environment field; use the gateway activation control separately.
+                                {selectedGateway.config?.environmentConfigured === false && (selectedGateway.id === 'stripe' || selectedGateway.id === 'antom') ? (
+                                    <p className="mt-1">Sandbox is shown as a safe form default. No provider-specific environment is saved, so leaving it unchanged preserves the current platform default.</p>
+                                ) : null}
+                            </div>
                             {selectedGateway.id === 'antom' ? (
                                 <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
                                     <p className="font-semibold">Platform-wide Antom activation</p>

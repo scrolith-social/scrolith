@@ -32,14 +32,43 @@ export interface PayoutStatus {
 let gateways: PaymentGateway[] = [];
 let escrows: Escrow[] = []; // Populated via wallet.ts usually, kept here for orchestration simulation
 
+const paymentGatewayFailure = (error: any, fallback: string) => {
+  const response = error?.response;
+  const body = response?.data;
+  const rawMessage = body?.error || body?.message || error?.message || fallback;
+  const message = String(rawMessage).replace(/[\r\n\t]+/g, ' ').slice(0, 240) || fallback;
+  const rawRequestId = response?.headers?.['x-request-id'] || response?.headers?.['x-correlation-id'];
+  const requestId = String(rawRequestId || '').trim();
+  return new Error(/^[a-zA-Z0-9._:-]{1,100}$/.test(requestId) ? `${message} (Reference: ${requestId})` : message);
+};
+
+const gatewayListFromResponse = (response: any): PaymentGateway[] => {
+  const body = response?.data ?? response;
+  if (body?.success === false) {
+    const error: any = new Error(String(body.error || 'The payment gateway request was rejected.'));
+    error.response = response;
+    throw error;
+  }
+  const data = body?.data ?? body;
+  if (!Array.isArray(data)) {
+    const error: any = new Error('The server returned an invalid payment gateway response.');
+    error.response = response;
+    throw error;
+  }
+  return data;
+};
+
 export const PaymentService = {
   // --- PROVIDER ORCHESTRATION ---
 
   getGateways: async (): Promise<PaymentGateway[]> => {
-    const response = await api.get('/wallet/admin/gateways');
-    const data = response?.data?.data ?? response?.data ?? [];
-    gateways = Array.isArray(data) ? data : [];
-    return gateways;
+    try {
+      const response = await api.get('/wallet/admin/gateways');
+      gateways = gatewayListFromResponse(response);
+      return gateways;
+    } catch (error: any) {
+      throw paymentGatewayFailure(error, 'Unable to load payment gateway settings.');
+    }
   },
 
   getPublicGateways: async (): Promise<PaymentGateway[]> => {
@@ -121,15 +150,29 @@ export const PaymentService = {
 
   // --- ESCROW & ADMIN ---
 
-  updateGateway: async (gateway: PaymentGateway): Promise<void> => {
+  updateGateway: async (gateway: PaymentGateway): Promise<PaymentGateway[]> => {
         const payload = {
             id: gateway.id,
             isEnabled: gateway.isEnabled ?? (gateway as any).is_enabled ?? false,
             config: gateway.config || {}
         };
-        const response = await api.post('/wallet/admin/gateways', payload);
-        const data = response?.data?.data ?? response?.data ?? [];
-        gateways = Array.isArray(data) ? data : [];
+        try {
+          const response = await api.post('/wallet/admin/gateways', payload);
+          gateways = gatewayListFromResponse(response);
+          return gateways;
+        } catch (error: any) {
+          throw paymentGatewayFailure(error, 'Unable to save payment gateway settings.');
+        }
+  },
+
+  setGatewayEnabled: async (id: string, isEnabled: boolean): Promise<PaymentGateway[]> => {
+      try {
+        const response = await api.post('/wallet/admin/gateways/activation', { id, isEnabled });
+        gateways = gatewayListFromResponse(response);
+        return gateways;
+      } catch (error: any) {
+        throw paymentGatewayFailure(error, 'Unable to update payment gateway activation.');
+      }
   },
 
   // For Admin Dashboard
