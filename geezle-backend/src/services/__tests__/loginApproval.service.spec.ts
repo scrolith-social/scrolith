@@ -64,7 +64,7 @@ describe('loginApproval.service', () => {
     const publicKey = JSON.stringify(await webcrypto.subtle.exportKey('jwk', keyPair.publicKey));
     const deviceId = 'device-trusted';
     const timestamp = Date.now();
-    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\\n${deviceId}\\n${timestamp}`);
+    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\n${deviceId}\n${timestamp}`);
     const signatureBytes = await webcrypto.subtle.sign(
       { name: 'ECDSA', hash: 'SHA-256' },
       keyPair.privateKey,
@@ -100,7 +100,7 @@ describe('loginApproval.service', () => {
     const publicKey = JSON.stringify(await webcrypto.subtle.exportKey('jwk', keyPair.publicKey));
     const deviceId = 'device-trusted';
     const timestamp = Date.now();
-    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\\n${deviceId}\\n${timestamp}`);
+    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\n${deviceId}\n${timestamp}`);
     const signatureBytes = await webcrypto.subtle.sign(
       { name: 'ECDSA', hash: 'SHA-256' },
       keyPair.privateKey,
