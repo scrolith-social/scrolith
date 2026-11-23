@@ -1,3 +1,5 @@
+import { webcrypto } from 'crypto';
+
 export {};
 
 const mockPrisma: any = {
@@ -51,6 +53,88 @@ describe('loginApproval.service', () => {
       secret: 'must-not-persist'
     })).toEqual(expect.objectContaining({ deviceId: 'device-1', browserName: 'Chrome' }));
     expect(service.normalizeLoginDeviceMetadata({})).not.toHaveProperty('secret');
+  });
+
+  test('accepts browser WebCrypto ECDSA proofs for an already trusted device', async () => {
+    const keyPair = await webcrypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify']
+    );
+    const publicKey = JSON.stringify(await webcrypto.subtle.exportKey('jwk', keyPair.publicKey));
+    const deviceId = 'device-trusted';
+    const timestamp = Date.now();
+    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\\n${deviceId}\\n${timestamp}`);
+    const signatureBytes = await webcrypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      keyPair.privateKey,
+      payload
+    );
+    const signature = Buffer.from(new Uint8Array(signatureBytes)).toString('base64url');
+
+    mockPrisma.loginTrustedDevice.findUnique.mockResolvedValue({
+      id: 'trusted-1',
+      isTrusted: true,
+      publicKey
+    });
+    const service = await import('../loginApproval.service');
+
+    await expect(service.evaluateLoginDevice('user-1', 0, {
+      deviceId,
+      publicKey,
+      possessionProof: {
+        algorithm: 'ECDSA_P256_SHA256',
+        timestamp,
+        signature
+      }
+    }, {})).resolves.toEqual({ required: false, trustedDevice: true });
+    expect(mockPrisma.loginApprovalAttempt.create).not.toHaveBeenCalled();
+  });
+
+  test('requires approval when an already trusted device presents a tampered proof', async () => {
+    const keyPair = await webcrypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify']
+    );
+    const publicKey = JSON.stringify(await webcrypto.subtle.exportKey('jwk', keyPair.publicKey));
+    const deviceId = 'device-trusted';
+    const timestamp = Date.now();
+    const payload = new TextEncoder().encode(`scrolith-device-proof:v1\\n${deviceId}\\n${timestamp}`);
+    const signatureBytes = await webcrypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      keyPair.privateKey,
+      payload
+    );
+    const tamperedSignature = Buffer.from(new Uint8Array(signatureBytes));
+    tamperedSignature[0] ^= 1;
+    mockPrisma.loginTrustedDevice.findUnique.mockResolvedValue({
+      id: 'trusted-1',
+      isTrusted: true,
+      publicKey
+    });
+    mockPrisma.loginApprovalAttempt.create.mockResolvedValue({
+      id: 'approval-1',
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + 600000),
+      createdAt: new Date(),
+      deviceMetadata: { browserName: 'Chrome', platform: 'web' }
+    });
+    const service = await import('../loginApproval.service');
+
+    const result = await service.evaluateLoginDevice('user-1', 0, {
+      deviceId,
+      publicKey,
+      possessionProof: {
+        algorithm: 'ECDSA_P256_SHA256',
+        timestamp,
+        signature: tamperedSignature.toString('base64url')
+      }
+    }, {});
+
+    expect(result.required).toBe(true);
+    expect(result).toEqual(expect.objectContaining({ attemptId: 'approval-1' }));
+    expect(mockPrisma.loginApprovalAttempt.create).toHaveBeenCalled();
   });
 
   test('creates a password-verified approval request for an untrusted device', async () => {
