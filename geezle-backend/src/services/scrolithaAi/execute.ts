@@ -14,7 +14,7 @@ import {
   type ScrolithaAIExecuteInput,
   type ScrolithaAIExecuteResult
 } from './types';
-import { loadAIFeatureFlags, loadProviderConfig, isProviderEnabled, isScrolithaLocalOnly, SCROLITHA_LOCAL_MODEL } from './config';
+import { loadAIFeatureFlags, loadProviderConfig, isNativeExecutionAllowed, isOllamaCallAllowed, isProviderEnabled, isScrolithaLocalOnly, SCROLITHA_LOCAL_MODEL } from './config';
 import { assertConsentForRequest } from './consent';
 import {
   classifyPrivacy,
@@ -39,7 +39,9 @@ import {
   beginRequest,
   endRequest,
   recordUsage,
-  estimateCostUsd
+  estimateCostUsd,
+  getMaxAiRequestRuntimeMs,
+  boundProviderTimeoutMs
 } from './usage';
 import { inc, logAIEvent } from './observability';
 import {
@@ -182,25 +184,6 @@ export class ScrolithaAI {
       }
       const consent = consentCheck.consent;
 
-      // --- QUOTA ---
-      const quota = await checkQuota({
-        userId: input.userId,
-        capability: input.capability,
-        estimatedTokens: 500
-      });
-      if (!quota.allowed) {
-        inc('quotaRejections');
-        inc('blocks');
-        return blocked({
-          reason: quota.reason || 'QUOTA_EXCEEDED',
-          lifecycle: 'BLOCKED',
-          correlationId,
-          requestId,
-          privacyLevel,
-          latencyMs: Date.now() - started
-        });
-      }
-
       // --- REDACT ---
       lifecycle = 'REDACTED';
       const rawText = flattenInput(input.input);
@@ -264,6 +247,7 @@ export class ScrolithaAI {
       ]);
       const deterministicOnly =
         input.policy?.deterministicOnly === true || deterministicCapability.has(input.capability);
+      const requireOllama = Boolean(input.policy?.requireOllama) || (isScrolithaLocalOnly() && !deterministicOnly);
       const externalOk =
         consent.externalProviderProcessingAllowed &&
         externalProviderAllowedForPrivacy(privacyLevel, true);
@@ -279,7 +263,7 @@ export class ScrolithaAI {
         contextChars: redacted.text.length,
         locale: input.locale || 'en',
         maxTokens: input.policy?.maxTokens,
-        timeoutMs: input.policy?.timeoutMs,
+        timeoutMs: input.policy?.timeoutMs ?? getMaxAiRequestRuntimeMs() ?? undefined,
         providerHealth: {
           NATIVE: isProviderEnabled('NATIVE', providerCfg) ? 'operational' : 'disabled',
           OLLAMA: isProviderEnabled('OLLAMA', providerCfg) ? 'operational' : 'disabled',
@@ -288,8 +272,12 @@ export class ScrolithaAI {
           MOCK: isScrolithaLocalOnly() || process.env.NODE_ENV === 'production' ? 'disabled' : 'operational',
           DISABLED: 'disabled'
         },
-        requireOllama: Boolean(input.policy?.requireOllama) || isScrolithaLocalOnly()
+        requireOllama
       });
+      const configuredRequestRuntimeMs = getMaxAiRequestRuntimeMs();
+      if (configuredRequestRuntimeMs !== null) {
+        route.timeoutMs = Math.min(route.timeoutMs, configuredRequestRuntimeMs);
+      }
 
       // --- CACHE ---
       const inputHash = hashInput(
@@ -341,13 +329,18 @@ export class ScrolithaAI {
 
       // --- PROVIDER CALL (NATIVE / local / external / MOCK) ---
       lifecycle = 'PROCESSING';
-      // Network providers (Ollama remote / Gemini / OpenAI) gated; NATIVE always allowed offline
-      const ollamaEnabled = isProviderEnabled('OLLAMA', providerCfg);
+      // Provider availability remains explicitly gated. NATIVE is network-free,
+      // but production execution still requires its opt-in and a deterministic capability.
+      const productionProviderGateOpen = process.env.NODE_ENV !== 'production' ||
+        (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER === '1' &&
+          ['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase()));
+      const providerCallsEnabled = flags.enableProviderCalls && productionProviderGateOpen;
+      const ollamaEnabled = isOllamaCallAllowed(flags, providerCfg);
       const forceNoAllProviders =
         process.env.SCROLITHA_AI_FORCE_NO_PROVIDER === '1' &&
         !String(process.env.SCROLITHA_AI_ALLOWED_PROVIDERS || '').toUpperCase().split(',').includes('OLLAMA');
       const useNetworkProviders =
-        flags.enableProviderCalls &&
+        providerCallsEnabled &&
         !input.dryRun &&
         !forceNoAllProviders &&
         !providerCfg.emergencyShutdown;
@@ -358,19 +351,19 @@ export class ScrolithaAI {
       ];
 
       if (!useNetworkProviders) {
-        if (input.policy?.requireOllama) {
+        if (requireOllama) {
           chain = ollamaEnabled ? [{ provider: 'OLLAMA', model: SCROLITHA_LOCAL_MODEL }] : [];
         } else if (isScrolithaLocalOnly()) {
-          // Local-only mode may use the network-isolated native provider as a
-          // resilience fallback when Ollama is unavailable. Explicit
-          // requireOllama callers retain the strict Ollama-only contract.
+          // Deterministic capabilities prefer the gated native provider and may
+          // fall back to Ollama. Non-deterministic callers take the strict
+          // requireOllama branch above and cannot fall back to NATIVE.
           const native = isProviderEnabled('NATIVE', providerCfg)
             ? [{ provider: 'NATIVE' as const, model: 'scrolitha-native-33.3' }]
             : [];
           const ollama = ollamaEnabled
             ? [{ provider: 'OLLAMA' as const, model: SCROLITHA_LOCAL_MODEL }]
             : [];
-          chain = input.policy?.preferNative ? [...native, ...ollama] : [...ollama, ...native];
+          chain = input.policy?.preferNative || deterministicOnly ? [...native, ...ollama] : [...ollama, ...native];
         } else {
           // Deterministic native intelligence remains available without network provider calls.
           chain = chain.filter((c) => c.provider === 'NATIVE' || c.provider === 'MOCK');
@@ -386,6 +379,35 @@ export class ScrolithaAI {
         }
       }
 
+      if (requireOllama && !ollamaEnabled) {
+        inc('blocks');
+        const reason = !flags.enableProviderCalls || !productionProviderGateOpen
+          ? 'PROVIDER_CALLS_DISABLED_BY_POLICY'
+          : providerCfg.emergencyShutdown
+            ? 'PROVIDER_EMERGENCY_SHUTDOWN'
+            : 'OLLAMA_PROVIDER_DISABLED_BY_POLICY';
+        await writeAIAudit({
+          action: 'request.blocked',
+          actorUserId: input.userId,
+          capability: input.capability,
+          provider: 'OLLAMA',
+          privacyLevel,
+          lifecycle: 'BLOCKED',
+          reason,
+          correlationId,
+          requestId,
+          inputHash: hashContent(rawText)
+        });
+        return blocked({
+          reason,
+          lifecycle: 'BLOCKED',
+          correlationId,
+          requestId,
+          privacyLevel,
+          latencyMs: Date.now() - started
+        });
+      }
+
       // Profile editing must remain usable when the self-hosted model is
       // cold, unavailable, or marked unhealthy. The native provider is
       // deterministic and network-free, so an explicitly native-preferred
@@ -398,7 +420,42 @@ export class ScrolithaAI {
         ];
       }
 
+      // Reserve the conservative maximum only after consent, privacy, safety,
+      // cache, and provider routing checks have passed. Each eligible provider
+      // may be attempted; structured generation can make up to two calls.
+      // UTF-8 bytes provide a conservative preflight bound: tokenizers may
+      // split non-ASCII text into byte-level tokens, so character/4 can
+      // materially under-reserve. Provider telemetry settles the reservation.
+      const promptBytes = Buffer.byteLength(`${rendered.system}\n${rendered.user}`, 'utf8');
+      const tokensPerProviderAttempt = promptBytes + route.maximumTokens;
+      const structuredAttempts = input.structured || Boolean(prompt.outputSchemaName) ? 2 : 1;
+      const estimatedTokens = tokensPerProviderAttempt * chain.filter((step) => step.provider !== 'DISABLED').length * structuredAttempts;
+      const estimatedCostUsd = chain.reduce(
+        (sum, step) => sum + estimateCostUsd(step.provider, tokensPerProviderAttempt * structuredAttempts),
+        0
+      );
+      const quota = await checkQuota({
+        userId: input.userId,
+        capability: input.capability,
+        requestId,
+        estimatedTokens,
+        estimatedCostUsd
+      });
+      if (!quota.allowed) {
+        inc('quotaRejections');
+        inc('blocks');
+        return blocked({
+          reason: quota.reason || 'QUOTA_EXCEEDED',
+          lifecycle: 'BLOCKED',
+          correlationId,
+          requestId,
+          privacyLevel,
+          latencyMs: Date.now() - started
+        });
+      }
+
       beginRequest(input.userId);
+      const providerDeadline = Date.now() + route.timeoutMs;
       let lastError: string | null = null;
       let text = '';
       let data: T | undefined;
@@ -406,11 +463,41 @@ export class ScrolithaAI {
       let usedModel = 'scrolitha-native-33.3';
       let usage: ScrolithaAIExecuteResult['usage'];
       let parseAttempts = 0;
+      let providerAttempted = false;
+      let providerAttemptFailed = false;
+
+      const settleUsage = (status: 'COMPLETED' | 'FAILED' | 'BLOCKED') => recordUsage({
+        userId: input.userId,
+        capability: input.capability,
+        provider: usedProvider,
+        model: usedModel,
+        promptTokens: usage?.promptTokens,
+        completionTokens: usage?.completionTokens,
+        totalTokens: usage?.totalTokens,
+        estimatedCostUsd: usage?.estimatedCostUsd,
+        usageKnown: !providerAttempted || (!providerAttemptFailed &&
+          (Boolean(usage && (usage.totalTokens !== undefined ||
+            usage.promptTokens !== undefined || usage.completionTokens !== undefined)) ||
+            usedProvider === 'NATIVE' || usedProvider === 'MOCK')),
+        correlationId,
+        requestId,
+        status
+      });
 
       try {
         for (let i = 0; i < chain.length; i++) {
           const step = chain[i];
           if (step.provider === 'DISABLED') continue;
+          const providerTimeoutMs = boundProviderTimeoutMs(route.timeoutMs, providerDeadline - Date.now());
+          if (providerTimeoutMs <= 0) {
+            lastError = 'AI_REQUEST_RUNTIME_LIMIT_EXCEEDED';
+            providerAttemptFailed = providerAttempted;
+            break;
+          }
+          if (step.provider === 'NATIVE' && !isNativeExecutionAllowed(providerCfg, deterministicOnly)) {
+            lastError = 'NATIVE_PROVIDER_DISABLED_BY_POLICY';
+            continue;
+          }
           if (process.env.NODE_ENV === 'production' && !deterministicOnly && step.provider !== 'OLLAMA') {
             lastError = 'PRODUCTION_PROVIDER_NOT_ALLOWED';
             continue;
@@ -440,6 +527,10 @@ export class ScrolithaAI {
 
           const provider = getProvider(step.provider);
           if (!provider) continue;
+
+          usedProvider = step.provider;
+          usedModel = step.model;
+          providerAttempted = true;
 
           try {
             const messages = [
@@ -475,7 +566,7 @@ export class ScrolithaAI {
                 provider.generateStructured({
                   messages,
                   maxTokens: route.maximumTokens,
-                  timeoutMs: route.timeoutMs,
+                  timeoutMs: providerTimeoutMs,
                   model: step.model,
                   locale: input.locale || 'en',
                   schemaName,
@@ -483,7 +574,7 @@ export class ScrolithaAI {
                   parse: parser.parse,
                   validate: parser.validate
                 }),
-                route.timeoutMs,
+                providerTimeoutMs,
                 'PROVIDER_TIMEOUT'
               );
               text = structured.rawText;
@@ -492,38 +583,48 @@ export class ScrolithaAI {
               usedModel = structured.model;
               parseAttempts = structured.parseAttempts;
               if (structured.parseAttempts > 1) inc('structuredFailures');
-              usage = {
-                ...structured.usage,
-                estimatedCostUsd: estimateCostUsd(
-                  structured.provider,
-                  structured.usage?.totalTokens || 0
-                )
-              };
+              usage = structured.usage
+                ? {
+                    ...structured.usage,
+                    estimatedCostUsd: estimateCostUsd(
+                      structured.provider,
+                      structured.usage.totalTokens ??
+                        (structured.usage.promptTokens || 0) + (structured.usage.completionTokens || 0)
+                    )
+                  }
+                : undefined;
             } else {
               const resp = await withTimeout(
                 provider.generateText({
                   messages,
                   maxTokens: route.maximumTokens,
-                  timeoutMs: route.timeoutMs,
+                  timeoutMs: providerTimeoutMs,
                   model: step.model,
                   locale: input.locale || 'en'
                 }),
-                route.timeoutMs,
+                providerTimeoutMs,
                 'PROVIDER_TIMEOUT'
               );
               text = resp.text;
               usedProvider = resp.provider;
               usedModel = resp.model;
-              usage = {
-                ...resp.usage,
-                estimatedCostUsd: estimateCostUsd(resp.provider, resp.usage?.totalTokens || 0)
-              };
+              usage = resp.usage
+                ? {
+                    ...resp.usage,
+                    estimatedCostUsd: estimateCostUsd(
+                      resp.provider,
+                      resp.usage.totalTokens ??
+                        (resp.usage.promptTokens || 0) + (resp.usage.completionTokens || 0)
+                    )
+                  }
+                : undefined;
             }
 
             recordProviderSuccess(step.provider);
             if (i > 0) inc('fallbacks');
             break;
           } catch (err: any) {
+            providerAttemptFailed = true;
             lastError = String(err?.message || err);
             recordProviderFailure(step.provider);
             logAIEvent('warn', 'provider_attempt_failed', {
@@ -560,15 +661,7 @@ export class ScrolithaAI {
       if (!text && lastError) {
         lifecycle = 'FAILED';
         inc('failures');
-        await recordUsage({
-          userId: input.userId,
-          capability: input.capability,
-          provider: usedProvider,
-          model: usedModel,
-          status: 'FAILED',
-          correlationId,
-          requestId
-        });
+        await settleUsage('FAILED');
         return {
           ok: false,
           reason: lastError,
@@ -581,9 +674,10 @@ export class ScrolithaAI {
         };
       }
 
-      if (!text && input.policy?.requireOllama) {
+      if (!text && requireOllama) {
         lifecycle = 'FAILED';
         inc('failures');
+        await settleUsage('FAILED');
         return {
           ok: false,
           reason: lastError || 'OLLAMA_UNAVAILABLE',
@@ -601,6 +695,7 @@ export class ScrolithaAI {
       if (!postSafety.allowed || postSafety.action === 'REFUSE') {
         inc('refusals');
         inc('safetyBlocks');
+        await settleUsage('BLOCKED');
         return {
           ok: false,
           blocked: true,
@@ -620,6 +715,19 @@ export class ScrolithaAI {
 
       lifecycle = 'COMPLETED';
       const latencyMs = Date.now() - started;
+      const quotaSettlement = await settleUsage('COMPLETED');
+      if (!quotaSettlement.withinLimits) {
+        inc('quotaRejections');
+        inc('blocks');
+        return blocked({
+          reason: quotaSettlement.reason || 'QUOTA_EXCEEDED',
+          lifecycle: 'BLOCKED',
+          correlationId,
+          requestId,
+          privacyLevel,
+          latencyMs
+        });
+      }
       inc('successes');
       inc('totalLatencyMs', latencyMs);
       if (usage?.totalTokens) inc('totalTokens', usage.totalTokens);
@@ -642,20 +750,6 @@ export class ScrolithaAI {
           promptVersion: disclosure.promptVersion
         });
       }
-
-      await recordUsage({
-        userId: input.userId,
-        capability: input.capability,
-        provider: usedProvider,
-        model: usedModel,
-        promptTokens: usage?.promptTokens,
-        completionTokens: usage?.completionTokens,
-        totalTokens: usage?.totalTokens,
-        estimatedCostUsd: usage?.estimatedCostUsd,
-        correlationId,
-        requestId,
-        status: 'COMPLETED'
-      });
 
       // History only when user consented
       if (consent.aiActivityHistoryEnabled) {

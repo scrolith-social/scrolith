@@ -79,8 +79,10 @@ export {
 export {
   loadAIFeatureFlags,
   setAIFeatureFlags,
+  persistAdminAIFeatureFlags,
   loadProviderConfig,
   setProviderConfig,
+  persistAdminProviderConfig,
   isScrolithaLocalOnly,
   SCROLITHA_LOCAL_MODEL
 } from './config';

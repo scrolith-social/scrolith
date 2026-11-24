@@ -3,6 +3,11 @@
  */
 import prisma from '../../utils/prismaClient';
 import {
+  createAIAuditRecordInTransaction,
+  rememberCommittedAIAuditRecord,
+  type AIAuditInput
+} from './audit';
+import {
   DEFAULT_AI_FEATURE_FLAGS,
   type AIFeatureFlags,
   type AIProviderId
@@ -34,8 +39,15 @@ export type ProviderConfigState = {
 };
 
 const DEFAULT_PROVIDER_CONFIG: ProviderConfigState = {
-  NATIVE: { enabled: true, model: 'scrolitha-native-33.3' },
-  OLLAMA: { enabled: true, model: process.env.SCROLITHA_OLLAMA_MODEL || SCROLITHA_LOCAL_MODEL, timeoutMs: 30_000 },
+  // Production activation requires an audited persisted provider change as
+  // well as the deployment's explicit environment gate. Development retains
+  // the existing local defaults.
+  NATIVE: { enabled: process.env.NODE_ENV !== 'production', model: 'scrolitha-native-33.3' },
+  OLLAMA: {
+    enabled: process.env.NODE_ENV !== 'production',
+    model: process.env.SCROLITHA_OLLAMA_MODEL || SCROLITHA_LOCAL_MODEL,
+    timeoutMs: 30_000
+  },
   GEMINI: { enabled: false, model: process.env.SCROLITHA_GEMINI_MODEL || 'gemini-pro', timeoutMs: 30_000 },
   OPENAI: { enabled: false, model: process.env.OPENAI_MODEL || 'gpt-4o-mini', timeoutMs: 30_000 },
   MOCK: { enabled: false },
@@ -59,8 +71,66 @@ function mergeFlags(raw: unknown): AIFeatureFlags {
   } as AIFeatureFlags;
 }
 
+/** Apply environment safety gates on every read, including cache hits. */
+function applyFeatureFlagEnvironmentOverrides(flags: AIFeatureFlags): AIFeatureFlags {
+  const effective = { ...flags };
+  const envFlag = (name: string) =>
+    ['1', 'true', 'yes', 'on'].includes(String(process.env[name] || '').trim().toLowerCase());
+  const envFlagSet = (name: string) => process.env[name] !== undefined;
+
+  if (envFlag('SCROLITHA_AI_KILL_SWITCH')) effective.killSwitch = true;
+  if (process.env.SCROLITHA_AI_FORCE_NO_PROVIDER === '1' ||
+      (process.env.NODE_ENV === 'production' &&
+        (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1' ||
+          !envFlag('SCROLITHA_AI_ENABLE_PROVIDER_CALLS')))) {
+    effective.enableProviderCalls = false;
+  }
+  if (envFlagSet('SCROLITHA_AI_ENABLED')) effective.masterEnabled = envFlag('SCROLITHA_AI_ENABLED');
+  if (envFlagSet('SCROLITHA_AI_ENGAGEMENT_NOTIFICATION_COPY_ENABLED')) {
+    effective.ENGAGEMENT_NOTIFICATION_COPY = envFlag('SCROLITHA_AI_ENGAGEMENT_NOTIFICATION_COPY_ENABLED');
+  }
+  if (envFlagSet('SCROLITHA_AI_PLATFORM_COPILOT_ENABLED')) {
+    effective.platformCopilotEnabled = envFlag('SCROLITHA_AI_PLATFORM_COPILOT_ENABLED');
+  }
+  if (envFlagSet('SCROLITHA_AI_NATIVE_INTELLIGENCE_ENABLED')) {
+    effective.nativeIntelligenceEnabled = envFlag('SCROLITHA_AI_NATIVE_INTELLIGENCE_ENABLED');
+  }
+  if (envFlagSet('SCROLITHA_AI_SKILLS_ENABLED')) {
+    effective.skillsFrameworkEnabled = envFlag('SCROLITHA_AI_SKILLS_ENABLED');
+  }
+  if (envFlagSet('SCROLITHA_AI_TOOL_ORCHESTRATION_ENABLED')) {
+    effective.toolOrchestrationEnabled = envFlag('SCROLITHA_AI_TOOL_ORCHESTRATION_ENABLED');
+  }
+  if (envFlagSet('SCROLITHA_AI_BETA_ALLOWLIST_ONLY')) {
+    effective.betaAllowlistOnly = envFlag('SCROLITHA_AI_BETA_ALLOWLIST_ONLY');
+  }
+  if (envFlag('SCROLITHA_AI_ENABLE_ALL_CAPABILITIES')) {
+    for (const key of Object.keys(DEFAULT_AI_FEATURE_FLAGS) as Array<keyof AIFeatureFlags>) {
+      if (key !== 'killSwitch' && key !== 'betaAllowlistOnly') effective[key] = true;
+    }
+  }
+  if (effective.platformCopilotEnabled) effective.COPILOT_CONTEXT = true;
+  if (effective.nativeIntelligenceEnabled) {
+    effective.INTENT_DETECTION = true;
+    effective.TASK_PLANNING = true;
+    effective.SKILL_INVOCATION = true;
+  }
+  // Reapply hard safety gates last so convenience environment overrides such
+  // as ENABLE_ALL_CAPABILITIES cannot reopen provider calls.
+  if (envFlag('SCROLITHA_AI_KILL_SWITCH')) effective.killSwitch = true;
+  if (process.env.SCROLITHA_AI_FORCE_NO_PROVIDER === '1' ||
+      (process.env.NODE_ENV === 'production' &&
+        (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1' ||
+          !envFlag('SCROLITHA_AI_ENABLE_PROVIDER_CALLS')))) {
+    effective.enableProviderCalls = false;
+  }
+  return effective;
+}
+
 export async function loadAIFeatureFlags(force = false): Promise<AIFeatureFlags> {
-  if (!force && Date.now() - flagsLoadedAt < FLAGS_TTL_MS) return flagsCache;
+  if (!force && Date.now() - flagsLoadedAt < FLAGS_TTL_MS) {
+    return applyFeatureFlagEnvironmentOverrides(flagsCache);
+  }
   try {
     const row = await (prisma as any).aIFeatureFlag?.findUnique?.({ where: { key: FLAG_KEY } });
     if (row?.value) {
@@ -74,53 +144,12 @@ export async function loadAIFeatureFlags(force = false): Promise<AIFeatureFlags>
     }
     flagsCache = { ...DEFAULT_AI_FEATURE_FLAGS };
   }
-  // Env hard overrides for Phase 33.0 safety
-  if (process.env.SCROLITHA_AI_KILL_SWITCH === '1' || process.env.SCROLITHA_AI_KILL_SWITCH === 'true') {
-    flagsCache = { ...flagsCache, killSwitch: true };
-  }
-  if (process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS !== '1' && process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS !== 'true') {
-    // Production hard rule: provider calls off unless explicitly enabled in non-prod
-    if (process.env.NODE_ENV === 'production' || process.env.SCROLITHA_AI_FORCE_NO_PROVIDER === '1') {
-      flagsCache = { ...flagsCache, enableProviderCalls: false };
-    }
-  }
-  const envFlag = (name: string) =>
-    ['1', 'true', 'yes', 'on'].includes(String(process.env[name] || '').trim().toLowerCase());
-  const envFlagSet = (name: string) => process.env[name] !== undefined;
-  if (envFlagSet('SCROLITHA_AI_ENABLED')) flagsCache.masterEnabled = envFlag('SCROLITHA_AI_ENABLED');
-  if (envFlagSet('SCROLITHA_AI_ENGAGEMENT_NOTIFICATION_COPY_ENABLED')) {
-    flagsCache.ENGAGEMENT_NOTIFICATION_COPY = envFlag('SCROLITHA_AI_ENGAGEMENT_NOTIFICATION_COPY_ENABLED');
-  }
-  if (envFlagSet('SCROLITHA_AI_PLATFORM_COPILOT_ENABLED')) {
-    flagsCache.platformCopilotEnabled = envFlag('SCROLITHA_AI_PLATFORM_COPILOT_ENABLED');
-  }
-  if (envFlagSet('SCROLITHA_AI_NATIVE_INTELLIGENCE_ENABLED')) {
-    flagsCache.nativeIntelligenceEnabled = envFlag('SCROLITHA_AI_NATIVE_INTELLIGENCE_ENABLED');
-  }
-  if (envFlagSet('SCROLITHA_AI_SKILLS_ENABLED')) flagsCache.skillsFrameworkEnabled = envFlag('SCROLITHA_AI_SKILLS_ENABLED');
-  if (envFlagSet('SCROLITHA_AI_TOOL_ORCHESTRATION_ENABLED')) {
-    flagsCache.toolOrchestrationEnabled = envFlag('SCROLITHA_AI_TOOL_ORCHESTRATION_ENABLED');
-  }
-  if (envFlagSet('SCROLITHA_AI_BETA_ALLOWLIST_ONLY')) {
-    flagsCache.betaAllowlistOnly = envFlag('SCROLITHA_AI_BETA_ALLOWLIST_ONLY');
-  }
-  if (envFlag('SCROLITHA_AI_ENABLE_ALL_CAPABILITIES')) {
-    for (const key of Object.keys(DEFAULT_AI_FEATURE_FLAGS) as Array<keyof AIFeatureFlags>) {
-      if (key !== 'killSwitch' && key !== 'betaAllowlistOnly') flagsCache[key] = true;
-    }
-  }
-  if (flagsCache.platformCopilotEnabled) flagsCache.COPILOT_CONTEXT = true;
-  if (flagsCache.nativeIntelligenceEnabled) {
-    flagsCache.INTENT_DETECTION = true;
-    flagsCache.TASK_PLANNING = true;
-    flagsCache.SKILL_INVOCATION = true;
-  }
   flagsLoadedAt = Date.now();
-  return flagsCache;
+  return applyFeatureFlagEnvironmentOverrides(flagsCache);
 }
 
 export function getAIFeatureFlagsSync(): AIFeatureFlags {
-  return flagsCache;
+  return applyFeatureFlagEnvironmentOverrides(flagsCache);
 }
 
 export async function setAIFeatureFlags(
@@ -130,7 +159,9 @@ export async function setAIFeatureFlags(
   const current = await loadAIFeatureFlags(true);
   const next = { ...current, ...partial };
   // Never allow enableProviderCalls true in production via admin without env
-  if (process.env.NODE_ENV === 'production' && process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1') {
+  if (process.env.NODE_ENV === 'production' &&
+      (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1' ||
+        !['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase()))) {
     next.enableProviderCalls = false;
   }
   flagsCache = next;
@@ -147,6 +178,46 @@ export async function setAIFeatureFlags(
     }
   }
   return next;
+}
+
+/**
+ * Admin-only durable mutation. The feature row and its audit event commit
+ * together; process caches are changed only after the transaction succeeds.
+ */
+export async function persistAdminAIFeatureFlags(
+  partial: Partial<AIFeatureFlags>,
+  updatedBy: string,
+  auditMetadata: Record<string, unknown>
+): Promise<AIFeatureFlags> {
+  const result = await (prisma as any).$transaction(async (tx: any) => {
+    const delegate = tx?.aIFeatureFlag;
+    if (typeof delegate?.findUnique !== 'function' || typeof delegate?.upsert !== 'function') {
+      throw new Error('AI feature-flag persistence is unavailable.');
+    }
+    const row = await delegate.findUnique({ where: { key: FLAG_KEY } });
+    let next = { ...mergeFlags(row?.value), ...partial } as AIFeatureFlags;
+    if (process.env.NODE_ENV === 'production' &&
+        (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1' ||
+          !['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase()))) {
+      next.enableProviderCalls = false;
+    }
+    const saved = await delegate.upsert({
+      where: { key: FLAG_KEY },
+      create: { key: FLAG_KEY, value: next, updatedBy: updatedBy || null },
+      update: { value: next, version: { increment: 1 }, updatedBy: updatedBy || null }
+    });
+    const audit = await createAIAuditRecordInTransaction(tx, {
+      action: 'admin.feature_flags.updated',
+      actorUserId: updatedBy,
+      metadata: auditMetadata
+    });
+    return { flags: mergeFlags(saved?.value ?? next), audit };
+  }, { isolationLevel: 'Serializable' });
+
+  flagsCache = result.flags;
+  flagsLoadedAt = Date.now();
+  rememberCommittedAIAuditRecord(result.audit);
+  return flagsCache;
 }
 
 export async function loadProviderConfig(force = false): Promise<ProviderConfigState> {
@@ -196,8 +267,77 @@ export async function setProviderConfig(
   return next;
 }
 
+/** Persist a provider change and its audit record atomically for admin routes. */
+export async function persistAdminProviderConfig(
+  partial: Partial<ProviderConfigState>,
+  updatedBy: string,
+  provider: string,
+  auditMetadata: Record<string, unknown>
+): Promise<ProviderConfigState> {
+  const result = await (prisma as any).$transaction(async (tx: any) => {
+    const delegate = tx?.aIProviderConfiguration;
+    if (typeof delegate?.findUnique !== 'function' || typeof delegate?.upsert !== 'function') {
+      throw new Error('AI provider configuration persistence is unavailable.');
+    }
+    const row = await delegate.findUnique({ where: { provider: 'GLOBAL' } });
+    const current = normalizeProviderConfig({
+      ...DEFAULT_PROVIDER_CONFIG,
+      ...((row?.config && typeof row.config === 'object') ? row.config : {})
+    } as ProviderConfigState);
+    const merged: ProviderConfigState = { ...current, ...partial } as ProviderConfigState;
+    for (const providerId of ['NATIVE', 'OLLAMA', 'GEMINI', 'OPENAI', 'MOCK'] as const) {
+      const providerPatch = partial[providerId];
+      if (providerPatch && typeof providerPatch === 'object') {
+        (merged as any)[providerId] = { ...current[providerId], ...providerPatch };
+      }
+    }
+    const next = normalizeProviderConfig(merged);
+    const saved = await delegate.upsert({
+      where: { provider: 'GLOBAL' },
+      create: {
+        provider: 'GLOBAL',
+        enabled: !next.emergencyShutdown,
+        config: next,
+        updatedBy: updatedBy || null
+      },
+      update: {
+        enabled: !next.emergencyShutdown,
+        config: next,
+        updatedBy: updatedBy || null
+      }
+    });
+    const audit = await createAIAuditRecordInTransaction(tx, {
+      action: 'admin.provider.updated',
+      actorUserId: updatedBy,
+      provider,
+      metadata: auditMetadata
+    });
+    const persisted = saved?.config && typeof saved.config === 'object'
+      ? normalizeProviderConfig({ ...DEFAULT_PROVIDER_CONFIG, ...saved.config } as ProviderConfigState)
+      : next;
+    return { config: persisted, audit };
+  }, { isolationLevel: 'Serializable' });
+
+  providerCache = result.config;
+  providerLoadedAt = Date.now();
+  rememberCommittedAIAuditRecord(result.audit);
+  return providerCache;
+}
+
 export function isProviderEnabled(id: AIProviderId, cfg: ProviderConfigState): boolean {
   if (id === 'DISABLED') return false;
+  if (cfg.emergencyShutdown && id !== 'MOCK' && id !== 'NATIVE') return false;
+  if (id === 'OLLAMA') {
+    if (process.env.NODE_ENV === 'production') {
+      if (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1') return false;
+      if (!['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase())) return false;
+      if (!['1', 'true', 'yes', 'on'].includes(
+        String(process.env.SCROLITHA_AI_OLLAMA_ENABLED || '').trim().toLowerCase()
+      )) return false;
+    } else if (String(process.env.SCROLITHA_AI_OLLAMA_ENABLED || '').trim().toLowerCase() === 'false') {
+      return false;
+    }
+  }
   if (isScrolithaLocalOnly()) {
     // NATIVE is a deterministic, network-free safety provider. Keep it
     // available only when explicitly enabled so local-only production still
@@ -206,7 +346,6 @@ export function isProviderEnabled(id: AIProviderId, cfg: ProviderConfigState): b
       return isExplicitNativeProviderEnabled() && cfg.NATIVE?.enabled !== false;
     }
     if (id !== 'OLLAMA') return false;
-    if (String(process.env.SCROLITHA_AI_OLLAMA_ENABLED || 'true').toLowerCase() === 'false') return false;
     return cfg.OLLAMA?.enabled !== false;
   }
   if (process.env.NODE_ENV === 'production') {
@@ -219,16 +358,32 @@ export function isProviderEnabled(id: AIProviderId, cfg: ProviderConfigState): b
     }
     if (id !== 'OLLAMA') return false;
     if (!allowed.includes('OLLAMA')) return false;
-    if (String(process.env.SCROLITHA_AI_OLLAMA_ENABLED || 'true').toLowerCase() === 'false') return false;
     return cfg.OLLAMA?.enabled !== false;
   }
-  if (cfg.emergencyShutdown && id !== 'MOCK' && id !== 'NATIVE') return false;
   if (id === 'NATIVE') return cfg.NATIVE?.enabled !== false;
   if (id === 'MOCK') return cfg.MOCK?.enabled !== false;
   if (id === 'OLLAMA') return cfg.OLLAMA?.enabled !== false;
   if (id === 'GEMINI') return Boolean(cfg.GEMINI?.enabled);
   if (id === 'OPENAI') return Boolean(cfg.OPENAI?.enabled);
   return false;
+}
+
+/** Shared hard gate for every Ollama call path, including local-only production. */
+export function isOllamaCallAllowed(flags: Pick<AIFeatureFlags, 'enableProviderCalls'>, cfg: ProviderConfigState): boolean {
+  const productionGateOpen = process.env.NODE_ENV !== 'production' ||
+    (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER === '1' &&
+      ['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase()));
+  return flags.enableProviderCalls && productionGateOpen && isProviderEnabled('OLLAMA', cfg);
+}
+
+/**
+ * Native execution is deterministic and network-free, but production still
+ * requires both the explicit environment opt-in and persisted provider enable.
+ * In production it is limited to deterministic capabilities; generated
+ * user-facing responses remain on the explicitly required Ollama path.
+ */
+export function isNativeExecutionAllowed(cfg: ProviderConfigState, deterministicOnly: boolean): boolean {
+  return isProviderEnabled('NATIVE', cfg) && (process.env.NODE_ENV !== 'production' || deterministicOnly);
 }
 
 export function isScrolithaLocalOnly(): boolean {
@@ -254,12 +409,15 @@ function normalizeProviderConfig(config: ProviderConfigState): ProviderConfigSta
     ...config,
     NATIVE: {
       ...config.NATIVE,
-      // The deployment flag is an explicit operator override. This prevents
-      // an older persisted local-only config from keeping the safe provider
-      // hidden after the feature is intentionally activated.
-      enabled: isExplicitNativeProviderEnabled()
+      // Environment variables are a hard ceiling; the persisted provider
+      // setting remains an independent audited opt-in.
+      enabled: isExplicitNativeProviderEnabled() && config.NATIVE?.enabled === true
     },
-    OLLAMA: { ...config.OLLAMA, enabled: true, model: SCROLITHA_LOCAL_MODEL },
+    OLLAMA: {
+      ...config.OLLAMA,
+      enabled: config.OLLAMA?.enabled === true,
+      model: SCROLITHA_LOCAL_MODEL
+    },
     GEMINI: { ...config.GEMINI, enabled: false },
     OPENAI: { ...config.OPENAI, enabled: false },
     MOCK: { enabled: false },

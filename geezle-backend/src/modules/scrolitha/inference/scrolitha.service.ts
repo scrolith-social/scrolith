@@ -275,6 +275,7 @@ export const ScrolithaService = {
     try {
       const response = await generateScrolithaText({
         scope: input.scope,
+        userId: input.actor.id,
         routeKey,
         systemPrompt:
           String(input.system || '').trim() ||

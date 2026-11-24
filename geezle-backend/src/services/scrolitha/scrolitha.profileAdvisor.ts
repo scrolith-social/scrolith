@@ -68,7 +68,7 @@ export const analyzeMyProfile = async (actor: ScrolithaActor) => {
   const snapshot = await buildSnapshot(actor.id);
   let suggestions = deterministicSuggestions(snapshot);
   try {
-    const result = await generateScrolithaText({ scope: actor.scope, systemPrompt: 'Return JSON only: {"suggestions":[{"id":"","field":"","category":"positioning|proof|discoverability|completeness","priority":"high|medium|low","title":"","reason":"","suggestedValue":""}]}. Never include private data or propose changes outside the allowed fields.', userPrompt: `Review this profile snapshot and recommend the most important improvements. Keep suggestions specific and actionable.\n${JSON.stringify(snapshot)}`, maxTokens: 700, temperature: 0.2 });
+    const result = await generateScrolithaText({ userId: actor.id, scope: actor.scope, systemPrompt: 'Return JSON only: {"suggestions":[{"id":"","field":"","category":"positioning|proof|discoverability|completeness","priority":"high|medium|low","title":"","reason":"","suggestedValue":""}]}. Never include private data or propose changes outside the allowed fields.', userPrompt: `Review this profile snapshot and recommend the most important improvements. Keep suggestions specific and actionable.\n${JSON.stringify(snapshot)}`, maxTokens: 700, temperature: 0.2 });
     suggestions = parseSuggestions(result.text, snapshot);
   } catch { /* deterministic recommendations remain available when the model is unavailable */ }
   await writeScrolithaAuditLog({ actor, eventType: 'profile_analysis', intent: 'profile_improvement', redactedPayload: { fields: Object.keys(snapshot.profile), suggestionCount: suggestions.length }, resultSummary: `Profile analyzed in ${Date.now() - started}ms` });

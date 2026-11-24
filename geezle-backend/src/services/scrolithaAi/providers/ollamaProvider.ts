@@ -30,10 +30,12 @@ export class OllamaAIProvider implements AIProvider {
       .join('\n\n');
     const result = await generateScrolithaText({
       scope: 'user',
+      quotaManaged: true,
       systemPrompt,
       userPrompt,
       maxTokens: request.maxTokens,
-      temperature: request.temperature
+      temperature: request.temperature,
+      timeoutMs: request.timeoutMs
     });
     const text = String((result as any)?.text || '');
     // Prefer the configured runtime model over the transport alias "scrolitha-core".
@@ -51,7 +53,7 @@ export class OllamaAIProvider implements AIProvider {
       text,
       provider: 'OLLAMA',
       model,
-      usage: undefined,
+      usage: result.usage,
       latencyMs: Date.now() - started,
       finishReason: 'stop'
     };
@@ -61,10 +63,23 @@ export class OllamaAIProvider implements AIProvider {
     const maxAttempts = 2;
     let lastRaw = '';
     let latency = 0;
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let tokenUsageComplete = true;
+    const requestTimeoutMs = Math.max(1_000, Math.floor(request.timeoutMs || 30_000));
+    const deadline = Date.now() + requestTimeoutMs;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const raw = await this.generateText(request);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new Error('PROVIDER_TIMEOUT');
+      const raw = await this.generateText({ ...request, timeoutMs: remainingMs });
       lastRaw = raw.text;
       latency = raw.latencyMs;
+      if (raw.usage?.promptTokens !== undefined && raw.usage.completionTokens !== undefined) {
+        promptTokens += raw.usage.promptTokens;
+        completionTokens += raw.usage.completionTokens;
+      } else {
+        tokenUsageComplete = false;
+      }
       try {
         const data = request.parse(raw.text);
         if (!request.validate(data)) throw new Error('invalid structured output');
@@ -73,7 +88,13 @@ export class OllamaAIProvider implements AIProvider {
           rawText: raw.text,
           provider: 'OLLAMA',
           model: raw.model,
-          usage: raw.usage,
+          usage: tokenUsageComplete
+            ? {
+                promptTokens,
+                completionTokens,
+                totalTokens: promptTokens + completionTokens
+              }
+            : undefined,
           latencyMs: latency,
           parseAttempts: attempt
         };
@@ -88,6 +109,13 @@ export class OllamaAIProvider implements AIProvider {
       rawText: lastRaw,
       provider: 'OLLAMA',
       model: request.model || SCROLITHA_LOCAL_MODEL,
+      usage: tokenUsageComplete
+        ? {
+            promptTokens,
+            completionTokens,
+            totalTokens: promptTokens + completionTokens
+          }
+        : undefined,
       latencyMs: latency,
       parseAttempts: maxAttempts
     };
