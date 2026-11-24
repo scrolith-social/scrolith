@@ -30,11 +30,17 @@ function assertDisposableDatabaseTarget() {
   const databaseName = target.pathname.replace(/^\//, '');
   const port = target.port || '5432';
   const loopback = ['localhost', '127.0.0.1', '::1'].includes(target.hostname.toLowerCase());
-  if (!loopback || !/(?:test|e2e)/i.test(databaseName) || port === '5432' ||
+  const localPostgresProfile = process.env.TEST_DB_KIND === 'local-postgres' &&
+    process.env.TEST_DB_INSTANCE === 'local-postgres-test' && port !== '5432';
+  const githubServiceProfile = process.env.CI === 'true' &&
+    process.env.GITHUB_ACTIONS === 'true' &&
+    target.hostname.toLowerCase() === '127.0.0.1' && port === '5432' &&
+    process.env.TEST_DB_KIND === 'local-disposable' &&
+    process.env.TEST_DB_INSTANCE === 'local-disposable-postgres-test';
+  if (!loopback || !/(?:test|e2e)/i.test(databaseName) ||
       process.env.TEST_DB_NAME !== databaseName || process.env.TEST_DB_PORT !== port ||
-      process.env.TEST_DB_KIND !== 'local-postgres' ||
       process.env.TEST_DB_PROJECT !== 'local-only' ||
-      process.env.TEST_DB_INSTANCE !== 'local-postgres-test') {
+      !(localPostgresProfile || githubServiceProfile)) {
     throw new Error('Quota DB tests refuse non-loopback, owner, or unmarked database targets.');
   }
 }

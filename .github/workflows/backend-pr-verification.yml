@@ -119,6 +119,12 @@ jobs:
       - name: Seed the disposable backend test database
         run: npm run test:db:seed
 
+      - name: Run Scrolitha durable quota database tests
+        run: >-
+          npm test -- --runTestsByPath
+          src/services/scrolithaAi/__tests__/usage.quota.db.spec.ts
+          src/services/scrolitha/__tests__/ollamaQuotaPersistence.db.spec.ts
+
       - name: Run the full backend Jest suite
         run: npm run test:full
 
