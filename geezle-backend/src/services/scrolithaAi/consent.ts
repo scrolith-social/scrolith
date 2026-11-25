@@ -32,7 +32,11 @@ function normalize(raw: unknown): AIConsentState {
 
 export async function getAIConsent(userId?: string | null): Promise<AIConsentState> {
   if (!userId) return { ...DEFAULT_AI_CONSENT };
-  if (memory.has(userId)) return { ...memory.get(userId)! };
+  // Production consent is revocable and can be changed by another replica or
+  // an administrative workflow. Never authorize from a process-local cache.
+  if (process.env.NODE_ENV === 'test' && memory.has(userId)) {
+    return { ...memory.get(userId)! };
+  }
   try {
     const row = await (prisma as any).aIConsent?.findUnique?.({ where: { userId } });
     if (row) {
@@ -47,14 +51,17 @@ export async function getAIConsent(userId?: string | null): Promise<AIConsentSta
         consentVersion: row.consentVersion,
         updatedAt: row.updatedAt?.toISOString?.() || row.updatedAt
       });
-      memory.set(userId, state);
+      if (process.env.NODE_ENV === 'test') memory.set(userId, state);
       return state;
     }
   } catch (err) {
-    if (!isMissing(err)) {
-      /* defaults */
+    // A missing table/client is supported only by isolated unit fixtures.
+    // Runtime database errors must never fall back to a previously cached grant.
+    if (process.env.NODE_ENV === 'test' && isMissing(err) && memory.has(userId)) {
+      return { ...memory.get(userId)! };
     }
   }
+  memory.delete(userId);
   return { ...DEFAULT_AI_CONSENT };
 }
 
@@ -62,28 +69,28 @@ export async function updateAIConsent(
   userId: string,
   partial: Partial<AIConsentState>
 ): Promise<AIConsentState> {
-  const current = await getAIConsent(userId);
-  const next: AIConsentState = {
-    ...current,
-    ...partial,
-    consentVersion: CONSENT_VERSION,
-    updatedAt: new Date().toISOString()
-  };
-  // Explicit booleans only
-  next.aiFeaturesEnabled = Boolean(next.aiFeaturesEnabled);
-  next.privateMessageAnalysisAllowed = Boolean(next.privateMessageAnalysisAllowed);
-  next.personalizationAllowed = Boolean(next.personalizationAllowed);
-  next.externalProviderProcessingAllowed = Boolean(next.externalProviderProcessingAllowed);
-  next.aiSuggestionsAllowed = Boolean(next.aiSuggestionsAllowed);
-  next.aiActivityHistoryEnabled = Boolean(next.aiActivityHistoryEnabled);
-  next.productImprovementDataAllowed = Boolean(next.productImprovementDataAllowed);
-
-  memory.set(userId, next);
   try {
-    await (prisma as any).aIConsent?.upsert?.({
-      where: { userId },
-      create: {
-        userId,
+    const persisted = await (prisma as any).$transaction(async (tx: any) => {
+      const existing = await tx.aIConsent.findUnique({ where: { userId } });
+      const current = existing ? normalize(existing) : { ...DEFAULT_AI_CONSENT };
+      const next: AIConsentState = {
+        ...current,
+        ...partial,
+        consentVersion: CONSENT_VERSION,
+        updatedAt: new Date().toISOString()
+      };
+
+      // Explicit booleans only; read/merge/write is inside a serializable
+      // transaction so concurrent preference changes cannot silently overwrite.
+      next.aiFeaturesEnabled = Boolean(next.aiFeaturesEnabled);
+      next.privateMessageAnalysisAllowed = Boolean(next.privateMessageAnalysisAllowed);
+      next.personalizationAllowed = Boolean(next.personalizationAllowed);
+      next.externalProviderProcessingAllowed = Boolean(next.externalProviderProcessingAllowed);
+      next.aiSuggestionsAllowed = Boolean(next.aiSuggestionsAllowed);
+      next.aiActivityHistoryEnabled = Boolean(next.aiActivityHistoryEnabled);
+      next.productImprovementDataAllowed = Boolean(next.productImprovementDataAllowed);
+
+      const data = {
         aiFeaturesEnabled: next.aiFeaturesEnabled,
         privateMessageAnalysisAllowed: next.privateMessageAnalysisAllowed,
         personalizationAllowed: next.personalizationAllowed,
@@ -92,37 +99,46 @@ export async function updateAIConsent(
         aiActivityHistoryEnabled: next.aiActivityHistoryEnabled,
         productImprovementDataAllowed: next.productImprovementDataAllowed,
         consentVersion: next.consentVersion
-      },
-      update: {
-        aiFeaturesEnabled: next.aiFeaturesEnabled,
-        privateMessageAnalysisAllowed: next.privateMessageAnalysisAllowed,
-        personalizationAllowed: next.personalizationAllowed,
-        externalProviderProcessingAllowed: next.externalProviderProcessingAllowed,
-        aiSuggestionsAllowed: next.aiSuggestionsAllowed,
-        aiActivityHistoryEnabled: next.aiActivityHistoryEnabled,
-        productImprovementDataAllowed: next.productImprovementDataAllowed,
-        consentVersion: next.consentVersion
-      }
-    });
-    try {
-      await (prisma as any).aIAuditLog?.create?.({
+      };
+      const row = await tx.aIConsent.upsert({
+        where: { userId },
+        create: { userId, ...data },
+        update: data
+      });
+      const saved = normalize({
+        ...row,
+        updatedAt: row.updatedAt?.toISOString?.() || row.updatedAt
+      });
+
+      // The audit record and consent update commit or roll back together.
+      await tx.aIAuditLog.create({
         data: {
           action: 'consent.updated',
           actorUserId: userId,
           targetUserId: userId,
-          metadata: { consentVersion: next.consentVersion, flags: next },
+          metadata: { consentVersion: saved.consentVersion, flags: saved },
           correlationId: null
         }
       });
-    } catch {
-      /* soft */
-    }
+
+      return saved;
+    }, { isolationLevel: 'Serializable', maxWait: 5000, timeout: 10000 });
+
+    // Publish the cache only after the database transaction commits.
+    memory.set(userId, persisted);
+    return { ...persisted };
   } catch (err) {
-    if (!isMissing(err)) {
-      /* memory only */
+    // The in-memory behavior is limited to unit tests that intentionally run
+    // without a database. Runtime environments never report unsaved consent as
+    // successful and never authorize from a process-local write.
+    if (process.env.NODE_ENV === 'test' && isMissing(err)) {
+      const current = await getAIConsent(userId);
+      const next = normalize({ ...current, ...partial, consentVersion: CONSENT_VERSION, updatedAt: new Date().toISOString() });
+      memory.set(userId, next);
+      return { ...next };
     }
+    throw new Error('AI consent could not be saved; please retry.');
   }
-  return next;
 }
 
 export async function resetAIConsent(userId: string): Promise<AIConsentState> {

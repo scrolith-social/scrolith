@@ -62,6 +62,13 @@ param redisIdentityClientId string
 @description('Object ID used by the API Redis Entra integration.')
 param redisIdentityObjectId string
 
+@description('HTTPS internal FQDN of the Scrolitha Core Container App in the same Container Apps environment.')
+param scrolithaCoreEndpoint string
+
+@description('Model bundled in the reviewed Scrolitha Core image. The current 8 GiB profile is sized for qwen3:8b.')
+@allowed(['qwen3:8b'])
+param scrolithaCoreModel string = 'qwen3:8b'
+
 var apiImage = '${acrLoginServer}/${apiImageRepository}@sha256:${apiImageDigestHex}'
 
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
@@ -160,6 +167,25 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_STORAGE_MANAGED_IDENTITY_CLIENT_ID', value: apiIdentityClientId }
             { name: 'REDIS_ENTRA_CLIENT_ID', value: redisIdentityClientId }
             { name: 'REDIS_ENTRA_OBJECT_ID', value: redisIdentityObjectId }
+            { name: 'SCROLITHA_PROVIDER', value: 'core' }
+            { name: 'SCROLITHA_CORE_ENDPOINT', value: scrolithaCoreEndpoint }
+            { name: 'SCROLITHA_CORE_MODEL', value: scrolithaCoreModel }
+            { name: 'SCROLITHA_CORE_SIDECAR_MODE', value: 'false' }
+            { name: 'SCROLITHA_AI_LOCAL_ONLY', value: 'true' }
+            { name: 'SCROLITHA_AI_ALLOWED_PROVIDERS', value: 'OLLAMA' }
+            { name: 'SCROLITHA_AI_OLLAMA_ENABLED', value: 'false' }
+            { name: 'SCROLITHA_AI_NATIVE_PROVIDER_ENABLED', value: 'false' }
+            { name: 'SCROLITHA_AI_ENABLE_PROVIDER_CALLS', value: 'false' }
+            { name: 'SCROLITHA_AI_ALLOW_PROD_PROVIDER', value: '0' }
+            { name: 'SCROLITHA_AI_FORCE_NO_EXTERNAL_PROVIDER', value: '1' }
+            { name: 'SCROLITHA_AI_DEFAULT_PROVIDER', value: 'OLLAMA' }
+            { name: 'SCROLITHA_AI_DEFAULT_MODEL', value: scrolithaCoreModel }
+            { name: 'SCROLITHA_OLLAMA_MODEL', value: scrolithaCoreModel }
+            { name: 'SCROLITHA_TIMEOUT_MS', value: '180000' }
+            { name: 'SCROLITHA_MAX_TOKENS', value: '1024' }
+            { name: 'SCROLITHA_AI_GLOBAL_MONTHLY_TOKENS', value: '500000' }
+            { name: 'SCROLITHA_AI_GLOBAL_MONTHLY_REQUESTS', value: '1000' }
+            { name: 'SCROLITHA_AI_MAX_REQUEST_RUNTIME_MS', value: '180000' }
             { name: 'DATABASE_URL', secretRef: 'runtime-database-url' }
             { name: 'JWT_SECRET', secretRef: 'jwt-signing-secret' }
             { name: 'REDIS_URL', secretRef: 'redis-url' }

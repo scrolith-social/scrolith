@@ -58,7 +58,7 @@ function healthOf(
 
 export function routeModel(input: RouteInput): ModelRouteDecision {
   const maxTokens = Math.min(4096, Math.max(64, Number(input.maxTokens || 1024)));
-  const timeoutMs = Math.min(120_000, Math.max(3_000, Number(input.timeoutMs || 30_000)));
+  const timeoutMs = Math.min(180_000, Math.max(3_000, Number(input.timeoutMs || 30_000)));
   const health = input.providerHealth || {};
 
   if (input.privacyLevel === 'PROHIBITED') {
@@ -133,7 +133,11 @@ export function routeModel(input: RouteInput): ModelRouteDecision {
     if (ni > 0) {
       const [n] = chain.splice(ni, 1);
       chain.unshift(n);
-    } else if (ni < 0) {
+    } else if (
+      ni < 0 &&
+      healthOf(health, 'NATIVE') !== 'disabled' &&
+      healthOf(health, 'NATIVE') !== 'unavailable'
+    ) {
       chain.unshift({ provider: 'NATIVE', model: DEFAULT_MODELS.NATIVE });
     }
   }

@@ -1,7 +1,9 @@
 import api from './api';
 
-const SCROLITHA_CHAT_TIMEOUT_MS = 95_000;
-const SCROLITHA_EXECUTE_TIMEOUT_MS = 95_000;
+// Keep browser requests below ACA's fixed 240s ingress timeout while allowing
+// a measured Core scale-from-zero request to finish.
+const SCROLITHA_CHAT_TIMEOUT_MS = 210_000;
+const SCROLITHA_EXECUTE_TIMEOUT_MS = 210_000;
 const SCROLITHA_ADMIN_LLM_TIMEOUT_MS = 240_000;
 
 const extractData = <T>(response: any): T => {

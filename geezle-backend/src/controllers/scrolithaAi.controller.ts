@@ -67,7 +67,10 @@ export async function aiPatchPreferences(req: Request, res: Response) {
   try {
     const userId = userIdOf(req);
     if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
-    const body = req.body || {};
+    const body = req.body === undefined ? {} : req.body;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ success: false, error: 'invalid_preferences' });
+    }
     const allowed = [
       'aiFeaturesEnabled',
       'privateMessageAnalysisAllowed',
@@ -79,7 +82,12 @@ export async function aiPatchPreferences(req: Request, res: Response) {
     ] as const;
     const partial: Record<string, boolean> = {};
     for (const k of allowed) {
-      if (body[k] !== undefined) partial[k] = Boolean(body[k]);
+      if (body[k] !== undefined) {
+        if (typeof body[k] !== 'boolean') {
+          return res.status(400).json({ success: false, error: 'invalid_preference_value', field: k });
+        }
+        partial[k] = body[k];
+      }
     }
     const next = await updateAIConsent(userId, partial as any);
     return res.json({ success: true, data: next });

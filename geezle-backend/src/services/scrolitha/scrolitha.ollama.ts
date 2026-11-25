@@ -1,11 +1,16 @@
 import OpenAI from 'openai';
+import { randomUUID } from 'node:crypto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { GoogleAuth, IdTokenClient } from 'google-auth-library';
 import http from 'node:http';
 import https from 'node:https';
 import prisma from '../../utils/prismaClient';
 import { ensureScrolithaConfig } from './scrolitha.policy';
+import { parseOllamaTokenUsage } from './ollamaUsage';
 import type { ScrolithaScope } from './scrolitha.types';
+import { checkQuota, estimateCostUsd, getMaxAiRequestRuntimeMs, recordUsage } from '../scrolithaAi/usage';
+import { isOllamaCallAllowed, loadAIFeatureFlags, loadProviderConfig } from '../scrolithaAi/config';
+import type { AICapabilityId } from '../scrolithaAi/types';
 
 export type OllamaChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -221,8 +226,17 @@ export const classifyScrolithaConnectivity = (
   };
 };
 
-const shouldAutoPullModel = (runtime: Pick<ScrolithaLlmRuntime, 'provider' | 'host' | 'sidecarMode'>) =>
-  !isProductionRuntime() || (isSelfHostedProvider(runtime.provider) && Boolean(runtime.sidecarMode) && isLocalEndpoint(runtime.host));
+/** Production Core calls require both the persisted feature gate and provider gates. */
+export const isProductionOllamaCallAllowed = async (): Promise<boolean> => {
+  if (!isProductionRuntime()) return true;
+  if (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1' ||
+      !['1', 'true'].includes(String(process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS || '').toLowerCase())) return false;
+  const [flags, providerConfig] = await Promise.all([loadAIFeatureFlags(), loadProviderConfig()]);
+  return !flags.killSwitch && flags.masterEnabled && flags.assistantEnabled &&
+    flags.ASSISTANT_CHAT && !providerConfig.emergencyShutdown && isOllamaCallAllowed(flags, providerConfig);
+};
+
+const shouldAutoPullModel = () => !isProductionRuntime();
 
 const sanitizeText = (value: unknown) =>
   String(value || '')
@@ -432,12 +446,17 @@ type ScrolithaCoreProviderConfig = {
 
 type ScrolithaGenerationInput = {
   scope: ScrolithaScope;
+  userId?: string | null;
+  capability?: AICapabilityId;
+  /** Set only by ScrolithaAI.execute, which already owns the ledger reservation. */
+  quotaManaged?: boolean;
   routeKey?: string;
   systemPrompt?: string;
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
   topP?: number;
+  timeoutMs?: number;
 };
 
 export type ScrolithaGenerationResult = {
@@ -446,10 +465,12 @@ export type ScrolithaGenerationResult = {
   engine: 'core' | 'ollama';
   transport: 'google' | 'openai' | 'ollama';
   usedBackupProcessing: boolean;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   warning?: string;
   warningCode?: string;
 };
 
+/** Extract Ollama's reported token counts without treating missing telemetry as zero. */
 export const ollamaPullModel = async (
   host: string,
   model: string,
@@ -459,6 +480,9 @@ export const ollamaPullModel = async (
   const normalizedModel = String(model || '').trim();
   if (!normalizedHost) throw new Error('Ollama host is missing');
   if (!normalizedModel) throw new Error('Ollama model is missing');
+  if (isProductionRuntime()) {
+    throw new Error('Ollama model downloads are disabled in production');
+  }
 
   const key = `${normalizedHost}::${normalizedModel.toLowerCase()}`;
   const existing = ollamaPullsInFlight.get(key);
@@ -565,7 +589,10 @@ const mergeRuntime = (base: ScrolithaLlmRuntime, override: Record<string, any>):
     maxTokens: Math.max(32, Math.min(8192, Math.floor(asNumber(override.maxTokens, base.maxTokens)))),
     temperature: Math.max(0, Math.min(2, asNumber(override.temperature, base.temperature))),
     topP: Math.max(0, Math.min(1, asNumber(override.topP, base.topP))),
-    timeoutMs: Math.max(1000, Math.min(240_000, Math.floor(asNumber(override.timeoutMs, base.timeoutMs)))),
+    timeoutMs: Math.max(
+      isProductionRuntime() && isLocalOnlyRuntime() ? base.timeoutMs : 1_000,
+      Math.min(240_000, Math.floor(asNumber(override.timeoutMs, base.timeoutMs)))
+    ),
     enableStreaming:
       typeof override.enableStreaming === 'boolean' ? override.enableStreaming : base.enableStreaming,
     allowGeminiFallback: isLocalOnlyRuntime()
@@ -913,23 +940,35 @@ const logProviderFailure = (label: string, error: unknown, details?: Record<stri
   });
 };
 
-export const ollamaChat = async (input: {
+type OllamaChatInput = {
   host: string;
   model: string;
   messages: OllamaChatMessage[];
+  userId?: string | null;
+  capability?: AICapabilityId;
+  /** Internal only: ScrolithaAI.execute has already reserved and settles this call. */
+  quotaManaged?: boolean;
   maxTokens?: number;
   temperature?: number;
   topP?: number;
   timeoutMs?: number;
   autoPullModel?: boolean;
   allowNodeFallback?: boolean;
-}): Promise<{ text: string; raw?: any }> => {
+};
+
+const ollamaChatTransport = async (input: OllamaChatInput): Promise<{ text: string; raw?: any }> => {
   const host = normalizeHost(input.host);
   if (!host) throw new Error('Ollama host is missing');
   const model = String(input.model || '').trim();
   if (!model) throw new Error('Ollama model is missing');
 
-  const timeoutMs = Math.max(1000, Math.floor(asNumber(input.timeoutMs, 25_000)));
+  const configuredRuntimeMs = getMaxAiRequestRuntimeMs();
+  if (configuredRuntimeMs === null) throw new Error('SCROLITHA_AI_QUOTA_CONFIGURATION_INVALID');
+  const timeoutMs = Math.min(
+    configuredRuntimeMs,
+    Math.floor(asNumber(input.timeoutMs, 25_000))
+  );
+  if (timeoutMs < 1_000) throw new Error('AI_REQUEST_RUNTIME_LIMIT_EXCEEDED');
   const temperature = asNumber(input.temperature, 0.7);
   const topP = asNumber(input.topP, 0.9);
   const maxTokens = Math.max(32, Math.min(8192, Math.floor(asNumber(input.maxTokens, 1024))));
@@ -954,7 +993,10 @@ export const ollamaChat = async (input: {
     keep_alive: keepAlive
   };
 
+  const deadline = Date.now() + timeoutMs;
   const requestChat = async () => {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs < 1_000) throw new Error('AI_REQUEST_RUNTIME_LIMIT_EXCEEDED');
     const headers = await buildSelfHostedRequestHeaders(host, { 'Content-Type': 'application/json' });
     try {
       return await withTimeout(async (signal) => {
@@ -964,7 +1006,7 @@ export const ollamaChat = async (input: {
           body: JSON.stringify(body),
           signal
         });
-      }, timeoutMs);
+      }, remainingMs);
     } catch (error) {
       if (!allowNodeFallback) throw error;
       const fallback = await requestViaNodeHttp({
@@ -972,7 +1014,7 @@ export const ollamaChat = async (input: {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        timeoutMs
+        timeoutMs: remainingMs
       });
       return new Response(fallback.bodyText, {
         status: fallback.status || 500,
@@ -981,19 +1023,20 @@ export const ollamaChat = async (input: {
     }
   };
 
-  const deadline = Date.now() + timeoutMs;
   let res = await requestChat();
   let responseText = '';
   while (!res.ok) {
     responseText = await readResponseText(res);
     if (autoPullModel && isMissingModelError(res.status, responseText)) {
-      await ollamaPullModel(host, model, Math.max(OLLAMA_MODEL_PULL_TIMEOUT_MS, timeoutMs * 4));
+      const remainingMs = deadline - Date.now();
+      if (remainingMs < 1_000) throw new Error('AI_REQUEST_RUNTIME_LIMIT_EXCEEDED');
+      await ollamaPullModel(host, model, Math.min(remainingMs, OLLAMA_MODEL_PULL_TIMEOUT_MS));
       res = await requestChat();
       continue;
     }
     if (isTransientOllamaBusyError(res.status, responseText) && Date.now() < deadline) {
       const remainingMs = Math.max(0, deadline - Date.now());
-      await waitFor(Math.min(5000, Math.max(1000, remainingMs)));
+      await waitFor(Math.min(5000, remainingMs));
       res = await requestChat();
       continue;
     }
@@ -1003,6 +1046,76 @@ export const ollamaChat = async (input: {
   const json: any = await res.json().catch(() => null);
   const content = String(json?.message?.content || json?.response || '').trim();
   return { text: content, raw: json };
+};
+
+/**
+ * All direct Ollama requests share the durable quota ledger. The canonical AI
+ * gateway opts out here because it already reserved the full provider chain.
+ */
+export const ollamaChat = async (input: OllamaChatInput): Promise<{ text: string; raw?: any }> => {
+  if (input.quotaManaged) return ollamaChatTransport(input);
+
+  if (!await isProductionOllamaCallAllowed()) {
+    throw new Error('SCROLITHA_PROVIDER_DISABLED_BY_POLICY');
+  }
+
+  const requestId = randomUUID();
+  const userId = input.userId?.trim() || null;
+  const capability = input.capability || 'TEXT_REWRITING';
+  const maxTokens = Math.max(32, Math.min(8192, Math.floor(asNumber(input.maxTokens, 1024))));
+  const prompt = input.messages.map((message) => String(message.content || '')).join('\n');
+  const estimatedTokens = Buffer.byteLength(prompt, 'utf8') + maxTokens;
+  const reservation = await checkQuota({
+    userId,
+    capability,
+    provider: 'OLLAMA',
+    requestId,
+    estimatedTokens,
+    estimatedCostUsd: estimateCostUsd('OLLAMA', estimatedTokens)
+  });
+  if (!reservation.allowed) {
+    throw new Error(`SCROLITHA_AI_QUOTA_BLOCKED:${reservation.reason || 'QUOTA_EXCEEDED'}`);
+  }
+
+  let settlementAttempted = false;
+  try {
+    const result = await ollamaChatTransport(input);
+    const usage = parseOllamaTokenUsage(result.raw);
+    settlementAttempted = true;
+    const settlement = await recordUsage({
+      userId,
+      capability,
+      provider: 'OLLAMA',
+      model: input.model,
+      promptTokens: usage?.promptTokens,
+      completionTokens: usage?.completionTokens,
+      totalTokens: usage?.totalTokens,
+      estimatedCostUsd: usage ? estimateCostUsd('OLLAMA', usage.totalTokens) : undefined,
+      usageKnown: Boolean(usage),
+      requestId,
+      status: 'COMPLETED'
+    });
+    if (!settlement.withinLimits) {
+      throw new Error(`SCROLITHA_AI_QUOTA_SETTLEMENT_BLOCKED:${settlement.reason || 'QUOTA_EXCEEDED'}`);
+    }
+    return result;
+  } catch (error) {
+    // Failed provider work is conservatively settled at its reserved maximum.
+    // A failed settlement itself remains an open reservation and fails closed.
+    if (!settlementAttempted) {
+      settlementAttempted = true;
+      await recordUsage({
+        userId,
+        capability,
+        provider: 'OLLAMA',
+        model: input.model,
+        usageKnown: false,
+        requestId,
+        status: 'FAILED'
+      });
+    }
+    throw error;
+  }
 };
 
 export const generateScrolithaText = async (
@@ -1030,11 +1143,14 @@ export const generateScrolithaText = async (
           ...(safeInput.systemPrompt ? [{ role: 'system' as const, content: safeInput.systemPrompt }] : []),
           { role: 'user' as const, content: safeInput.userPrompt }
         ],
+        userId: safeInput.userId,
+        capability: safeInput.capability,
+        quotaManaged: safeInput.quotaManaged,
         maxTokens: safeInput.maxTokens,
         temperature: safeInput.temperature,
         topP: safeInput.topP ?? runtime.topP,
         timeoutMs: runtime.timeoutMs,
-        autoPullModel: shouldAutoPullModel(runtime)
+        autoPullModel: shouldAutoPullModel()
       });
       const text = String(result.text || '').trim();
       if (!text) throw new Error('Scrolitha returned an empty response');
@@ -1043,9 +1159,16 @@ export const generateScrolithaText = async (
         model: 'scrolitha-core',
         engine: 'core',
         transport: 'ollama',
-        usedBackupProcessing: false
+        usedBackupProcessing: false,
+        usage: parseOllamaTokenUsage(result.raw)
       };
     } catch (error) {
+      const message = String((error as any)?.message || '');
+      if (message.startsWith('SCROLITHA_AI_QUOTA_') || message === 'USAGE_PERSISTENCE_UNAVAILABLE') {
+        // Quota rejection and ledger failure must never fall through to a
+        // secondary provider that would evade the durable reservation.
+        throw error;
+      }
       logProviderFailure('primary self-hosted engine failed; attempting Scrolitha Core backup', error, {
         scope: input.scope,
         routeKey: input.routeKey || null
@@ -1150,7 +1273,7 @@ export const ensureScrolithaRuntimeModel = async (scope: ScrolithaScope) => {
   let modelPresent = hasOllamaModel(models, runtime.model);
   let pulled = false;
 
-  if (!modelPresent && shouldAutoPullModel(runtime)) {
+  if (!modelPresent && shouldAutoPullModel()) {
     await ollamaPullModel(runtime.host, runtime.model, Math.max(OLLAMA_MODEL_PULL_TIMEOUT_MS, runtime.timeoutMs * 4));
     pulled = true;
     models = await ollamaListModels(runtime.host, Math.min(10_000, runtime.timeoutMs));

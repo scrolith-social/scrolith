@@ -7,7 +7,7 @@ import {
   getScrolithaLearningInsightsForAdmin,
   persistScrolithaLearningSignal
 } from './scrolitha.learning';
-import { ollamaChat, resolveScrolithaLlmRuntime } from './scrolitha.ollama';
+import { isProductionOllamaCallAllowed, ollamaChat, resolveScrolithaLlmRuntime } from './scrolitha.ollama';
 import {
   canUseTool,
   detectPromptInjectionAttempt,
@@ -505,8 +505,21 @@ const buildLlmReply = async (input: {
   config: Awaited<ReturnType<typeof ensureScrolithaConfig>>;
   actionPlans: Array<{ summary: string; toolKey: string; requiresConfirmation: boolean }>;
 }) => {
+  const productionCoreCallAllowed = process.env.NODE_ENV === 'production'
+    ? await isProductionOllamaCallAllowed()
+    : false;
+  if (process.env.NODE_ENV === 'production' && !productionCoreCallAllowed) return null;
+
   const runtime = await resolveScrolithaLlmRuntime(input.actor.scope);
-  if (!runtime.enabled || runtime.provider === 'disabled' || !runtime.runtimeConfigured) return null;
+  if (!runtime.enabled || runtime.provider === 'disabled' || !runtime.runtimeConfigured) {
+    if (productionCoreCallAllowed) {
+      throw Object.assign(new Error('Scrolitha Core is temporarily unavailable.'), {
+        code: 'SCROLITHA_CORE_UNAVAILABLE',
+        statusCode: 503
+      });
+    }
+    return null;
+  }
   const messagingFastPath = Boolean(input.messagingFastPath);
   const routing = routeScrolithaModel({
     runtime,
@@ -554,16 +567,33 @@ const buildLlmReply = async (input: {
       host: runtime.host,
       model: routing.model,
       messages,
+      userId: input.actor.id.startsWith('scrolitha-system:') ? null : input.actor.id,
+      capability: 'COPILOT_CONTEXT',
       maxTokens: routing.maxTokens,
       temperature: routing.temperature,
       topP: runtime.topP,
-      timeoutMs: messagingFastPath ? Math.min(runtime.timeoutMs, 45_000) : runtime.timeoutMs,
+      // ACA cold scale-out can take close to 106 seconds for the bundled model.
+      // Use the bounded runtime configured for Core on every product surface.
+      timeoutMs: runtime.timeoutMs,
       allowNodeFallback: !messagingFastPath
     });
     const out = String(result.text || '').trim();
+    if (!out && productionCoreCallAllowed) {
+      throw Object.assign(new Error('Scrolitha Core is temporarily unavailable.'), {
+        code: 'SCROLITHA_CORE_UNAVAILABLE',
+        statusCode: 503
+      });
+    }
     return out || null;
   } catch (error) {
-    console.warn('[scrolitha] ollama chat failed, falling back to heuristic reply:', error);
+    if (productionCoreCallAllowed) {
+      console.warn('[scrolitha] Core generation failed; provider detail omitted.');
+      throw Object.assign(new Error('Scrolitha Core is temporarily unavailable.'), {
+        code: 'SCROLITHA_CORE_UNAVAILABLE',
+        statusCode: 503
+      });
+    }
+    console.warn('[scrolitha] local Ollama request failed; heuristic response used.');
     return null;
   }
 };

@@ -10,11 +10,7 @@ const isMissing = (err: any) =>
 const memory: Array<Record<string, unknown>> = [];
 const MAX_MEMORY = 200;
 
-export function hashContent(text: string): string {
-  return createHash('sha256').update(String(text || '')).digest('hex');
-}
-
-export async function writeAIAudit(input: {
+export type AIAuditInput = {
   action: string;
   actorUserId?: string | null;
   targetUserId?: string | null;
@@ -28,43 +24,55 @@ export async function writeAIAudit(input: {
   requestId?: string | null;
   inputHash?: string | null;
   metadata?: Record<string, unknown> | null;
-}) {
+};
+
+const toAIAuditData = (input: AIAuditInput) => ({
+  action: input.action,
+  actorUserId: input.actorUserId || null,
+  targetUserId: input.targetUserId || null,
+  capability: input.capability || null,
+  provider: input.provider || null,
+  model: input.model || null,
+  privacyLevel: input.privacyLevel || null,
+  lifecycle: input.lifecycle || null,
+  reason: input.reason || null,
+  correlationId: input.correlationId || null,
+  requestId: input.requestId || null,
+  inputHash: input.inputHash || null,
+  metadata: input.metadata || null
+});
+
+const remember = (row: Record<string, any>) => {
+  memory.unshift({ ...row, createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt || new Date().toISOString() });
+  if (memory.length > MAX_MEMORY) memory.pop();
+};
+
+/** Persist an admin audit row using the same Prisma transaction as its setting. */
+export async function createAIAuditRecordInTransaction(tx: any, input: AIAuditInput) {
+  const create = tx?.aIAuditLog?.create;
+  if (typeof create !== 'function') throw new Error('AI audit persistence is unavailable.');
+  return create({ data: toAIAuditData(input) });
+}
+
+/** Add a committed database audit row to the process-local fallback only after commit. */
+export function rememberCommittedAIAuditRecord(row: Record<string, any>) {
+  remember(row);
+}
+
+export function hashContent(text: string): string {
+  return createHash('sha256').update(String(text || '')).digest('hex');
+}
+
+export async function writeAIAudit(input: AIAuditInput) {
   const row = {
-    action: input.action,
-    actorUserId: input.actorUserId || null,
-    targetUserId: input.targetUserId || null,
-    capability: input.capability || null,
-    provider: input.provider || null,
-    model: input.model || null,
-    privacyLevel: input.privacyLevel || null,
-    lifecycle: input.lifecycle || null,
-    reason: input.reason || null,
-    correlationId: input.correlationId || null,
-    requestId: input.requestId || null,
-    inputHash: input.inputHash || null,
-    metadata: input.metadata || null,
+    ...toAIAuditData(input),
     createdAt: new Date().toISOString()
   };
-  memory.unshift(row);
-  if (memory.length > MAX_MEMORY) memory.pop();
+  remember(row);
 
   try {
     await (prisma as any).aIAuditLog?.create?.({
-      data: {
-        action: row.action,
-        actorUserId: row.actorUserId,
-        targetUserId: row.targetUserId,
-        capability: row.capability,
-        provider: row.provider,
-        model: row.model,
-        privacyLevel: row.privacyLevel,
-        lifecycle: row.lifecycle,
-        reason: row.reason,
-        correlationId: row.correlationId,
-        requestId: row.requestId,
-        inputHash: row.inputHash,
-        metadata: row.metadata
-      }
+      data: toAIAuditData(input)
     });
   } catch (err) {
     if (!isMissing(err)) {

@@ -4,9 +4,9 @@
 import { Request, Response } from 'express';
 import {
   loadAIFeatureFlags,
-  setAIFeatureFlags,
+  persistAdminAIFeatureFlags,
   loadProviderConfig,
-  setProviderConfig,
+  persistAdminProviderConfig,
   healthAllProviders,
   getAIMetricsSnapshot,
   getCircuitSnapshot,
@@ -67,13 +67,19 @@ export async function adminAIProviders(_req: Request, res: Response) {
 export async function adminAIPutProvider(req: Request, res: Response) {
   try {
     const provider = String(req.params.provider || '').toUpperCase();
-    if (!['OLLAMA', 'GEMINI', 'OPENAI', 'MOCK', 'GLOBAL'].includes(provider)) {
+    if (!['NATIVE', 'OLLAMA', 'GEMINI', 'OPENAI', 'MOCK', 'GLOBAL'].includes(provider)) {
       return res.status(400).json({ success: false, error: 'Invalid provider' });
     }
-    if (isScrolithaLocalOnly() && !['OLLAMA', 'GLOBAL'].includes(provider)) {
+    if (isScrolithaLocalOnly() && !['NATIVE', 'OLLAMA', 'GLOBAL'].includes(provider)) {
       return res.status(400).json({ success: false, error: 'Only the local Scrolitha Core runtime is enabled by policy' });
     }
     const body = req.body || {};
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'enabled must be a boolean' });
+    }
+    if (body.emergencyShutdown !== undefined && typeof body.emergencyShutdown !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'emergencyShutdown must be a boolean' });
+    }
     // Never accept raw API keys into DB via this endpoint
     if (body.apiKey || body.secret || body.OPENAI_API_KEY || body.GOOGLE_GEMINI_KEY) {
       return res.status(400).json({
@@ -81,31 +87,35 @@ export async function adminAIPutProvider(req: Request, res: Response) {
         error: 'Credentials must be set via Secret Manager / environment, not API body'
       });
     }
-    const current = await loadProviderConfig();
-    let next = { ...current };
+    const next: Record<string, unknown> = {};
     if (provider === 'GLOBAL') {
-      if (body.emergencyShutdown !== undefined) next.emergencyShutdown = Boolean(body.emergencyShutdown);
-    } else if (provider === 'OLLAMA' || provider === 'GEMINI' || provider === 'OPENAI' || provider === 'MOCK') {
-      next = {
-        ...next,
-        [provider]: {
-          ...(current as any)[provider],
-          enabled: body.enabled !== undefined ? Boolean(body.enabled) : (current as any)[provider]?.enabled,
-          model: body.model || (current as any)[provider]?.model,
-          timeoutMs: body.timeoutMs ? Number(body.timeoutMs) : (current as any)[provider]?.timeoutMs
+      if (body.emergencyShutdown !== undefined) next.emergencyShutdown = body.emergencyShutdown;
+    } else if (provider === 'NATIVE' || provider === 'OLLAMA' || provider === 'GEMINI' || provider === 'OPENAI' || provider === 'MOCK') {
+      const providerPatch: Record<string, unknown> = {};
+      if (body.enabled !== undefined) providerPatch.enabled = body.enabled;
+      if (provider === 'NATIVE') {
+        if (body.model !== undefined && body.model !== 'scrolitha-native-33.3') {
+          return res.status(400).json({ success: false, error: 'NATIVE model is fixed by policy' });
         }
-      };
+      } else if (body.model !== undefined) {
+        if (typeof body.model !== 'string' || !body.model.trim() || body.model.length > 128) {
+          return res.status(400).json({ success: false, error: 'model must be a non-empty string of at most 128 characters' });
+        }
+        providerPatch.model = body.model.trim();
+      }
+      if (body.timeoutMs !== undefined) providerPatch.timeoutMs = Number(body.timeoutMs);
+      next[provider] = providerPatch;
     }
-    const saved = await setProviderConfig(next, actorId(req));
-    await writeAIAudit({
-      action: 'admin.provider.updated',
-      actorUserId: actorId(req),
-      provider,
-      metadata: { enabled: body.enabled, emergencyShutdown: body.emergencyShutdown }
+    if (body.timeoutMs !== undefined && (!Number.isFinite(Number(body.timeoutMs)) || Number(body.timeoutMs) < 1000 || Number(body.timeoutMs) > 240000)) {
+      return res.status(400).json({ success: false, error: 'timeoutMs must be between 1000 and 240000' });
+    }
+    const saved = await persistAdminProviderConfig(next as any, actorId(req), provider, {
+      enabled: body.enabled,
+      emergencyShutdown: body.emergencyShutdown
     });
     return res.json({ success: true, data: saved });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'provider_update_failed' });
+    return res.status(503).json({ success: false, error: 'provider_update_not_persisted' });
   }
 }
 
@@ -366,6 +376,11 @@ export async function adminAIFeatureFlags(req: Request, res: Response) {
         });
       }
     }
+    const unknownFlags = Object.keys(body).filter((key) => !Object.prototype.hasOwnProperty.call(DEFAULT_AI_FEATURE_FLAGS, key));
+    if (unknownFlags.length) return res.status(400).json({ success: false, error: 'Unsupported feature flag' });
+    if (Object.values(body).some((value) => typeof value !== 'boolean')) {
+      return res.status(400).json({ success: false, error: 'Feature flags must be booleans' });
+    }
     // Never enable provider calls in production without env
     if (process.env.NODE_ENV === 'production' && body.enableProviderCalls === true) {
       if (process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER !== '1') {
@@ -375,14 +390,11 @@ export async function adminAIFeatureFlags(req: Request, res: Response) {
         });
       }
     }
-    const next = await setAIFeatureFlags(body as Partial<AIFeatureFlags>, actorId(req));
-    await writeAIAudit({
-      action: 'admin.feature_flags.updated',
-      actorUserId: actorId(req),
-      metadata: { keys: Object.keys(body) }
+    const next = await persistAdminAIFeatureFlags(body as Partial<AIFeatureFlags>, actorId(req), {
+      keys: Object.keys(body)
     });
     return res.json({ success: true, data: next });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err?.message || 'flags_failed' });
+    return res.status(503).json({ success: false, error: 'feature_flags_not_persisted' });
   }
 }
