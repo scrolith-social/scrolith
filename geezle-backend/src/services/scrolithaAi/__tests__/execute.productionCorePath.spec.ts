@@ -84,6 +84,7 @@ describe('canonical Scrolitha AI production Core request path', () => {
   const envKeys = [
     'NODE_ENV',
     'SCROLITHA_AI_LOCAL_ONLY',
+    'SCROLITHA_AI_FORCE_NO_EXTERNAL_PROVIDER',
     'SCROLITHA_AI_ALLOW_PROD_PROVIDER',
     'SCROLITHA_AI_ENABLE_PROVIDER_CALLS',
     'SCROLITHA_AI_OLLAMA_ENABLED'
@@ -102,6 +103,7 @@ describe('canonical Scrolitha AI production Core request path', () => {
     jest.clearAllMocks();
     process.env.NODE_ENV = 'production';
     process.env.SCROLITHA_AI_LOCAL_ONLY = 'true';
+    process.env.SCROLITHA_AI_FORCE_NO_EXTERNAL_PROVIDER = '0';
     process.env.SCROLITHA_AI_ALLOW_PROD_PROVIDER = '1';
     process.env.SCROLITHA_AI_ENABLE_PROVIDER_CALLS = 'true';
     process.env.SCROLITHA_AI_OLLAMA_ENABLED = 'true';
@@ -195,6 +197,30 @@ describe('canonical Scrolitha AI production Core request path', () => {
     expect(generateText).toHaveBeenCalledTimes(1);
     expect(mockGetProvider).toHaveBeenCalledTimes(1);
     expect(mockGetProvider).toHaveBeenCalledWith('OLLAMA');
+    expect(mockRecordUsage).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'OLLAMA', status: 'FAILED'
+    }));
+  });
+
+  test('force-no-external keeps a user-preferred NATIVE fallback out of nondeterministic generation', async () => {
+    process.env.SCROLITHA_AI_LOCAL_ONLY = 'false';
+    process.env.SCROLITHA_AI_FORCE_NO_EXTERNAL_PROVIDER = '1';
+    mockLoadProvider.mockResolvedValueOnce({
+      OLLAMA: { enabled: true, model: 'qwen3:8b' },
+      NATIVE: { enabled: true }, GEMINI: { enabled: true },
+      OPENAI: { enabled: true }, MOCK: { enabled: true }, emergencyShutdown: false
+    });
+    generateText.mockRejectedValueOnce(new Error('synthetic Core unavailable'));
+
+    const result = await ScrolithaAI.execute({
+      capability: 'TEXT_REWRITING',
+      userId: 'synthetic-pilot-user',
+      input: 'Rewrite this synthetic sentence.',
+      policy: { preferNative: true, timeoutMs: 180_000, maxTokens: 64 }
+    });
+
+    expect(result).toMatchObject({ ok: false, lifecycle: 'FAILED' });
+    expect(mockGetProvider.mock.calls.map(([provider]) => provider)).toEqual(['OLLAMA']);
     expect(mockRecordUsage).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'OLLAMA', status: 'FAILED'
     }));

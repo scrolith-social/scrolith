@@ -236,8 +236,7 @@ export const isProductionOllamaCallAllowed = async (): Promise<boolean> => {
     flags.ASSISTANT_CHAT && !providerConfig.emergencyShutdown && isOllamaCallAllowed(flags, providerConfig);
 };
 
-const shouldAutoPullModel = (runtime: Pick<ScrolithaLlmRuntime, 'provider' | 'host' | 'sidecarMode'>) =>
-  !isProductionRuntime() || (isSelfHostedProvider(runtime.provider) && Boolean(runtime.sidecarMode) && isLocalEndpoint(runtime.host));
+const shouldAutoPullModel = () => !isProductionRuntime();
 
 const sanitizeText = (value: unknown) =>
   String(value || '')
@@ -481,6 +480,9 @@ export const ollamaPullModel = async (
   const normalizedModel = String(model || '').trim();
   if (!normalizedHost) throw new Error('Ollama host is missing');
   if (!normalizedModel) throw new Error('Ollama model is missing');
+  if (isProductionRuntime()) {
+    throw new Error('Ollama model downloads are disabled in production');
+  }
 
   const key = `${normalizedHost}::${normalizedModel.toLowerCase()}`;
   const existing = ollamaPullsInFlight.get(key);
@@ -1148,7 +1150,7 @@ export const generateScrolithaText = async (
         temperature: safeInput.temperature,
         topP: safeInput.topP ?? runtime.topP,
         timeoutMs: runtime.timeoutMs,
-        autoPullModel: shouldAutoPullModel(runtime)
+        autoPullModel: shouldAutoPullModel()
       });
       const text = String(result.text || '').trim();
       if (!text) throw new Error('Scrolitha returned an empty response');
@@ -1271,7 +1273,7 @@ export const ensureScrolithaRuntimeModel = async (scope: ScrolithaScope) => {
   let modelPresent = hasOllamaModel(models, runtime.model);
   let pulled = false;
 
-  if (!modelPresent && shouldAutoPullModel(runtime)) {
+  if (!modelPresent && shouldAutoPullModel()) {
     await ollamaPullModel(runtime.host, runtime.model, Math.max(OLLAMA_MODEL_PULL_TIMEOUT_MS, runtime.timeoutMs * 4));
     pulled = true;
     models = await ollamaListModels(runtime.host, Math.min(10_000, runtime.timeoutMs));

@@ -8,7 +8,7 @@ jest.mock('../../../utils/prismaClient', () => ({
 }));
 
 import { ensureScrolithaConfig } from '../scrolitha.policy';
-import { resolveScrolithaLlmRuntime } from '../scrolitha.ollama';
+import { ensureScrolithaRuntimeModel, ollamaPullModel, resolveScrolithaLlmRuntime } from '../scrolitha.ollama';
 
 describe('Scrolitha production Core endpoint precedence', () => {
   const previousEnv = new Map<string, string | undefined>();
@@ -77,5 +77,53 @@ describe('Scrolitha production Core endpoint precedence', () => {
     const runtime = await resolveScrolithaLlmRuntime('user');
 
     expect(runtime.timeoutMs).toBe(180_000);
+  });
+
+  test('production model preparation does not pull an absent model, even for stale sidecar settings', async () => {
+    setEnv('NODE_ENV', 'production');
+    setEnv('SCROLITHA_AI_LOCAL_ONLY', 'false');
+    setEnv('SCROLITHA_CORE_ENDPOINT', 'http://127.0.0.1:11434');
+    setEnv('SCROLITHA_CORE_MODEL', 'qwen3:8b');
+    setEnv('SCROLITHA_CORE_SIDECAR_MODE', 'true');
+    setEnv('SCROLITHA_CORE_ALLOW_LOCAL_SIDECAR', 'true');
+    (ensureScrolithaConfig as jest.Mock).mockResolvedValue({
+      metadata: {
+        llm: {
+          enabled: true,
+          provider: 'core',
+          host: 'http://127.0.0.1:11434',
+          model: 'qwen3:8b',
+          sidecarMode: true
+        }
+      }
+    });
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    );
+
+    try {
+      const result = await ensureScrolithaRuntimeModel('user');
+
+      expect(result.pulled).toBe(false);
+      expect(result.modelPresent).toBe(false);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('/api/tags');
+      expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('/api/pull');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  test('production rejects direct model-pull attempts before making a request', async () => {
+    setEnv('NODE_ENV', 'production');
+    const fetchSpy = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('unexpected network request'));
+
+    try {
+      await expect(ollamaPullModel('https://scrolitha-core.internal', 'untrusted/model'))
+        .rejects.toThrow('Ollama model downloads are disabled in production');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

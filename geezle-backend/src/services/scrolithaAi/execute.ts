@@ -247,7 +247,11 @@ export class ScrolithaAI {
       ]);
       const deterministicOnly =
         input.policy?.deterministicOnly === true || deterministicCapability.has(input.capability);
-      const requireOllama = Boolean(input.policy?.requireOllama) || (isScrolithaLocalOnly() && !deterministicOnly);
+      const forceNoExternalProvider = ['1', 'true', 'yes', 'on'].includes(
+        String(process.env.SCROLITHA_AI_FORCE_NO_EXTERNAL_PROVIDER || '').trim().toLowerCase()
+      );
+      const requireOllama = Boolean(input.policy?.requireOllama) ||
+        ((isScrolithaLocalOnly() || forceNoExternalProvider) && !deterministicOnly);
       const externalOk =
         consent.externalProviderProcessingAllowed &&
         externalProviderAllowedForPrivacy(privacyLevel, true);
@@ -350,10 +354,16 @@ export class ScrolithaAI {
         ...route.fallbackChain
       ];
 
+      if (forceNoExternalProvider) {
+        chain = requireOllama
+          ? (ollamaEnabled ? [{ provider: 'OLLAMA', model: SCROLITHA_LOCAL_MODEL }] : [])
+          : chain.filter((step) => step.provider === 'NATIVE' || step.provider === 'OLLAMA');
+      }
+
       if (!useNetworkProviders) {
         if (requireOllama) {
           chain = ollamaEnabled ? [{ provider: 'OLLAMA', model: SCROLITHA_LOCAL_MODEL }] : [];
-        } else if (isScrolithaLocalOnly()) {
+        } else if (isScrolithaLocalOnly() || forceNoExternalProvider) {
           // Deterministic capabilities prefer the gated native provider and may
           // fall back to Ollama. Non-deterministic callers take the strict
           // requireOllama branch above and cannot fall back to NATIVE.
@@ -413,7 +423,7 @@ export class ScrolithaAI {
       // deterministic and network-free, so an explicitly native-preferred
       // request must not depend on provider-health configuration to enter
       // the chain. Ollama remains available as a fallback when present.
-      if (input.policy?.preferNative && !input.policy?.requireOllama) {
+      if (input.policy?.preferNative && !requireOllama) {
         chain = [
           { provider: 'NATIVE', model: 'scrolitha-native-33.3' },
           ...chain.filter((candidate) => candidate.provider !== 'NATIVE')

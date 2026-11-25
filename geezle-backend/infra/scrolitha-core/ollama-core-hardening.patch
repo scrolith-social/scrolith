@@ -1,0 +1,131 @@
+diff --git a/cmd/cmd.go b/cmd/cmd.go
+index 14fa855..1c25be0 100644
+--- a/cmd/cmd.go
++++ b/cmd/cmd.go
+@@ -2825,21 +2825,26 @@ func NewCLI() *cobra.Command {
+-	rootCmd.AddCommand(
+-		serveCmd,
+-		createCmd,
+-		showCmd,
+-		runCmd,
+-		stopCmd,
+-		pullCmd,
+-		pushCmd,
+-		signinCmd,
+-		loginCmd,
+-		signoutCmd,
+-		logoutCmd,
+-		listCmd,
+-		psCmd,
+-		copyCmd,
+-		deleteCmd,
+-		runnerCmd,
+-		gpuDiscoverCmd,
+-		launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
+-	)
+-
++	if scrolithCoreMode {
++		// Scrolith Core is an inference-only appliance. Do not link model
++		// mutation, registry transfer, or interactive management commands.
++		rootCmd.AddCommand(serveCmd)
++	} else {
++		rootCmd.AddCommand(
++			serveCmd,
++			createCmd,
++			showCmd,
++			runCmd,
++			stopCmd,
++			pullCmd,
++			pushCmd,
++			signinCmd,
++			loginCmd,
++			signoutCmd,
++			logoutCmd,
++			listCmd,
++			psCmd,
++			copyCmd,
++			deleteCmd,
++			runnerCmd,
++			gpuDiscoverCmd,
++			launch.LaunchCmd(checkServerHeartbeat, runInteractiveTUI),
++		)
++	}
+diff --git a/main.go b/main.go
+index 650e03a..07190fd 100644
+--- a/main.go
++++ b/main.go
+@@ -0,0 +1,2 @@
++//go:build !scrolithcore
++
+diff --git a/server/cloud_proxy.go b/server/cloud_proxy.go
+index b57c509..64c0900 100644
+--- a/server/cloud_proxy.go
++++ b/server/cloud_proxy.go
+@@ -180,0 +181,4 @@ func proxyCloudRequestWithPath(c *gin.Context, body []byte, path string, disable
++	if scrolithCoreMode {
++		c.JSON(http.StatusForbidden, gin.H{"error": "remote inference is disabled in Scrolith Core"})
++		return
++	}
+diff --git a/server/model.go b/server/model.go
+index 5af513d..b819679 100644
+--- a/server/model.go
++++ b/server/model.go
+@@ -31,0 +32,3 @@ func parseFromModel(ctx context.Context, name model.Name, fn func(api.ProgressRe
++		if scrolithCoreMode {
++			return nil, config, fmt.Errorf("%w: model %s is not bundled in this Scrolith Core image", os.ErrNotExist, name.DisplayShortest())
++		}
+diff --git a/server/routes.go b/server/routes.go
+index 2225902..81d0caa 100644
+--- a/server/routes.go
++++ b/server/routes.go
+@@ -2361,3 +2361,7 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
+-	codexDesktopProxy, err := newCodexDesktopProxy()
+-	if err != nil {
+-		return nil, err
++	var codexDesktopProxy http.Handler
++	if !scrolithCoreMode {
++		var err error
++		codexDesktopProxy, err = newCodexDesktopProxy()
++		if err != nil {
++			return nil, err
++		}
+@@ -2408 +2412,3 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
+-	r.Any(proxy.CodexDesktopPathPrefix+"/*path", gin.WrapH(codexDesktopProxy))
++	if !scrolithCoreMode {
++		r.Any(proxy.CodexDesktopPathPrefix+"/*path", gin.WrapH(codexDesktopProxy))
++	}
+@@ -2410,3 +2416,8 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
+-	// Local model cache management (new implementation is at end of function)
+-	r.POST("/api/pull", s.PullHandler)
+-	r.POST("/api/push", s.PushHandler)
++	// Scrolith Core serves an immutable, image-bundled model. Keep the upstream
++	// management routes available in normal Ollama builds, but omit them from
++	// the Scrolith Core build where the listener is private and unauthenticated.
++	if !scrolithCoreMode {
++		r.POST("/api/pull", s.PullHandler)
++		r.POST("/api/push", s.PushHandler)
++		r.DELETE("/api/delete", s.DeleteHandler)
++	}
+@@ -2416 +2426,0 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
+-	r.DELETE("/api/delete", s.DeleteHandler)
+@@ -2426,8 +2436,12 @@ func (s *Server) GenerateRoutes() (http.Handler, error) {
+-	// Create
+-	r.POST("/api/create", s.CreateHandler)
+-	r.POST("/api/blobs/:digest", s.CreateBlobHandler)
+-	r.HEAD("/api/blobs/:digest", s.HeadBlobHandler)
+-	r.POST("/api/copy", s.CopyHandler)
+-	r.POST("/api/experimental/web_search", s.WebSearchExperimentalHandler)
+-	r.POST("/api/experimental/web_fetch", s.WebFetchExperimentalHandler)
+-	r.GET("/api/experimental/model-recommendations", s.ModelRecommendationsExperimentalHandler)
++	// Model creation, blob uploads, and web fetching are intentionally absent
++	// in Scrolith Core. The model set is immutable and inference has no provider
++	// fallback or arbitrary model-download path.
++	if !scrolithCoreMode {
++		r.POST("/api/create", s.CreateHandler)
++		r.POST("/api/blobs/:digest", s.CreateBlobHandler)
++		r.HEAD("/api/blobs/:digest", s.HeadBlobHandler)
++		r.POST("/api/copy", s.CopyHandler)
++		r.POST("/api/experimental/web_search", s.WebSearchExperimentalHandler)
++		r.POST("/api/experimental/web_fetch", s.WebFetchExperimentalHandler)
++		r.GET("/api/experimental/model-recommendations", s.ModelRecommendationsExperimentalHandler)
++	}
