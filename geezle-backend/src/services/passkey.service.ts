@@ -57,7 +57,7 @@ export const consumePasskeyChallenge = async (input: {
 }) => {
   const row = await prisma.passkeyChallenge.findUnique({
     where: { id: input.id },
-    select: { id: true, userId: true, challengeHash: true, purpose: true, expiresAt: true, consumedAt: true }
+    select: { id: true, userId: true, challengeHash: true, purpose: true, expiresAt: true, consumedAt: true, metadata: true }
   });
   if (!row || row.purpose !== input.purpose || row.consumedAt || row.expiresAt <= new Date()) return null;
   if (input.userId && row.userId !== input.userId) return null;
