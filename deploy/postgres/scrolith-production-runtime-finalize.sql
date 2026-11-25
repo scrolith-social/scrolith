@@ -183,6 +183,35 @@ $runtime_acl_reset$;
 
 \ir scrolith-production-runtime-grants.sql
 
+DO $verify_profile_update_allowlist$
+DECLARE
+  allowed_columns TEXT[] := ARRAY[
+    'bio', 'certifications', 'city', 'country', 'countryCode',
+    'coverPhotoUrl', 'dateOfBirth', 'educationItems', 'experienceItems',
+    'formattedAddress', 'gender', 'githubUrl', 'hourlyRate', 'introVideoUrl',
+    'languages', 'latitude', 'linkedinUrl', 'location', 'locationSource',
+    'longitude', 'placeId', 'portfolio', 'portfolioUrl', 'postalCode',
+    'region', 'showBirthMonthDayPublic', 'skills', 'state', 'title',
+    'updatedAt', 'websiteUrl'
+  ];
+BEGIN
+  IF has_table_privilege('scrolith_runtime', 'public."Profile"', 'UPDATE')
+     OR EXISTS (
+       SELECT 1 FROM unnest(allowed_columns) AS allowed(column_name)
+        WHERE NOT has_column_privilege('scrolith_runtime', 'public."Profile"', allowed.column_name, 'UPDATE')
+     )
+     OR EXISTS (
+       SELECT 1 FROM information_schema.columns AS profile_column
+        WHERE profile_column.table_schema = 'public'
+          AND profile_column.table_name = 'Profile'
+          AND has_column_privilege('scrolith_runtime', 'public."Profile"', profile_column.column_name, 'UPDATE')
+          AND NOT profile_column.column_name = ANY(allowed_columns)
+     ) THEN
+    RAISE EXCEPTION 'Profile UPDATE allowlist does not match the reviewed application write paths';
+  END IF;
+END
+$verify_profile_update_allowlist$;
+
 -- Prisma inserts that use serial/identity defaults need sequence USAGE. Grant
 -- only sequences owned by a table receiving INSERT; never grant setval UPDATE.
 DO $runtime_sequence_grants$

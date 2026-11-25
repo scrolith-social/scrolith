@@ -903,7 +903,17 @@ GRANT UPDATE ("expiresAt", "lastSeenAt", "metadata", "namespace", "releasedAt", 
 GRANT UPDATE ("entity_id", "entity_type", "metadata", "pool_id", "updated_at", "visibility_scope") ON TABLE :"application_schema"."PrivateOpportunityAccess" TO :"runtime_role";
 GRANT UPDATE ("availabilityTypes", "availableFrom", "expiresAt", "isActive", "services", "status", "timing", "updatedAt", "visibility", "workPreference") ON TABLE :"application_schema"."ProfessionalAvailability" TO :"runtime_role";
 GRANT UPDATE ("breakdown", "riskFlags", "score", "updatedAt") ON TABLE :"application_schema"."ProfessionalScore" TO :"runtime_role";
-GRANT UPDATE ("updatedAt") ON TABLE :"application_schema"."Profile" TO :"runtime_role";
+-- Profile edits are limited to fields written by updateUserProfile and the
+-- approved Scrolitha profile-advisor flow. Identity, ownership, moderation,
+-- aggregate, and creation fields remain immutable to the runtime role.
+GRANT UPDATE ("bio", "certifications", "city", "country", "countryCode",
+              "coverPhotoUrl", "dateOfBirth", "educationItems", "experienceItems",
+              "formattedAddress", "gender", "githubUrl", "hourlyRate", "introVideoUrl",
+              "languages", "latitude", "linkedinUrl", "location", "locationSource",
+              "longitude", "placeId", "portfolio", "portfolioUrl", "postalCode",
+              "region", "showBirthMonthDayPublic", "skills", "state", "title",
+              "updatedAt", "websiteUrl")
+  ON TABLE :"application_schema"."Profile" TO :"runtime_role";
 GRANT UPDATE ("clientViewCount", "clientViewedAt", "contractId", "interviewLocation", "interviewMode", "interviewNotes", "interviewScheduledAt", "rejectionReason", "status", "topApplicantAt", "updatedAt") ON TABLE :"application_schema"."Proposal" TO :"runtime_role";
 GRANT UPDATE ("approved_at", "finance_status", "rejected_at", "status", "updated_at") ON TABLE :"application_schema"."PurchaseRequest" TO :"runtime_role";
 GRANT UPDATE ("description", "difficulty", "isActive", "isWeekly", "reward", "roleScope", "rotationWeight", "title", "updatedAt", "updatedById", "verificationRules") ON TABLE :"application_schema"."QuestCatalog" TO :"runtime_role";
