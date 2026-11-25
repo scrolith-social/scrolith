@@ -15,7 +15,9 @@ import {
   safeFindUserByEmail,
   safeFindUserById
 } from './auth.controller';
-import { issueAuthSessionToken } from '../services/authSession.service';
+import { enforceHumanVerification } from '../utils/humanVerificationGate';
+import { normalizeLoginDeviceMetadata } from '../services/loginApproval.service';
+import { finishPasskeyLoginAfterMfa, type PasskeyLoginApprovalContext } from '../services/passkeyLogin.service';
 import {
   PASSKEY_PURPOSE,
   consumePasskeyChallenge,
@@ -35,9 +37,18 @@ const EXPECTED_ORIGINS = String(
   .filter(Boolean);
 
 const passkeysEnabled = () => String(process.env.SCROLITH_PASSKEYS_ENABLED || '').toLowerCase() === 'true';
+const STEP_UP_MAX_AGE_MS = 5 * 60 * 1000;
+const hasValidRelyingPartyConfiguration = () => {
+  if (process.env.NODE_ENV !== 'production') return Boolean(RP_ID && EXPECTED_ORIGINS.length);
+  const productionOrigins = new Set(['https://scrolith.com', 'https://www.scrolith.com']);
+  return RP_ID === 'scrolith.com' && EXPECTED_ORIGINS.length > 0 && EXPECTED_ORIGINS.every((origin) => productionOrigins.has(origin));
+};
 
 const disabled = (res: Response) =>
   res.status(404).json({ success: false, error: 'Passkeys are not enabled', code: 'PASSKEYS_DISABLED' });
+
+const invalidRelyingPartyConfiguration = (res: Response) =>
+  res.status(503).json({ success: false, error: 'Passkey sign-in is unavailable because relying-party configuration is invalid', code: 'PASSKEY_RP_CONFIG_INVALID' });
 
 const bodyResponse = (req: Request) => {
   const response = req.body?.response;
@@ -64,38 +75,65 @@ const clientMetadata = (req: Request) => {
   };
 };
 
-const issueSession = async (res: Response, user: any) => {
-  const token = await issueAuthSessionToken(user.id);
-  res.cookie('Scrolith_token', token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/'
+const getActiveAuthenticatedSession = async (req: Request, userId: string) => {
+  const sessionId = String((req.user as any)?.authSessionId || '').trim();
+  if (!sessionId) return null;
+  const now = new Date();
+  return prisma.authSession.findFirst({
+    where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: now } },
+    select: { createdAt: true }
   });
-  return token;
 };
+
+const verifyFreshAccountAuthentication = async (req: Request, userId: string, currentPassword?: unknown) => {
+  const session = await getActiveAuthenticatedSession(req, userId);
+  if (!session) return false;
+  const account = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
+  if (!account) return false;
+  if (!account.passwordHash) return new Date().getTime() - session.createdAt.getTime() <= STEP_UP_MAX_AGE_MS;
+  const password = String(currentPassword || '');
+  if (!password) return false;
+  try { return await bcrypt.compare(password, account.passwordHash); }
+  catch { return false; }
+};
+
+const requestContextFromMetadata = (metadata: any): PasskeyLoginApprovalContext | null => {
+  const device = normalizeLoginDeviceMetadata(metadata?.loginDevice);
+  if (!device.deviceId) return null;
+  return {
+    device,
+    request: {
+      ip: String(metadata?.ip || '').slice(0, 128) || null,
+      userAgent: String(metadata?.userAgent || '').slice(0, 512) || null
+    }
+  };
+};
+
+const userForLogin = async (userId: string) => prisma.user.findUnique({
+  where: { id: userId },
+  select: {
+    id: true, email: true, name: true, username: true, role: true, avatar: true,
+    isActive: true, kycStatus: true, isVerified: true, authSessionVersion: true,
+    twoFactorEnabled: true, twoFactorSecret: true, twoFactorBackupCodes: true,
+    twoFactorWaivedUntil: true
+  }
+});
 
 export const beginPasskeyRegistration = async (req: Request, res: Response) => {
   if (!passkeysEnabled()) return disabled(res);
+  if (!hasValidRelyingPartyConfiguration()) return invalidRelyingPartyConfiguration(res);
   const userId = String(req.user?.id || '').trim();
   if (!userId) return res.status(401).json({ success: false, error: 'Authentication required' });
 
   const user = await safeFindUserById(userId);
   if (!user || user.isActive === false) return res.status(403).json({ success: false, error: 'Account unavailable' });
 
-  // Password accounts must prove current password before adding a new login method.
-  // OAuth-only accounts can use their existing authenticated session plus required
-  // WebAuthn user verification to enroll the first passkey.
-  const passwordRecord = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
-  if (passwordRecord?.passwordHash) {
-    const currentPassword = String(req.body?.currentPassword || '');
-    if (!currentPassword || !(await bcrypt.compare(currentPassword, passwordRecord.passwordHash))) {
-      return res.status(401).json({
-        success: false,
-        error: 'Current password confirmation is required before adding a passkey',
-        code: 'PASSKEY_REAUTH_REQUIRED'
-      });
-    }
+  if (!await verifyFreshAccountAuthentication(req, userId, req.body?.currentPassword)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Fresh authentication is required. Password accounts must confirm the current password; passwordless accounts must sign in again within the last five minutes.',
+      code: 'PASSKEY_REAUTH_REQUIRED'
+    });
   }
 
   const existing = await prisma.passkeyCredential.findMany({
@@ -123,7 +161,7 @@ export const beginPasskeyRegistration = async (req: Request, res: Response) => {
     challenge: options.challenge,
     purpose: PASSKEY_PURPOSE.registration,
     userId,
-    metadata: clientMetadata(req)
+    metadata: { ...clientMetadata(req), reauthenticatedAt: Date.now() }
   });
 
   return res.json({ success: true, data: options, challengeId: challenge.id, expiresAt: challenge.expiresAt });
@@ -131,6 +169,7 @@ export const beginPasskeyRegistration = async (req: Request, res: Response) => {
 
 export const completePasskeyRegistration = async (req: Request, res: Response) => {
   if (!passkeysEnabled()) return disabled(res);
+  if (!hasValidRelyingPartyConfiguration()) return invalidRelyingPartyConfiguration(res);
   const userId = String(req.user?.id || '').trim();
   const challengeId = String(req.body?.challengeId || '').trim();
   const response = bodyResponse(req) as RegistrationResponseJSON | null;
@@ -168,6 +207,10 @@ export const completePasskeyRegistration = async (req: Request, res: Response) =
       userId
     });
     if (!challenge) return res.status(409).json({ success: false, error: 'Passkey registration challenge expired or was already used' });
+    const reauthenticatedAt = Number((challenge.metadata as any)?.reauthenticatedAt || 0);
+    if (!reauthenticatedAt || Date.now() - reauthenticatedAt > STEP_UP_MAX_AGE_MS || !await getActiveAuthenticatedSession(req, userId)) {
+      return res.status(401).json({ success: false, error: 'Fresh authentication expired. Sign in again before adding a passkey.', code: 'PASSKEY_REAUTH_REQUIRED' });
+    }
 
     await prisma.passkeyCredential.create({
       data: {
@@ -192,7 +235,14 @@ export const completePasskeyRegistration = async (req: Request, res: Response) =
 
 export const beginPasskeyAuthentication = async (req: Request, res: Response) => {
   if (!passkeysEnabled()) return disabled(res);
+  if (!hasValidRelyingPartyConfiguration()) return invalidRelyingPartyConfiguration(res);
+  if ((await enforceHumanVerification(req, res, 'login')) === false) return undefined;
   const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 320);
+  const loginDevice = normalizeLoginDeviceMetadata(req.body?.device);
+  if (!loginDevice.deviceId) {
+    return res.status(400).json({ success: false, error: 'Device security metadata is required', code: 'DEVICE_METADATA_REQUIRED' });
+  }
+  const expectedUserId = String(req.body?.expectedUserId || '').trim().slice(0, 128);
   let allowCredentials;
 
   // When the user has already entered an email, narrow the discoverable
@@ -223,13 +273,18 @@ export const beginPasskeyAuthentication = async (req: Request, res: Response) =>
   const challenge = await createPasskeyChallenge({
     challenge: options.challenge,
     purpose: PASSKEY_PURPOSE.authentication,
-    metadata: clientMetadata(req)
+    metadata: {
+      ...clientMetadata(req),
+      loginDevice,
+      ...(expectedUserId ? { expectedUserId } : {})
+    }
   });
   return res.json({ success: true, data: options, challengeId: challenge.id, expiresAt: challenge.expiresAt });
 };
 
 export const completePasskeyAuthentication = async (req: Request, res: Response) => {
   if (!passkeysEnabled()) return disabled(res);
+  if (!hasValidRelyingPartyConfiguration()) return invalidRelyingPartyConfiguration(res);
   const challengeId = String(req.body?.challengeId || '').trim();
   const response = bodyResponse(req) as AuthenticationResponseJSON | null;
   if (!challengeId || !response?.id || !response?.response) {
@@ -284,10 +339,67 @@ export const completePasskeyAuthentication = async (req: Request, res: Response)
     });
     if (updated.count !== 1) return res.status(409).json({ success: false, error: 'Passkey was used concurrently; please try again', code: 'PASSKEY_COUNTER_CONFLICT' });
 
-    const user = await safeFindUserById(stored.userId);
+    const metadata = challenge.metadata as any;
+    const expectedUserId = String(metadata?.expectedUserId || '').trim();
+    if (expectedUserId && expectedUserId !== stored.userId) {
+      return res.status(401).json({ success: false, error: 'The selected account did not match this passkey', code: 'PASSKEY_ACCOUNT_MISMATCH' });
+    }
+    const user = await userForLogin(stored.userId);
     if (!user || user.isActive === false) return res.status(403).json({ success: false, error: 'Account unavailable' });
-    const token = await issueSession(res, user);
-    void logAuthEvent({ userId: user.id, email: user.email, event: 'passkey_authenticated', meta: { credentialId: stored.credentialId, deviceType: verification.authenticationInfo.credentialDeviceType, backedUp: verification.authenticationInfo.credentialBackedUp } }, req);
+    try {
+      const staffProfile = await prisma.staffUser.findUnique({
+        where: { userId: user.id },
+        include: { role: { select: { id: true, name: true, isActive: true } } }
+      });
+      if (staffProfile?.status !== undefined && staffProfile.status !== 'ACTIVE') {
+        return res.status(403).json({ success: false, error: 'Staff account is not active', code: 'STAFF_ACCOUNT_INACTIVE' });
+      }
+      if (staffProfile && !staffProfile.role?.isActive) {
+        return res.status(403).json({ success: false, error: 'Assigned staff role is inactive', code: 'STAFF_ROLE_INACTIVE' });
+      }
+    } catch {
+      return res.status(503).json({ success: false, error: 'Unable to complete account security checks', code: 'LOGIN_GUARD_UNAVAILABLE' });
+    }
+
+    const loginContext = requestContextFromMetadata(metadata);
+    if (!loginContext) {
+      return res.status(400).json({ success: false, error: 'Passkey login device context is unavailable', code: 'DEVICE_METADATA_REQUIRED' });
+    }
+    const { evaluateAdmin2FAGate } = await import('./admin2fa.controller');
+    const mfa = await evaluateAdmin2FAGate(user, { postMfaLoginApproval: loginContext });
+    if (mfa.required) {
+      void logAuthEvent({ userId: user.id, email: user.email, event: 'passkey_assertion_verified_mfa_required' }, req);
+      return res.json({
+        success: true,
+        requires2FA: true,
+        challengeToken: mfa.challengeToken,
+        code: '2FA_REQUIRED',
+        message: 'Complete authenticator verification to finish passkey sign-in.',
+        user: { id: user.id, email: user.email, role: user.role }
+      });
+    }
+
+    const completed = await finishPasskeyLoginAfterMfa(user, loginContext);
+    if (completed.requiresLoginApproval) {
+      void logAuthEvent({ userId: user.id, email: user.email, event: 'passkey_login_approval_requested' }, req);
+      return res.json({
+        success: true,
+        requiresLoginApproval: true,
+        code: 'LOGIN_APPROVAL_REQUIRED',
+        message: 'Approve this login from an existing trusted session.',
+        loginApproval: completed.loginApproval,
+        user: { id: user.id, email: user.email, role: user.role }
+      });
+    }
+
+    const token = completed.token;
+    res.cookie('Scrolith_token', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/'
+    });
+    void logAuthEvent({ userId: user.id, email: user.email, event: 'passkey_authenticated', meta: { passkeyRecordId: stored.id, deviceType: verification.authenticationInfo.credentialDeviceType, backedUp: verification.authenticationInfo.credentialBackedUp } }, req);
     return res.json({ success: true, user: mapUserPayload(user), token, accessToken: token });
   } catch (error: any) {
     console.warn('[passkey] authentication verification failed', { reason: 'verification_failed' });
@@ -323,6 +435,13 @@ export const revokePasskey = async (req: Request, res: Response) => {
   if (!passkeysEnabled()) return disabled(res);
   const userId = String(req.user?.id || '').trim();
   const id = String(req.params.id || '').trim();
+  if (!await verifyFreshAccountAuthentication(req, userId, req.body?.currentPassword)) {
+    return res.status(401).json({
+      success: false,
+      error: 'Fresh authentication is required. Password accounts must confirm the current password; passwordless accounts must sign in again within the last five minutes.',
+      code: 'PASSKEY_REAUTH_REQUIRED'
+    });
+  }
   const updated = await prisma.passkeyCredential.updateMany({
     where: { id, userId, revokedAt: null },
     data: { revokedAt: new Date() }

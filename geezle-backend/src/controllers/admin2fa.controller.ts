@@ -17,6 +17,7 @@ import {
   AuthSessionIssueError,
   issueAuthSessionTokenInTransaction
 } from '../services/authSession.service';
+import { finishPasskeyLoginAfterMfa, type PasskeyLoginApprovalContext } from '../services/passkeyLogin.service';
 
 const isWaived = (user: { twoFactorWaivedUntil?: Date | null }) => {
   if (!user?.twoFactorWaivedUntil) return false;
@@ -564,7 +565,12 @@ export const listAdmin2FADirectory = async (req: Request, res: Response) => {
   }
 };
 
-const createChallenge = async (userId: string, needsSetup: boolean, authSessionVersion: number) => {
+const createChallenge = async (
+  userId: string,
+  needsSetup: boolean,
+  authSessionVersion: number,
+  postMfaLoginApproval?: PasskeyLoginApprovalContext
+) => {
   const challengeToken = crypto.randomBytes(24).toString('hex');
   await prisma.appSetting.upsert({
     where: { scope: `2fa_challenge_${challengeToken}` },
@@ -574,7 +580,8 @@ const createChallenge = async (userId: string, needsSetup: boolean, authSessionV
         userId,
         authSessionVersion: authSessionVersion,
         exp: Date.now() + 10 * 60 * 1000,
-        needsSetup
+        needsSetup,
+        ...(postMfaLoginApproval ? { postMfaLoginApproval } : {})
       }
     },
     update: {
@@ -582,7 +589,8 @@ const createChallenge = async (userId: string, needsSetup: boolean, authSessionV
         userId,
         authSessionVersion: authSessionVersion,
         exp: Date.now() + 10 * 60 * 1000,
-        needsSetup
+        needsSetup,
+        ...(postMfaLoginApproval ? { postMfaLoginApproval } : {})
       }
     }
   });
@@ -598,7 +606,7 @@ export const evaluateAdmin2FAGate = async (user: {
   twoFactorSecret?: string | null;
   twoFactorBackupCodes?: string[] | null;
   twoFactorWaivedUntil?: Date | null;
-}): Promise<
+}, options?: { postMfaLoginApproval?: PasskeyLoginApprovalContext }): Promise<
   | { required: false }
   | { required: true; challengeToken: string }
 > => {
@@ -609,12 +617,12 @@ export const evaluateAdmin2FAGate = async (user: {
 
   // Enrolled users always challenged at login (unless waived).
   if (userEnrolled) {
-    return { required: true, challengeToken: await createChallenge(user.id, false, user.authSessionVersion) };
+    return { required: true, challengeToken: await createChallenge(user.id, false, user.authSessionVersion, options?.postMfaLoginApproval) };
   }
 
   // Platform Admin 2FA policy: admins must enroll even if not yet enabled.
   if (mfaDecision.required) {
-    return { required: true, challengeToken: await createChallenge(user.id, true, user.authSessionVersion) };
+    return { required: true, challengeToken: await createChallenge(user.id, true, user.authSessionVersion, options?.postMfaLoginApproval) };
   }
 
   return { required: false };
@@ -668,6 +676,95 @@ export const verify2FALogin = async (req: Request, res: Response) => {
     if (!okTotp && !okBackup) {
       return res.status(400).json({ success: false, error: 'Invalid authenticator code', code: 'INVALID_TOTP' });
     }
+
+    if (data.postMfaLoginApproval) {
+      await prisma.$transaction(async (tx) => {
+        const users = await tx.$queryRaw<Array<{
+          id: string;
+          authSessionVersion: number;
+          isActive: boolean;
+          twoFactorBackupCodes: string[];
+        }>>`
+          SELECT "id", "authSessionVersion", "isActive", "twoFactorBackupCodes"
+          FROM "User" WHERE "id" = ${user.id} FOR UPDATE
+        `;
+        const current = users[0];
+        if (!current?.isActive || current.authSessionVersion !== data.authSessionVersion) {
+          throw new AuthSessionIssueError('Authentication context expired');
+        }
+        const claimed = await tx.appSetting.deleteMany({
+          where: { scope: `2fa_challenge_${challengeToken}` }
+        });
+        if (claimed.count !== 1) throw new AuthSessionIssueError('2FA challenge already used');
+        if (okBackup) {
+          if (!current.twoFactorBackupCodes.includes(hashed)) {
+            throw new AuthSessionIssueError('Backup code already used');
+          }
+          await tx.user.update({
+            where: { id: user.id },
+            data: { twoFactorBackupCodes: current.twoFactorBackupCodes.filter((value) => value !== hashed) } as any
+          });
+        }
+      });
+
+      const completed = await finishPasskeyLoginAfterMfa(
+        { id: user.id, authSessionVersion: user.authSessionVersion },
+        data.postMfaLoginApproval as PasskeyLoginApprovalContext
+      );
+      if (completed.requiresLoginApproval) {
+        await prisma.authAuditLog.create({
+          data: {
+            userId: user.id,
+            email: user.email,
+            event: 'passkey_login_approval_requested',
+            ip: data.postMfaLoginApproval.request?.ip || null,
+            userAgent: data.postMfaLoginApproval.request?.userAgent || null
+          }
+        }).catch(() => undefined);
+        return res.json({
+          success: true,
+          requiresLoginApproval: true,
+          code: 'LOGIN_APPROVAL_REQUIRED',
+          message: 'Approve this login from an existing trusted session.',
+          loginApproval: completed.loginApproval,
+          user: { id: user.id, email: user.email, role: user.role }
+        });
+      }
+      res.cookie('Scrolith_token', completed.token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        path: '/'
+      });
+      await prisma.authAuditLog.create({
+        data: {
+          userId: user.id,
+          email: user.email,
+          event: 'passkey_authenticated',
+          ip: data.postMfaLoginApproval.request?.ip || null,
+          userAgent: data.postMfaLoginApproval.request?.userAgent || null,
+          meta: { mfaVerified: true }
+        }
+      }).catch(() => undefined);
+      return res.json({
+        success: true,
+        token: completed.token,
+        accessToken: completed.token,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: String(user.role || '').toLowerCase(),
+          avatar: user.avatar,
+          username: user.username,
+          isActive: user.isActive,
+          kycStatus: user.kycStatus,
+          isVerified: user.isVerified,
+          twoFactorEnabled: true
+        }
+      });
+    }
+
     const token = await prisma.$transaction(async (tx) => {
       const users = await tx.$queryRaw<Array<{
         id: string;
