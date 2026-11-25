@@ -125,10 +125,11 @@ export const processKycSecureUpload = async (input: ProcessKycUploadInput) => {
 
   const scan = await scanBufferWithClamAv(input.buffer);
   const clamMode = String(process.env.CLAMAV_MODE || process.env.KYC_CLAMAV_MODE || '').toLowerCase();
-  const failOpenConfigured =
+  const failOpenConfigured = process.env.NODE_ENV !== 'production' && (
     clamMode === 'fail_open' ||
     clamMode === 'defer' ||
-    String(process.env.KYC_CLAMAV_FAIL_OPEN || process.env.CLAMAV_FAIL_OPEN || '').toLowerCase() === 'true';
+    String(process.env.KYC_CLAMAV_FAIL_OPEN || process.env.CLAMAV_FAIL_OPEN || '').toLowerCase() === 'true'
+  );
 
   if (scan.unavailable || scan.rawStatus === 'ERROR' || scan.rawStatus === 'UNAVAILABLE') {
     if (!failOpenConfigured) {

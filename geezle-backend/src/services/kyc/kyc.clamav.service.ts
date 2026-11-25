@@ -19,11 +19,20 @@ export type ClamAvScanResult = {
 };
 
 const trim = (value: unknown) => String(value || '').trim();
+const isFailOpenFlagSet = () =>
+  trim(process.env.KYC_CLAMAV_FAIL_OPEN || process.env.CLAMAV_FAIL_OPEN).toLowerCase() === 'true';
 
 const resolveMode = () => {
-  // mock_clean / mock_infected for unit tests only.
-  // fail_open / defer: when clamd is unreachable, allow validated uploads with deferred scan audit.
   const mode = trim(process.env.CLAMAV_MODE || process.env.KYC_CLAMAV_MODE).toLowerCase();
+
+  // Production accepts only an explicitly configured TCP scanner. Test modes,
+  // disabled mode, and fail-open/deferred modes must never make production
+  // uploads appear clean when the scanner is unavailable.
+  if (process.env.NODE_ENV === 'production') {
+    return mode === 'tcp' && !isFailOpenFlagSet() ? 'tcp' : 'disabled';
+  }
+
+  // mock_clean / mock_infected are reserved for isolated tests.
   if (
     mode === 'mock_clean' ||
     mode === 'mock_infected' ||
@@ -33,8 +42,8 @@ const resolveMode = () => {
   ) {
     return mode;
   }
-  // Explicit opt-in via boolean when mode stays tcp but scanner host is not provisioned.
-  if (trim(process.env.KYC_CLAMAV_FAIL_OPEN || process.env.CLAMAV_FAIL_OPEN).toLowerCase() === 'true') {
+  // Local non-production opt-in retained for existing development workflows.
+  if (isFailOpenFlagSet()) {
     return 'fail_open';
   }
   return 'tcp';
