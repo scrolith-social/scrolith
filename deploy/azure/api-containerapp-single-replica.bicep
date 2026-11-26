@@ -62,6 +62,13 @@ param redisIdentityClientId string
 @description('Object ID used by the API Redis Entra integration.')
 param redisIdentityObjectId string
 
+@allowed([
+  'true'
+  'false'
+])
+@description('Exact existing SCROLITH_MONEY_MOVEMENT_ENABLED value on the API app; required so this ClamAV rollout preserves the current setting.')
+param moneyMovementEnabled string
+
 var apiImage = '${acrLoginServer}/${apiImageRepository}@sha256:${apiImageDigestHex}'
 // Cisco Talos official ClamAV 1.5.5 image, pinned to the reviewed linux/amd64 digest.
 var clamAvImage = 'clamav/clamav@sha256:64e30c0bf976198024deb3dc6d5cfe2485fb969c0f73549ba0fdb364b9469614'
@@ -165,6 +172,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DATABASE_URL', secretRef: 'runtime-database-url' }
             { name: 'JWT_SECRET', secretRef: 'jwt-signing-secret' }
             { name: 'REDIS_URL', secretRef: 'redis-url' }
+            { name: 'SCROLITH_MONEY_MOVEMENT_ENABLED', value: moneyMovementEnabled }
             { name: 'CLAMAV_MODE', value: 'tcp' }
             { name: 'CLAMAV_HOST', value: '127.0.0.1' }
             { name: 'CLAMAV_PORT', value: '3310' }
