@@ -26,6 +26,7 @@ import {
 } from './services/authSession.service';
 import { getTrustedClientIp } from './utils/security/clientIdentity';
 import { handleBasicHealth, isBasicHealthPath, isReadinessPath } from './middleware/basicHealth';
+import { clamAvHealthHandler } from './services/kyc/kyc.clamav.health';
 import { safeLogLine } from './utils/security/safeLog';
 import { moneyMovementHardOff } from './middleware/moneyMovementHardOff';
 
@@ -4360,6 +4361,7 @@ const buildHealthPayload = () => ({
 // Health check endpoint
 app.head('/api/health', handleBasicHealth);
 app.get('/api/health', handleBasicHealth);
+app.get('/api/health/clamav', clamAvHealthHandler);
 
 // Detailed route maps and socket metadata are operational data, not a public
 // product contract. Keep them available to authenticated platform admins.

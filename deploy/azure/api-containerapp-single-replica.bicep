@@ -63,6 +63,8 @@ param redisIdentityClientId string
 param redisIdentityObjectId string
 
 var apiImage = '${acrLoginServer}/${apiImageRepository}@sha256:${apiImageDigestHex}'
+// Cisco Talos official ClamAV 1.5.5 image, pinned to the reviewed linux/amd64 digest.
+var clamAvImage = 'clamav/clamav@sha256:64e30c0bf976198024deb3dc6d5cfe2485fb969c0f73549ba0fdb364b9469614'
 
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: apiAppName
@@ -163,6 +165,52 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DATABASE_URL', secretRef: 'runtime-database-url' }
             { name: 'JWT_SECRET', secretRef: 'jwt-signing-secret' }
             { name: 'REDIS_URL', secretRef: 'redis-url' }
+            { name: 'CLAMAV_MODE', value: 'tcp' }
+            { name: 'CLAMAV_HOST', value: '127.0.0.1' }
+            { name: 'CLAMAV_PORT', value: '3310' }
+            { name: 'CLAMAV_FAIL_OPEN', value: 'false' }
+            { name: 'CLAMAV_TIMEOUT_MS', value: '15000' }
+            { name: 'CLAMAV_RETRIES', value: '1' }
+          ]
+        }
+        {
+          name: 'clamav'
+          image: clamAvImage
+          resources: {
+            cpu: json('2.0')
+            memory: '4Gi'
+          }
+          env: [
+            { name: 'CLAMAV_NO_MILTERD', value: 'true' }
+            { name: 'CLAMD_CONF_TCPAddr', value: '127.0.0.1' }
+            { name: 'CLAMD_CONF_MaxThreads', value: '2' }
+            { name: 'CLAMD_CONF_MaxQueue', value: '4' }
+          ]
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/api/health/clamav'
+                port: 5000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 1
+              periodSeconds: 60
+              timeoutSeconds: 5
+              failureThreshold: 10
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/api/health/clamav'
+                port: 5000
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
           ]
         }
       ]

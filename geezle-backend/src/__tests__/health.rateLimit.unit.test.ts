@@ -24,6 +24,8 @@ describe('basic health and Redis-backed limiter degradation', () => {
   test('only the exact basic health endpoint is exempted from the global limiter', () => {
     expect(isBasicHealthPath({ method: 'GET', originalUrl: '/api/health' })).toBe(true);
     expect(isBasicHealthPath({ method: 'HEAD', originalUrl: '/api/health?probe=1' })).toBe(true);
+    expect(isBasicHealthPath({ method: 'GET', originalUrl: '/api/health/clamav' })).toBe(true);
+    expect(isBasicHealthPath({ method: 'GET', originalUrl: '/api/health/clamav/details' })).toBe(false);
     expect(isBasicHealthPath({ method: 'GET', originalUrl: '/api/health/details' })).toBe(false);
     expect(isBasicHealthPath({ method: 'GET', originalUrl: '/api/auth/health' })).toBe(false);
   });

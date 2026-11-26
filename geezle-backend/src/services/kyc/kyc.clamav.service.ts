@@ -55,6 +55,39 @@ const resolvePort = () => {
   return Number.isFinite(port) && port > 0 ? port : 3310;
 };
 
+/** Lightweight health check for orchestration. It never marks a missing scanner healthy. */
+export const pingClamAv = (timeoutMs = 1000): Promise<boolean> =>
+  new Promise((resolve) => {
+    if (resolveMode() !== 'tcp') {
+      resolve(false);
+      return;
+    }
+
+    const socket = new net.Socket();
+    let settled = false;
+    let response = '';
+    const finish = (healthy: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(healthy);
+    };
+
+    socket.setTimeout(Math.max(1, timeoutMs));
+    socket.on('timeout', () => finish(false));
+    socket.on('error', () => finish(false));
+    socket.on('data', (chunk) => {
+      response += chunk.toString('utf8');
+      if (response.includes('\0')) {
+        finish(response.replace(/\0/g, '').trim() === 'PONG');
+      } else if (response.length > 32) {
+        finish(false);
+      }
+    });
+    socket.on('end', () => finish(response.replace(/\0/g, '').trim() === 'PONG'));
+    socket.connect(resolvePort(), resolveHost(), () => socket.write('zPING\0'));
+  });
+
 const scanViaInstream = (buffer: Buffer, host: string, port: number, timeoutMs: number): Promise<ClamAvScanResult> =>
   new Promise((resolve) => {
     const socket = new net.Socket();

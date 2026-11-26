@@ -3,7 +3,8 @@ import type { Request, Response } from 'express';
 export const isBasicHealthPath = (req: { method?: string; originalUrl?: string }) => {
   const method = String(req.method || '').toUpperCase();
   const path = String(req.originalUrl || '').split('?')[0].replace(/\/+$/, '');
-  return (method === 'GET' || method === 'HEAD') && path === '/api/health';
+  return (method === 'GET' || method === 'HEAD') &&
+    (path === '/api/health' || path === '/api/health/clamav');
 };
 
 /** Exact, read-only readiness probes bypass the global API limiter so a failed
