@@ -9,6 +9,9 @@ param location string
 @description('Resource ID of the existing Container Apps environment.')
 param managedEnvironmentResourceId string
 
+@description('Exact existing custom-domain bindings for the API ingress; pass the current objects unchanged.')
+param apiCustomDomains array
+
 @description('ACR login server containing the reviewed API image.')
 param acrLoginServer string
 
@@ -93,6 +96,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 5000
         transport: 'auto'
         allowInsecure: false
+        customDomains: apiCustomDomains
       }
       registries: [
         {
