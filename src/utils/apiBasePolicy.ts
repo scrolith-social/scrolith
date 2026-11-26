@@ -4,6 +4,9 @@ const PRODUCTION_API_HOST = 'api.scrolith.com';
 // Restrict staging to the reviewed Scrolith staging Container Apps app and
 // environment. The shared Azure suffix alone is not an environment boundary.
 const STAGING_API_HOST = /^ca-scrolith-staging-api---[a-z0-9-]+\.yellowmushroom-b8714740\.southeastasia\.azurecontainerapps\.io$/;
+// PR #179's isolated private KYC candidate is a separate Container Apps
+// environment. Keep its staging exception pinned to the exact app hostname.
+const PRIVATE_KYC_CANDIDATE_API_HOST = 'ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io';
 
 const isLoopback = (hostname: string) => {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -65,7 +68,7 @@ export const resolveApiBaseForEnvironment = (
     case 'staging':
       if (
         parsed.protocol !== 'https:' ||
-        !STAGING_API_HOST.test(host)
+        !(STAGING_API_HOST.test(host) || host === PRIVATE_KYC_CANDIDATE_API_HOST)
       ) return null;
       break;
     case 'production':

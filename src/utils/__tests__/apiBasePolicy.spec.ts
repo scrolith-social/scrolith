@@ -32,6 +32,24 @@ describe('API environment boundary policy', () => {
     expect(resolveApiBaseForEnvironment(undefined, 'staging')).toBeNull();
   });
 
+  it('allows only the exact private PR 179 candidate API as an additional staging target', () => {
+    const candidate = 'https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io';
+    expect(resolveApiBaseForEnvironment(candidate, 'staging'))
+      .toBe('https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io/api');
+    expect(resolveApiBaseForEnvironment(
+      'http://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io',
+      'staging'
+    )).toBeNull();
+    expect(resolveApiBaseForEnvironment(
+      'https://ca-kyc-pr179-api-cand.otherenv.southeastasia.azurecontainerapps.io',
+      'staging'
+    )).toBeNull();
+    expect(resolveApiBaseForEnvironment(
+      'https://other-api.greenstone-a48e47cf.southeastasia.azurecontainerapps.io',
+      'staging'
+    )).toBeNull();
+  });
+
   it('requires the exact HTTPS production API origin', () => {
     expect(resolveApiBaseForEnvironment('https://api.scrolith.com', 'production'))
       .toBe('https://api.scrolith.com/api');
