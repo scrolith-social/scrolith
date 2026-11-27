@@ -240,6 +240,11 @@ test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically 
     'preserved relation/column ACL snapshot compares semantic entries, not catalog serialization');
   assert.match(postgresHarness, /SELECT string_agg\(att\.attnum::text \|\| ':' \|\| att\.attname::text[\s\S]*?FROM pg_attribute att/,
     'Profile column ACL snapshot includes the identity of each column');
+  assert.equal(
+    [...postgresHarness.matchAll(/aclexplode\(\s*CASE WHEN COALESCE\(cardinality\(att\.attacl\), 0\) > 0 THEN att\.attacl END\s*\)/g)].length,
+    2,
+    'both column ACL snapshots treat null and empty ACL arrays as no explicit grants'
+  );
   assert.doesNotMatch(postgresHarness, /(?:relacl|attacl)::text/,
     'ACL rollback assertions do not depend on equivalent ACL array text representations');
 });

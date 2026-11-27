@@ -524,7 +524,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
                    acl.privilege_type || ':' || acl.is_grantable::text, '|'
                    ORDER BY att.attnum, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
             FROM pg_attribute att
-            CROSS JOIN LATERAL aclexplode(COALESCE(att.attacl, '{}'::aclitem[])) acl
+            CROSS JOIN LATERAL aclexplode(
+              CASE WHEN COALESCE(cardinality(att.attacl), 0) > 0 THEN att.attacl END
+            ) acl
            WHERE att.attrelid='public."Profile"'::regclass
              AND att.attnum > 0 AND NOT att.attisdropped
         ), '')
@@ -556,7 +558,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
             FROM pg_class obj
             JOIN pg_namespace ns ON ns.oid=obj.relnamespace
             JOIN pg_attribute att ON att.attrelid=obj.oid
-            CROSS JOIN LATERAL aclexplode(COALESCE(att.attacl, '{}'::aclitem[])) acl
+            CROSS JOIN LATERAL aclexplode(
+              CASE WHEN COALESCE(cardinality(att.attacl), 0) > 0 THEN att.attacl END
+            ) acl
            WHERE ns.nspname='public'
              AND att.attnum > 0 AND NOT att.attisdropped
              AND NOT (obj.relname='Profile' AND att.attname::text = ANY(${profileRollbackArray}))
