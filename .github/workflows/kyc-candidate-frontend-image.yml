@@ -25,7 +25,7 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       REGISTRY: scrolithkyccand20261126.azurecr.io
       IMAGE_REPOSITORY: scrolith/kyc-frontend-candidate
-      SOURCE_ROOT_SHA: a54e57f7d5cc279fbf817241edaf004bfa78b500
+      SOURCE_ROOT_SHA: 8d3db0a51fde581bd29b99724433ba87adef9f64
       SOURCE_FRONTEND_SHA: 48d807666e4d59477e931c5452dd6f80a8f9740f
 
     defaults:
@@ -36,7 +36,7 @@ jobs:
       - name: Check out the exact approved source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: a54e57f7d5cc279fbf817241edaf004bfa78b500
+          ref: 8d3db0a51fde581bd29b99724433ba87adef9f64
           path: source
           fetch-depth: 0
           submodules: false
@@ -151,7 +151,7 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:kyc-${{ github.run_id }}-${{ github.run_attempt }}-a54e57f7
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:kyc-${{ github.run_id }}-${{ github.run_attempt }}-8d3db0a5
           build-args: |
             VITE_API_URL=https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io/api
             VITE_BACKEND_URL=https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io
@@ -159,7 +159,14 @@ jobs:
             VITE_PUBLIC_APP_DOMAIN=kyc-candidate.invalid
             VITE_MESSAGES_TRACE_DEBUG=false
             VITE_INSTANT_GRAPH_ENABLED=false
-          metadata-file: ${{ runner.temp }}/kyc-candidate-evidence/build-metadata.json
+
+      - name: Save Buildx metadata
+        env:
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_METADATA"
+          printf '%s\n' "$BUILD_METADATA" > "$EVIDENCE_DIR/build-metadata.json"
 
       - name: Verify the immutable registry digest
         id: registry
