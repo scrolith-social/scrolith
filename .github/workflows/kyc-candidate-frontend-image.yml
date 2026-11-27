@@ -1,0 +1,250 @@
+name: KYC candidate frontend image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: kyc-candidate-frontend-image
+  cancel-in-progress: false
+
+jobs:
+  build-and-scan:
+    if: github.repository == 'scrolith-social/scrolith' && github.ref == 'refs/heads/main'
+    name: Build and scan pinned candidate frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment:
+      name: kyc-candidate-image
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      REGISTRY: scrolithkyccand20261126.azurecr.io
+      IMAGE_REPOSITORY: scrolith/kyc-frontend-candidate
+      SOURCE_ROOT_SHA: a54e57f7d5cc279fbf817241edaf004bfa78b500
+      SOURCE_FRONTEND_SHA: 48d807666e4d59477e931c5452dd6f80a8f9740f
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the exact approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: a54e57f7d5cc279fbf817241edaf004bfa78b500
+          path: source
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Verify source and initialize the pinned frontend
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/kyc-candidate-evidence"
+          actual_root="$(git rev-parse HEAD)"
+          test "$actual_root" = "$SOURCE_ROOT_SHA"
+          gitlink="$(git ls-tree "$SOURCE_ROOT_SHA" geezle | awk '$1 == "160000" { print $3 }')"
+          test "$gitlink" = "$SOURCE_FRONTEND_SHA"
+          git submodule update --init --depth 1 geezle
+          actual_frontend="$(git -C geezle rev-parse HEAD)"
+          test "$actual_frontend" = "$SOURCE_FRONTEND_SHA"
+          root_parent="$(git rev-parse "${SOURCE_ROOT_SHA}^1")"
+          dockerfile_sha256="$(sha256sum deploy/docker/frontend.Dockerfile | cut -c1-64)"
+          printf 'root_commit=%s\nroot_parent=%s\ngeezle_gitlink=%s\ngeezle_commit=%s\ndockerfile_sha256=%s\n' \
+            "$actual_root" "$root_parent" "$gitlink" "$actual_frontend" "$dockerfile_sha256" | tee "$RUNNER_TEMP/kyc-candidate-evidence/source-verification.txt"
+
+      - name: Prepare isolated runner evidence and Docker configuration
+        id: runner-state
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/kyc-candidate-evidence"
+          docker_config="$(mktemp -d "$RUNNER_TEMP/kyc-candidate-docker-config.XXXXXX")"
+          chmod 700 "$docker_config"
+          mkdir -p "$RUNNER_TEMP/kyc-candidate-trivy-cache-$GITHUB_RUN_ID"
+          printf 'EVIDENCE_DIR=%s\n' "$evidence_dir" >> "$GITHUB_ENV"
+          printf 'DOCKER_CONFIG=%s\n' "$docker_config" >> "$GITHUB_ENV"
+          printf 'TRIVY_CACHE_DIR=%s\n' "$RUNNER_TEMP/kyc-candidate-trivy-cache-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to the candidate registry with its existing AcrPush grant
+        env:
+          ACR_AAD_RESOURCE: https://containerregistry.azure.net
+        run: |
+          set -euo pipefail
+          set +x
+          test -n "$AZURE_TENANT_ID"
+          test "$REGISTRY" = "scrolithkyccand20261126.azurecr.io"
+          aad_access_token="$(az account get-access-token \
+            --resource "$ACR_AAD_RESOURCE" \
+            --query accessToken --output tsv)"
+          test -n "$aad_access_token"
+          export AAD_ACCESS_TOKEN="$aad_access_token"
+          unset aad_access_token
+          acr_refresh_token="$(python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          registry = os.environ["REGISTRY"]
+          body = urlencode({
+              "grant_type": "access_token",
+              "service": registry,
+              "tenant": os.environ["AZURE_TENANT_ID"],
+              "access_token": os.environ["AAD_ACCESS_TOKEN"],
+          }).encode("utf-8")
+          request = Request(
+              f"https://{registry}/oauth2/exchange",
+              data=body,
+              headers={"Content-Type": "application/x-www-form-urlencoded"},
+              method="POST",
+          )
+          try:
+              with urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+          except HTTPError as error:
+              print(f"ACR token exchange failed with HTTP {error.code}; response body omitted.", file=sys.stderr)
+              raise SystemExit(1)
+          except (URLError, TimeoutError) as error:
+              print(f"ACR token exchange failed ({type(error).__name__}); details omitted.", file=sys.stderr)
+              raise SystemExit(1)
+
+          token = payload.get("refresh_token")
+          if not isinstance(token, str) or not token:
+              print("ACR token exchange returned no refresh token.", file=sys.stderr)
+              raise SystemExit(1)
+          sys.stdout.write(token)
+          PY
+          )"
+          unset AAD_ACCESS_TOKEN
+          test -n "$acr_refresh_token"
+          printf '%s' "$acr_refresh_token" | docker login "$REGISTRY" \
+            --username 00000000-0000-0000-0000-000000000000 --password-stdin
+          unset acr_refresh_token
+
+      - name: Build and push the exact candidate frontend source
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./source
+          file: ./source/deploy/docker/frontend.Dockerfile
+          platforms: linux/amd64
+          pull: true
+          no-cache: true
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:kyc-${{ github.run_id }}-${{ github.run_attempt }}-a54e57f7
+          build-args: |
+            VITE_API_URL=https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io/api
+            VITE_BACKEND_URL=https://ca-kyc-pr179-api-cand.greenstone-a48e47cf.southeastasia.azurecontainerapps.io
+            VITE_SCROLITH_ENV=staging
+            VITE_PUBLIC_APP_DOMAIN=kyc-candidate.invalid
+            VITE_MESSAGES_TRACE_DEBUG=false
+            VITE_INSTANT_GRAPH_ENABLED=false
+          metadata-file: ${{ runner.temp }}/kyc-candidate-evidence/build-metadata.json
+
+      - name: Verify the immutable registry digest
+        id: registry
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_TAG: ${{ env.REGISTRY }}/${{ env.IMAGE_REPOSITORY }}:kyc-${{ github.run_id }}-${{ github.run_attempt }}-a54e57f7
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_DIGEST"
+          docker buildx imagetools inspect "$IMAGE_TAG" | tee "$EVIDENCE_DIR/registry-manifest-inspect.txt"
+          registry_digest="$(awk '$1 == "Digest:" { print $2; exit }' "$EVIDENCE_DIR/registry-manifest-inspect.txt")"
+          test -n "$registry_digest"
+          test "$registry_digest" = "$BUILD_DIGEST"
+          image_ref="$REGISTRY/$IMAGE_REPOSITORY@$registry_digest"
+          printf 'image_tag=%s\nimage_digest=%s\nimage_ref=%s\n' \
+            "$IMAGE_TAG" "$registry_digest" "$image_ref" | tee "$EVIDENCE_DIR/image-identity.txt"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+          printf 'source_root_sha=%s\n' "$SOURCE_ROOT_SHA" > "$EVIDENCE_DIR/build-evidence.txt"
+          printf 'source_frontend_sha=%s\n' "$SOURCE_FRONTEND_SHA" >> "$EVIDENCE_DIR/build-evidence.txt"
+          printf 'image_ref=%s\n' "$image_ref" >> "$EVIDENCE_DIR/build-evidence.txt"
+          printf 'workflow_run_id=%s\n' "$GITHUB_RUN_ID" >> "$EVIDENCE_DIR/build-evidence.txt"
+          printf 'workflow_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$EVIDENCE_DIR/build-evidence.txt"
+
+      - name: Install the pinned Trivy scanner
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241 # v0.2.0
+        with:
+          version: v0.76.2
+          cache: false
+
+      - name: Refresh Trivy vulnerability data
+        run: |
+          set -euo pipefail
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > "$EVIDENCE_DIR/trivy-db-download-started-utc.txt"
+          trivy --cache-dir "$TRIVY_CACHE_DIR" image --download-db-only \
+            2>&1 | tee "$EVIDENCE_DIR/trivy-db-update.log"
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > "$EVIDENCE_DIR/trivy-db-download-completed-utc.txt"
+          cp "$TRIVY_CACHE_DIR/db/metadata.json" "$EVIDENCE_DIR/trivy-db-metadata.json"
+          trivy --version | tee "$EVIDENCE_DIR/trivy-version.txt"
+          python3 - "$EVIDENCE_DIR/trivy-db-metadata.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if not metadata:
+              raise SystemExit("Trivy vulnerability database metadata is empty")
+          print(json.dumps(metadata, sort_keys=True, indent=2))
+          PY
+
+      - name: Scan the verified immutable image without suppressions
+        id: scan
+        env:
+          IMAGE_REF: ${{ steps.registry.outputs.image_ref }}
+        run: |
+          set -uo pipefail
+          test -n "$IMAGE_REF"
+          set +e
+          trivy --cache-dir "$TRIVY_CACHE_DIR" image \
+            --skip-db-update \
+            --timeout 30m \
+            --scanners vuln \
+            --ignorefile /dev/null \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 1 \
+            --format json \
+            --output "$EVIDENCE_DIR/trivy-image-report.json" \
+            "$IMAGE_REF" 2>&1 | tee "$EVIDENCE_DIR/trivy-image-scan.log"
+          scan_status="${PIPESTATUS[0]}"
+          printf '%s\n' "$scan_status" > "$EVIDENCE_DIR/trivy-scan-exit-code.txt"
+          exit "$scan_status"
+
+      - name: Upload raw scan and build evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kyc-candidate-frontend-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kyc-candidate-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove temporary registry login
+        if: always()
+        run: |
+          set +e
+          docker logout "$REGISTRY" >/dev/null 2>&1
+          if [[ -n "${DOCKER_CONFIG:-}" && "$DOCKER_CONFIG" == "$RUNNER_TEMP"/kyc-candidate-docker-config.* ]]; then
+            rm -f -- "$DOCKER_CONFIG/config.json"
+          fi
