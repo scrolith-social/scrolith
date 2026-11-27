@@ -1,5 +1,7 @@
 import express from 'express';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { createConcurrencyLimit } from '../middleware/concurrencyLimit';
+import { KYC_MAX_CONCURRENT_UPLOADS } from '../services/kyc/kyc.constants';
 import {
   getKycStatus,
   submitKyc,
@@ -15,6 +17,14 @@ import {
 
 const router = express.Router();
 
+// This gate must precede multer: KYC files are buffered in process memory.
+const kycUploadConcurrencyLimiter = createConcurrencyLimit({
+  max: KYC_MAX_CONCURRENT_UPLOADS,
+  shouldLimit: () => true,
+  message: 'KYC upload capacity is temporarily full; retry shortly',
+  retryAfterSeconds: 5
+});
+
 router.use(authMiddleware);
 
 router.get('/me', getKycStatus);
@@ -26,6 +36,7 @@ router.put('/:id', kycSubmitRateLimiter, updateKyc);
 router.post(
   '/uploads',
   kycUploadRateLimiter,
+  kycUploadConcurrencyLimiter,
   kycUploadMulterMiddleware,
   uploadKycSecureDocument
 );

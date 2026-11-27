@@ -9,6 +9,9 @@ param location string
 @description('Resource ID of the existing Container Apps environment.')
 param managedEnvironmentResourceId string
 
+@description('Exact existing custom-domain bindings for the API ingress; pass the current objects unchanged.')
+param apiCustomDomains array
+
 @description('ACR login server containing the reviewed API image.')
 param acrLoginServer string
 
@@ -62,7 +65,65 @@ param redisIdentityClientId string
 @description('Object ID used by the API Redis Entra integration.')
 param redisIdentityObjectId string
 
+@description('Name of the separate private scanner Container App. It must be in the same Container Apps environment as the API.')
+param scannerAppName string
+
+@description('Resource ID of the scanner UAMI. Grant it only AcrPull and access to the scanner TLS secrets.')
+param scannerIdentityResourceId string
+
+@description('Mirrored ClamAV repository in the reviewed ACR.')
+param clamAvImageRepository string
+
+@minLength(64)
+@maxLength(64)
+@description('Lowercase hexadecimal SHA-256 digest of the exact mirrored official ClamAV image.')
+param clamAvImageDigestHex string
+
+@description('Scanner TLS bridge repository in the reviewed ACR.')
+param scannerBridgeImageRepository string
+
+@minLength(64)
+@maxLength(64)
+@description('Lowercase hexadecimal SHA-256 digest of the reviewed scanner TLS bridge image.')
+param scannerBridgeImageDigestHex string
+
+@description('TLS DNS name present in the scanner bridge certificate SAN.')
+param scannerTlsServerName string
+
+@secure()
+@description('Versioned Key Vault URI for the scanner TLS server certificate (base64 PEM).')
+param scannerTlsServerCertSecretUri string
+
+@secure()
+@description('Versioned Key Vault URI for the scanner TLS server private key (base64 PEM).')
+param scannerTlsServerKeySecretUri string
+
+@secure()
+@description('Versioned Key Vault URI for the scanner client CA certificate (base64 PEM).')
+param scannerTlsClientCaSecretUri string
+
+@secure()
+@description('Versioned Key Vault URI for the API trust CA certificate (base64 PEM).')
+param apiTlsCaSecretUri string
+
+@secure()
+@description('Versioned Key Vault URI for the API mTLS client certificate (base64 PEM).')
+param apiTlsClientCertSecretUri string
+
+@secure()
+@description('Versioned Key Vault URI for the API mTLS client private key (base64 PEM).')
+param apiTlsClientKeySecretUri string
+
+@allowed([
+  'true'
+  'false'
+])
+@description('Exact existing SCROLITH_MONEY_MOVEMENT_ENABLED value on the API app; required so this ClamAV rollout preserves the current setting.')
+param moneyMovementEnabled string
+
 var apiImage = '${acrLoginServer}/${apiImageRepository}@sha256:${apiImageDigestHex}'
+var clamAvImage = '${acrLoginServer}/${clamAvImageRepository}@sha256:${clamAvImageDigestHex}'
+var scannerBridgeImage = '${acrLoginServer}/${scannerBridgeImageRepository}@sha256:${scannerBridgeImageDigestHex}'
 
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: apiAppName
@@ -84,6 +145,7 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 5000
         transport: 'auto'
         allowInsecure: false
+        customDomains: apiCustomDomains
       }
       registries: [
         {
@@ -105,6 +167,21 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'redis-url'
           keyVaultUrl: redisUrlSecretUri
+          identity: apiIdentityResourceId
+        }
+        {
+          name: 'clamav-client-ca'
+          keyVaultUrl: apiTlsCaSecretUri
+          identity: apiIdentityResourceId
+        }
+        {
+          name: 'clamav-client-certificate'
+          keyVaultUrl: apiTlsClientCertSecretUri
+          identity: apiIdentityResourceId
+        }
+        {
+          name: 'clamav-client-private-key'
+          keyVaultUrl: apiTlsClientKeySecretUri
           identity: apiIdentityResourceId
         }
       ]
@@ -163,6 +240,144 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DATABASE_URL', secretRef: 'runtime-database-url' }
             { name: 'JWT_SECRET', secretRef: 'jwt-signing-secret' }
             { name: 'REDIS_URL', secretRef: 'redis-url' }
+            { name: 'SCROLITH_MONEY_MOVEMENT_ENABLED', value: moneyMovementEnabled }
+            { name: 'CLAMAV_MODE', value: 'tcp_tls' }
+            { name: 'CLAMAV_HOST', value: scannerAppName }
+            { name: 'CLAMAV_PORT', value: '13310' }
+            { name: 'CLAMAV_TLS_SERVER_NAME', value: scannerTlsServerName }
+            { name: 'CLAMAV_TLS_CA_B64', secretRef: 'clamav-client-ca' }
+            { name: 'CLAMAV_TLS_CLIENT_CERT_B64', secretRef: 'clamav-client-certificate' }
+            { name: 'CLAMAV_TLS_CLIENT_KEY_B64', secretRef: 'clamav-client-private-key' }
+            { name: 'CLAMAV_FAIL_OPEN', value: 'false' }
+            { name: 'CLAMAV_TIMEOUT_MS', value: '15000' }
+            { name: 'CLAMAV_RETRIES', value: '1' }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 1
+      }
+    }
+  }
+}
+
+// The API and ClamAV no longer share an app replica. The scanner app remains
+// private to this environment and only exposes the mTLS bridge port; clamd is
+// bound to loopback and is never ingress-addressable.
+resource scannerApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: scannerAppName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${acrPullIdentityResourceId}': {}
+      '${scannerIdentityResourceId}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: managedEnvironmentResourceId
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: false
+        targetPort: 13310
+        exposedPort: 13310
+        transport: 'tcp'
+      }
+      registries: [
+        {
+          server: acrLoginServer
+          identity: acrPullIdentityResourceId
+        }
+      ]
+      secrets: [
+        {
+          name: 'scanner-server-certificate'
+          keyVaultUrl: scannerTlsServerCertSecretUri
+          identity: scannerIdentityResourceId
+        }
+        {
+          name: 'scanner-server-private-key'
+          keyVaultUrl: scannerTlsServerKeySecretUri
+          identity: scannerIdentityResourceId
+        }
+        {
+          name: 'scanner-client-ca'
+          keyVaultUrl: scannerTlsClientCaSecretUri
+          identity: scannerIdentityResourceId
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'clamav'
+          image: clamAvImage
+          resources: {
+            cpu: json('1.75')
+            memory: '3.5Gi'
+          }
+          env: [
+            { name: 'CLAMAV_NO_MILTERD', value: 'true' }
+            { name: 'CLAMD_CONF_TCPAddr', value: '127.0.0.1' }
+            { name: 'CLAMD_CONF_MaxThreads', value: '2' }
+            { name: 'CLAMD_CONF_MaxQueue', value: '4' }
+          ]
+        }
+        {
+          name: 'mtls-bridge'
+          image: scannerBridgeImage
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            { name: 'CLAMD_UPSTREAM_ADDRESS', value: '127.0.0.1:3310' }
+            { name: 'BRIDGE_TLS_ADDRESS', value: '0.0.0.0:13310' }
+            { name: 'BRIDGE_HEALTH_ADDRESS', value: '0.0.0.0:8080' }
+            { name: 'BRIDGE_MAX_CLIENTS', value: '4' }
+            { name: 'BRIDGE_MAX_INSTREAM_BYTES', value: '10485760' }
+            { name: 'BRIDGE_IDLE_TIMEOUT_MS', value: '45000' }
+            { name: 'BRIDGE_TLS_SERVER_CERT_B64', secretRef: 'scanner-server-certificate' }
+            { name: 'BRIDGE_TLS_SERVER_KEY_B64', secretRef: 'scanner-server-private-key' }
+            { name: 'BRIDGE_TLS_CLIENT_CA_B64', secretRef: 'scanner-client-ca' }
+          ]
+          probes: [
+            {
+              type: 'Startup'
+              httpGet: {
+                path: '/startupz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              initialDelaySeconds: 1
+              periodSeconds: 30
+              timeoutSeconds: 3
+              failureThreshold: 20
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/readyz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              periodSeconds: 10
+              timeoutSeconds: 3
+              failureThreshold: 3
+            }
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/healthz'
+                port: 8080
+                scheme: 'HTTP'
+              }
+              periodSeconds: 30
+              timeoutSeconds: 3
+              failureThreshold: 3
+            }
           ]
         }
       ]
@@ -175,3 +390,4 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
 }
 
 output apiContainerAppResourceId string = apiApp.id
+output scannerContainerAppResourceId string = scannerApp.id

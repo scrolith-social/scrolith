@@ -16,6 +16,8 @@ export const KYC_MAX_PIXELS = 40_000_000; // 40MP decompression-bomb bound
 export const KYC_MAX_DIMENSION = 10000;
 export const KYC_UPLOAD_RATE_WINDOW_MS = 15 * 60 * 1000;
 export const KYC_UPLOAD_RATE_MAX = 30;
+/** Per-replica bound applied before multer buffers a KYC upload in memory. */
+export const KYC_MAX_CONCURRENT_UPLOADS = 2;
 export const KYC_SUBMIT_RATE_WINDOW_MS = 15 * 60 * 1000;
 export const KYC_SUBMIT_RATE_MAX = 10;
 /** Abuse prevention default — not a legal lifetime cap. Owner may reconfigure. */
