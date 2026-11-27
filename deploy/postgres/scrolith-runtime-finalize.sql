@@ -72,6 +72,7 @@ REVOKE DELETE ON TABLE
   :"application_schema"."GcoinWallet",
   :"application_schema"."GcoinTransaction",
   :"application_schema"."GcoinConversionRequest",
+  :"application_schema"."Profile",
   :"application_schema"."WithdrawalRequest",
   :"application_schema"."Escrow",
   :"application_schema"."FxLock",
@@ -110,6 +111,7 @@ BEGIN
     'Transaction', 'Wallet', 'WalletFundingIntent', 'OrderPaymentIntent',
     'WithdrawalRequest', 'GcoinWallet', 'Order', 'Escrow',
     'GcoinConversionRequest', 'AdPayment', 'GcoinEarningEvent',
+    'Profile',
     'FoundingPartnerProgram', 'FoundingPartner',
     'FoundingPartnerEnrollmentPayment', 'FoundingPartnerProfitPeriod',
     'FoundingPartnerProfitSource', 'FoundingPartnerDistributionRun',
@@ -143,6 +145,7 @@ REVOKE UPDATE ON TABLE
   :"application_schema"."Order",
   :"application_schema"."Escrow",
   :"application_schema"."GcoinConversionRequest",
+  :"application_schema"."Profile",
   :"application_schema"."AdPayment",
   :"application_schema"."GcoinEarningEvent",
   :"application_schema"."FoundingPartnerProgram",
@@ -166,6 +169,16 @@ GRANT UPDATE ("data", "updatedAt")
   ON TABLE :"application_schema"."AppSetting" TO :"runtime_role";
 GRANT UPDATE ("data", "updatedBy", "updatedAt")
   ON TABLE :"application_schema"."HumanVerificationSettings" TO :"runtime_role";
+-- Profile edits are limited to updateUserProfile and the approved Scrolitha
+-- profile-advisor fields; identity and aggregate columns are intentionally excluded.
+GRANT UPDATE ("bio", "certifications", "city", "country", "countryCode",
+              "coverPhotoUrl", "dateOfBirth", "educationItems", "experienceItems",
+              "formattedAddress", "gender", "githubUrl", "hourlyRate", "introVideoUrl",
+              "languages", "latitude", "linkedinUrl", "location", "locationSource",
+              "longitude", "placeId", "portfolio", "portfolioUrl", "postalCode",
+              "region", "showBirthMonthDayPublic", "skills", "state", "title",
+              "updatedAt", "websiteUrl")
+  ON TABLE :"application_schema"."Profile" TO :"runtime_role";
 GRANT UPDATE ("balance", "pendingClearance", "escrowBalance", "frozen", "updatedAt")
   ON TABLE :"application_schema"."Wallet" TO :"runtime_role";
 GRANT UPDATE ("fxLockId", "status", "providerReferenceId", "providerCheckoutUrl", "providerPayload", "expiresAt", "updatedAt")
@@ -228,13 +241,22 @@ DECLARE
   protected_tables TEXT[] := ARRAY[
     'User', 'Order', 'Wallet', 'Transaction', 'WalletFundingIntent',
     'PaymentSettlement', 'OrderPaymentIntent', 'OrderPaymentSettlement',
-    'AdPayment', 'GcoinEarningEvent',
+    'AdPayment', 'GcoinEarningEvent', 'Profile',
     'GcoinWallet', 'GcoinTransaction', 'GcoinConversionRequest',
     'WithdrawalRequest', 'Escrow', 'FxLock', 'FoundingPartnerProgram',
     'FoundingPartner', 'FoundingPartnerEnrollmentPayment',
     'FoundingPartnerProfitPeriod', 'FoundingPartnerProfitSource',
     'FoundingPartnerDistributionRun', 'FoundingPartnerDistribution',
     'FoundingPartnerAuditLog'
+  ];
+  profile_update_columns TEXT[] := ARRAY[
+    'bio', 'certifications', 'city', 'country', 'countryCode',
+    'coverPhotoUrl', 'dateOfBirth', 'educationItems', 'experienceItems',
+    'formattedAddress', 'gender', 'githubUrl', 'hourlyRate', 'introVideoUrl',
+    'languages', 'latitude', 'linkedinUrl', 'location', 'locationSource',
+    'longitude', 'placeId', 'portfolio', 'portfolioUrl', 'postalCode',
+    'region', 'showBirthMonthDayPublic', 'skills', 'state', 'title',
+    'updatedAt', 'websiteUrl'
   ];
 BEGIN
   IF has_schema_privilege('scrolith_runtime', 'public', 'CREATE') THEN
@@ -246,6 +268,20 @@ BEGIN
      OR has_column_privilege('scrolith_runtime', 'public."AppSetting"', 'scope', 'UPDATE')
      OR has_column_privilege('scrolith_runtime', 'public."AppSetting"', 'id', 'UPDATE') THEN
     RAISE EXCEPTION 'runtime AppSetting UPDATE allowlist does not match supported config upserts';
+  END IF;
+  IF has_table_privilege('scrolith_runtime', 'public."Profile"', 'UPDATE')
+     OR EXISTS (
+       SELECT 1 FROM unnest(profile_update_columns) AS allowed(column_name)
+        WHERE NOT has_column_privilege('scrolith_runtime', 'public."Profile"', allowed.column_name, 'UPDATE')
+     )
+     OR EXISTS (
+       SELECT 1 FROM information_schema.columns AS profile_column
+        WHERE profile_column.table_schema = 'public'
+          AND profile_column.table_name = 'Profile'
+          AND has_column_privilege('scrolith_runtime', 'public."Profile"', profile_column.column_name, 'UPDATE')
+          AND NOT profile_column.column_name = ANY(profile_update_columns)
+     ) THEN
+    RAISE EXCEPTION 'runtime Profile UPDATE allowlist does not match the profile write paths';
   END IF;
   IF has_table_privilege('scrolith_runtime', 'public."HumanVerificationSettings"', 'UPDATE')
      OR NOT has_column_privilege('scrolith_runtime', 'public."HumanVerificationSettings"', 'data', 'UPDATE')

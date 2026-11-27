@@ -115,8 +115,17 @@ INSERT INTO "AppSetting" ("id", "scope", "data", "updatedAt") VALUES
 INSERT INTO "HumanVerificationSettings" ("id", "scope", "data", "updatedBy", "updatedAt") VALUES
   ('role-review-hv-setting-existing', 'role_review_hv_existing',
    '{"masterEnabled":false,"endpoints":{"signup":false}}'::jsonb, NULL, now());
+INSERT INTO "Profile" ("id", "userId", "title", "bio", "skills", "languages", "updatedAt")
+VALUES ('role-review-profile-a', 'role-review-user-a', 'before title', 'before bio', ARRAY[]::text[], ARRAY[]::text[], now());
 
 SET LOCAL ROLE scrolith_runtime;
+
+-- Exercise fields written by the authenticated profile endpoint and profile advisor.
+UPDATE "Profile"
+   SET "title" = 'synthetic updated title', "bio" = 'synthetic updated bio',
+       "skills" = ARRAY['synthetic-skill'], "portfolioUrl" = 'https://example.test/portfolio',
+       "updatedAt" = now()
+ WHERE "userId" = 'role-review-user-a';
 
 -- Durable auth-session operations: issue, revoke, and retention cleanup.
 INSERT INTO "AuthSession" ("id", "userId", "tokenIdHash", "expiresAt", "createdAt")
@@ -252,6 +261,10 @@ BEGIN
      OR (SELECT count(*) FROM "OrderPaymentSettlement"
        WHERE "provider" = 'synthetic' AND "providerReferenceId" = 'order-ref-created') <> 1
      OR (SELECT "isActive" FROM "User" WHERE "id" = 'role-review-user-a')
+     OR (SELECT "title" FROM "Profile" WHERE "userId" = 'role-review-user-a') <> 'synthetic updated title'
+     OR (SELECT "bio" FROM "Profile" WHERE "userId" = 'role-review-user-a') <> 'synthetic updated bio'
+     OR (SELECT "skills"[1] FROM "Profile" WHERE "userId" = 'role-review-user-a') <> 'synthetic-skill'
+     OR (SELECT "portfolioUrl" FROM "Profile" WHERE "userId" = 'role-review-user-a') <> 'https://example.test/portfolio'
      OR (SELECT "status"::text FROM "Transaction" WHERE "id" = 'role-review-transaction') <> 'COMPLETED'
       OR (SELECT "details"->>'reference' FROM "WithdrawalRequest" WHERE "id" = 'role-review-withdrawal') <> 'masked-fixture'
       OR (SELECT "status"::text FROM "Order" WHERE "id" = 'role-review-order-a') <> 'PAID'
@@ -277,6 +290,22 @@ DECLARE
   denied BOOLEAN;
   protected_table TEXT;
 BEGIN
+  denied := false;
+  BEGIN UPDATE "Profile" SET "userId" = 'role-review-user-b' WHERE "id" = 'role-review-profile-a';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed Profile ownership'; END IF;
+  denied := false;
+  BEGIN UPDATE "Profile" SET "rating" = 5 WHERE "id" = 'role-review-profile-a';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed Profile aggregate rating'; END IF;
+  denied := false;
+  BEGIN UPDATE "Profile" SET "id" = 'role-review-profile-id-tamper' WHERE "id" = 'role-review-profile-a';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime changed Profile identity'; END IF;
+  denied := false;
+  BEGIN DELETE FROM "Profile" WHERE "id" = 'role-review-profile-a';
+  EXCEPTION WHEN insufficient_privilege THEN denied := true; END;
+  IF NOT denied THEN RAISE EXCEPTION 'runtime deleted a retained Profile record'; END IF;
   denied := false;
   BEGIN UPDATE "Order" SET "amount" = 26 WHERE "id" = 'role-review-order-a';
   EXCEPTION WHEN insufficient_privilege THEN denied := true; END;

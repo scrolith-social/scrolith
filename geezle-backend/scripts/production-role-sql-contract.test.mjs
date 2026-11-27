@@ -29,7 +29,8 @@ test('production scripts have a separate explicit approval and exact target guar
     'scrolith-production-migration-init.sql',
     'scrolith-production-role-handoff.sql',
     'scrolith-production-runtime-finalize.sql',
-    'scrolith-production-runtime-enable.sql'
+    'scrolith-production-runtime-enable.sql',
+    'scrolith-production-user-language-preferences-rollback.sql'
   ];
   for (const name of names) {
     const sql = await readSql(name);
@@ -125,6 +126,39 @@ test('production finalizer loads the explicit reviewed grant policy and retains 
     .map((match) => match[1]);
   assert.doesNotMatch(finalizerDoBodies.join('\n'), /:'[A-Za-z_][A-Za-z0-9_]*'/,
     'psql variables are not interpolated inside dollar-quoted PL/pgSQL blocks');
+});
+
+test('User onboarding UPDATE grants are exact and have a guarded column-only rollback', async () => {
+  const grants = await readSql('scrolith-production-runtime-grants.sql');
+  const finalizer = await readSql('scrolith-production-runtime-finalize.sql');
+  const rollback = await readSql('scrolith-production-user-language-preferences-rollback.sql');
+  const userGrant = grants.match(/GRANT UPDATE \(([^)]*)\) ON TABLE :\"application_schema\"\.\"User\" TO :\"runtime_role\";/);
+  assert.ok(userGrant, 'production grants include one explicit User column UPDATE statement');
+  const granted = userGrant[1].split(',').map((column) => column.trim().replaceAll('\"', '')).sort();
+  const expected = [
+    'authSessionVersion', 'avatar', 'country', 'currency_preference_updated_at', 'email',
+    'followOnboardingCompletedAt', 'followOnboardingRequired', 'isActive', 'isOnline',
+    'isVerified', 'kycStatus', 'languagePreferencesConfirmed', 'languagePreferencesUpdatedAt',
+    'lastLoginAt', 'lastSeenAt', 'loginApprovalWaivedById', 'loginApprovalWaivedReason',
+    'loginApprovalWaivedUntil', 'name', 'passwordHash', 'preferred_currency',
+    'profilePhotoFileId', 'refreshToken', 'role', 'understoodLanguages', 'updatedAt', 'username'
+  ].sort();
+  assert.deepEqual(granted, expected);
+  assert.match(finalizer, /DO \$verify_user_update_allowlist\$/);
+  for (const field of ['languagePreferencesConfirmed', 'languagePreferencesUpdatedAt', 'understoodLanguages', 'followOnboardingRequired', 'followOnboardingCompletedAt', 'updatedAt']) {
+    assert.match(finalizer, new RegExp(`'${field}'`));
+  }
+  assert.match(finalizer, /has_table_privilege\('scrolith_runtime', 'public\.\"User\"', 'UPDATE'\)/);
+  assert.match(rollback, /\\ir scrolith-production-target-guard\.sql/);
+  assert.match(rollback, /current_user <> 'scrolith_migrator'/);
+  const revoked = rollback.match(/REVOKE UPDATE \(([^)]*)\)/)?.[1];
+  assert.ok(revoked);
+  assert.deepEqual(revoked.split(',').map((column) => column.trim().replaceAll('\"', '')).sort(), [
+    'languagePreferencesConfirmed', 'languagePreferencesUpdatedAt', 'understoodLanguages'
+  ].sort());
+  assert.match(rollback, /NOT has_column_privilege\('scrolith_runtime', 'public\.\"User\"', 'followOnboardingRequired', 'UPDATE'\)/);
+  assert.match(rollback, /NOT has_column_privilege\('scrolith_runtime', 'public\.\"User\"', 'followOnboardingCompletedAt', 'UPDATE'\)/);
+  assert.match(rollback, /NOT has_column_privilege\('scrolith_runtime', 'public\.\"User\"', 'updatedAt', 'UPDATE'\)/);
 });
 
 test('production operation inventory grants only reviewed financial field updates', async () => {
