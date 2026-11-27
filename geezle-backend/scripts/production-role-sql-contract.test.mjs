@@ -30,6 +30,7 @@ test('production scripts have a separate explicit approval and exact target guar
     'scrolith-production-role-handoff.sql',
     'scrolith-production-runtime-finalize.sql',
     'scrolith-production-runtime-enable.sql',
+    'scrolith-production-profile-update-rollback.sql',
     'scrolith-production-user-language-preferences-apply.sql',
     'scrolith-production-user-language-preferences-rollback.sql'
   ];
@@ -176,6 +177,62 @@ test('User onboarding UPDATE grants are exact and have a guarded column-only rol
     assert.doesNotMatch(sql, /ALTER ROLE|CREATE ROLE|CREATE TABLE|DROP TABLE|scrolith-production-runtime-finalize/,
       'existing-database increment must not bootstrap roles, change schema, or rerun first-launch finalization');
   }
+});
+
+test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically by the PG17 harness', async () => {
+  const grants = await readSql('scrolith-production-runtime-grants.sql');
+  const rollback = await readSql('scrolith-production-profile-update-rollback.sql');
+  const postgresHarness = await readFile(resolve(backendRoot, 'scripts', 'production-role-postgres17.test.mjs'), 'utf8');
+  const parseColumns = (sql, pattern, label) => {
+    const match = sql.match(pattern);
+    assert.ok(match, `${label} contains a quoted Profile UPDATE column list`);
+    return [...match[1].matchAll(/"([A-Za-z][A-Za-z0-9]*)"/g)].map((column) => column[1]);
+  };
+  const granted = parseColumns(
+    grants,
+    /GRANT UPDATE \(([^)]*)\)\s*ON TABLE :"application_schema"\."Profile" TO :"runtime_role";/,
+    'runtime grant policy'
+  );
+  const revoked = parseColumns(
+    rollback,
+    /REVOKE UPDATE \(([^)]*)\)\s*ON TABLE public\."Profile" FROM scrolith_runtime;/,
+    'guarded Profile rollback'
+  );
+  const rollbackAssertionColumn = rollback.match(
+    /has_column_privilege\('scrolith_runtime',\s*'public\."Profile"',\s*'([^']+)',\s*'UPDATE'\)/
+  )?.[1];
+
+  assert.equal(new Set(granted).size, granted.length, 'Profile grant list has no duplicate columns');
+  assert.equal(new Set(revoked).size, revoked.length, 'Profile rollback list has no duplicate columns');
+  assert.ok(granted.includes('updatedAt'), 'the source grant includes the pre-existing updatedAt permission');
+  assert.ok(revoked.includes(rollbackAssertionColumn), 'the rollback checks a column present in its SQL-derived revoke list');
+  assert.deepEqual(
+    [...granted].filter((column) => column !== 'updatedAt').sort(),
+    [...revoked].sort(),
+    'rollback revokes exactly the grant-policy columns other than the retained updatedAt grant'
+  );
+  assert.match(rollback, /\\ir scrolith-production-target-guard\.sql/);
+  assert.match(rollback, /set_config\('scrolith\.expected_source_commit', :'expected_source_commit'/);
+  assert.match(rollback, /BEGIN;[\s\S]*?current_user <> 'scrolith_migrator'[\s\S]*?source_commit = current_setting\('scrolith\.expected_source_commit'\)[\s\S]*?REVOKE UPDATE[\s\S]*?GRANT UPDATE \("updatedAt"\)[\s\S]*?COMMIT;/);
+  assert.match(rollback, /singleton AND finalized/);
+  assert.match(rollback, /has_table_privilege\('scrolith_runtime', 'public\."Profile"', 'UPDATE'\)/);
+  assert.match(rollback, /has_column_privilege\('scrolith_runtime', 'public\."Profile"', '[A-Za-z][A-Za-z0-9]*', 'UPDATE'\)/);
+  assert.match(rollback, /has_column_privilege\('scrolith_runtime', 'public\."Profile"', 'updatedAt', 'UPDATE'\)/);
+  assert.match(rollback, /has_table_privilege\('scrolith_runtime', 'public\."Profile"', 'DELETE'\)/);
+  assert.match(rollback, /has_table_privilege\('scrolith_runtime', 'public\."Profile"', 'TRUNCATE'\)/);
+  assert.doesNotMatch(rollback, /GRANT\s+UPDATE\s+ON\s+TABLE/i, 'rollback never grants table-wide UPDATE');
+  assert.doesNotMatch(rollback, /(?:DELETE|TRUNCATE)\s+ON\s+TABLE/i, 'rollback never changes delete or truncate access');
+
+  assert.match(postgresHarness, /'scrolith-production-profile-update-rollback\.sql'/);
+  assert.match(postgresHarness, /profileGrantedColumns[\s\S]*profileRevokedColumns/);
+  assert.match(postgresHarness, /reject Profile rollback with release SHA different from the finalized marker/);
+  assert.match(postgresHarness, /unexpected Profile table-wide UPDATE grant/);
+  assert.match(postgresHarness, /partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column/);
+  assert.match(postgresHarness, /failed table-wide ACL rollback made no partial Profile ACL changes/);
+  assert.match(postgresHarness, /rejected partial-ACL rollback made no partial Profile ACL changes/);
+  assert.match(postgresHarness, /execute the actual guarded Profile rollback on disposable PostgreSQL 17/);
+  assert.match(postgresHarness, /Profile rollback revoked exactly its SQL-derived UPDATE columns/);
+  assert.match(postgresHarness, /preserves User and all non-target public ACLs/);
 });
 
 test('existing-database inspection is read-only and reports only role, marker, ownership, and ACL metadata', async () => {
