@@ -64,3 +64,20 @@ test('deployment is restricted to manually authorized main runs and the protecte
   assert.match(deployJob, /environment:\s*\n      name:\s*production/);
   assert.doesNotMatch(buildJob, /\$\{\{\s*secrets\./);
 });
+
+test('production URL is deployment-only and the production job does not consume the check build output', () => {
+  assert.match(deployJob, /BACKEND_URL:\s*\$\{\{\s*secrets\.BACKEND_URL\s*\}\}/);
+  assert.doesNotMatch(buildJob, /upload-artifact/);
+  assert.doesNotMatch(deployJob, /download-artifact/);
+  assert.match(deployJob, /rsync[\s\S]*\.\/geezle-backend\//);
+  assert.match(deployJob, /npm ci --omit=dev/);
+  assert.doesNotMatch(deployJob, /npm run build/);
+});
+
+test('SSH deployment action is pinned to its verified upstream full commit SHA', () => {
+  assert.match(
+    deployJob,
+    /uses:\s*webfactory\/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555\s+# v0\.10\.0/,
+  );
+  assert.doesNotMatch(deployJob, /uses:\s*webfactory\/ssh-agent@v/);
+});
