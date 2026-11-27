@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const workflowUrl = new URL('../.github/workflows/ci-secrets.yml', import.meta.url);
 const workflow = await readFile(workflowUrl, 'utf8');
+const frontendApiSource = await readFile(new URL('../src/services/api.ts', import.meta.url), 'utf8');
 const lines = workflow.split(/\r?\n/);
 
 function topLevelJobRange(jobName) {
@@ -26,6 +27,12 @@ test('pull-request build has no secret-bearing environment or secret references'
   assert.doesNotMatch(beforeJobs, /^env:\s*$/m, 'workflow-level env can leak secrets to every job');
   assert.doesNotMatch(buildJob, /\$\{\{\s*secrets\./, 'build and PR-controlled scripts must receive no secrets');
   assert.doesNotMatch(buildJob, /\$\{\{\s*vars\./, 'build must not receive deployment configuration variables');
+  assert.deepEqual(
+    [...deployJob.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}/g)].map((match) => match[1]).sort(),
+    ['BACKEND_URL', 'DEPLOY_HOST', 'DEPLOY_HOST', 'DEPLOY_PATH', 'DEPLOY_PATH', 'DEPLOY_SSH_KEY', 'DEPLOY_USER', 'DEPLOY_USER'],
+    'deployment secrets must be scoped to the protected deploy job',
+  );
+  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.EMAIL_HOST\s*\}\}/, 'email reporting secret must not be exposed');
   assert.deepEqual(secretRefs.sort(), [
     'BACKEND_URL',
     'DEPLOY_HOST', 'DEPLOY_HOST',
@@ -66,7 +73,13 @@ test('deployment is restricted to manually authorized main runs and the protecte
 });
 
 test('production URL is deployment-only and the production job does not consume the check build output', () => {
+  assert.match(buildJob, /VITE_BACKEND_URL:\s*https:\/\/backend\.invalid/);
+  assert.match(buildJob, /BACKEND_URL:\s*https:\/\/backend\.invalid/);
+  assert.match(frontendApiSource, /vite\.VITE_BACKEND_URL/);
+  assert.match(frontendApiSource, /if\s*\(vite\.PROD\s*&&\s*!hasBackendEnv\)/);
+  assert.match(frontendApiSource, /throw new Error\('VITE_BACKEND_URL \(or VITE_API_URL\) must be set when building for production'/);
   assert.match(deployJob, /BACKEND_URL:\s*\$\{\{\s*secrets\.BACKEND_URL\s*\}\}/);
+  // This workflow deploys backend source only; its Vite check output must not be promoted.
   assert.doesNotMatch(buildJob, /upload-artifact/);
   assert.doesNotMatch(deployJob, /download-artifact/);
   assert.match(deployJob, /rsync[\s\S]*\.\/geezle-backend\//);
