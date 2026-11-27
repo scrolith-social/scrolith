@@ -17,8 +17,9 @@ import {
 import { buildScrolithaPath } from "../../utils/scrolithaLaunch";
 import { resolveAuthenticatedEntryPath } from "../../utils/authRedirect";
 import { PasskeyService, passkeySupport } from "../../services/passkeys";
+import { isPasskeyCancellation } from "../../services/passkeyAvailability";
 import RememberedProfilesPanel from "../auth/RememberedProfilesPanel";
-import type { RememberedProfile } from "../../services/rememberedProfiles";
+import { retainedProfileSwitcherEnabled, setRememberProfileConsent, type RememberedProfile } from "../../services/rememberedProfiles";
 
 type LoginApprovalState = { id: string; approvalToken: string; expiresAt?: string | null };
 
@@ -127,12 +128,16 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   const [passkeyLoading, setPasskeyLoading] = React.useState(false);
   const [signupLoading, setSignupLoading] = React.useState(false);
   const [loginError, setLoginError] = React.useState("");
+  const [rememberAccount, setRememberAccount] = React.useState(false);
+  const [loginTwoFactorChallenge, setLoginTwoFactorChallenge] = React.useState("");
+  const [loginTwoFactorCode, setLoginTwoFactorCode] = React.useState("");
   const [signupErrors, setSignupErrors] = React.useState<Record<string, string>>({});
   const [loginHvToken, setLoginHvToken] = React.useState<string | null>(null);
   const [loginHvRequired, setLoginHvRequired] = React.useState(true);
   const [signupHvToken, setSignupHvToken] = React.useState<string | null>(null);
   const [signupHvRequired, setSignupHvRequired] = React.useState(true);
   const [loginApproval, setLoginApproval] = React.useState<LoginApprovalState | null>(null);
+  const [loginApprovalSessionOnly, setLoginApprovalSessionOnly] = React.useState(false);
   const approvalStatusInFlightRef = React.useRef(false);
   const approvalExchangeInFlightRef = React.useRef(false);
   const embeddedModalSurface = hideStandaloneLinks;
@@ -143,19 +148,8 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
 
   const handleRememberedContinue = async (profile: RememberedProfile) => {
     setLoginError("");
-    try {
-      const { AuthService } = await import("../../services/authService");
-      const current = await AuthService.getCurrentUserWithStatus();
-      if (current.user && String(current.user.id) === profile.userId) {
-        window.location.assign(resolveAuthenticatedEntryPath(current.user as any));
-        return;
-      }
-      if (current.unauthorized) await AuthService.clearToken();
-    } catch {
-      // Fall through to the normal identity-aware login form.
-    }
-    setLoginError(`Continue as ${profile.displayName} requires a quick sign-in to confirm this account.`);
     setActiveTab("login");
+    await handlePasskeyLogin(profile.userId);
   };
 
   const handleUseAnotherProfile = async () => {
@@ -179,6 +173,10 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
   }, [content?.defaultTab, defaultTab]);
 
   const selectAuthTab = (tab: "login" | "signup") => {
+    if (tab === "signup") {
+      setRememberAccount(false);
+      setRememberProfileConsent(false);
+    }
     setLoginHvToken(null);
     setLoginHvRequired(true);
     setSignupHvToken(null);
@@ -225,7 +223,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
           approvalExchangeInFlightRef.current = true;
           setLoginLoading(true);
           const { AuthService } = await import("../../services/authService");
-          const exchanged = await AuthService.exchangeApprovedLogin(loginApproval.id, loginApproval.approvalToken);
+          const exchanged = await AuthService.exchangeApprovedLogin(loginApproval.id, loginApproval.approvalToken, { sessionOnly: loginApprovalSessionOnly });
           if (stopped) return;
           if (exchanged.success && exchanged.user) {
             window.dispatchEvent(new Event("scrolith:auth-changed"));
@@ -251,7 +249,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
     void pollApproval();
     const timer = window.setInterval(() => void pollApproval(), 3000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [loginApproval]);
+  }, [loginApproval, loginApprovalSessionOnly]);
 
   const socialConfig = authConfig?.social_auth ?? (authConfig as any)?.socialAuth;
   const signupContent = authConfig?.signup;
@@ -286,6 +284,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
       setLoginError("Please complete human verification to continue.");
       return;
     }
+    setRememberProfileConsent(rememberAccount);
     setLoginLoading(true);
     let approvalRequired = false;
     try {
@@ -293,6 +292,7 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
         humanVerificationToken: loginHvToken || undefined,
         onLoginApprovalRequired: (approval) => {
           approvalRequired = true;
+          setLoginApprovalSessionOnly(false);
           setLoginApproval(approval);
           setLoginError("");
         }
@@ -305,12 +305,33 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
     }
   };
 
-  const handlePasskeyLogin = async () => {
-    if (loginLoading || passkeyLoading || loginApproval) return;
+  const handlePasskeyLogin = async (expectedUserId?: string) => {
+    if (loginLoading || passkeyLoading || loginApproval || loginTwoFactorChallenge) return;
     setLoginError("");
+    if (loginHvRequired && !loginHvToken) {
+      setLoginError("Please complete human verification to continue.");
+      return;
+    }
+    setRememberProfileConsent(rememberAccount);
     setPasskeyLoading(true);
     try {
-      const result = await PasskeyService.authenticate(loginForm.email);
+      const result = await PasskeyService.authenticate(expectedUserId ? undefined : loginForm.email, {
+        humanVerificationToken: loginHvToken,
+        expectedUserId
+      });
+      if ("requires2FA" in result && result.requires2FA) {
+        if (!result.challengeToken) throw new Error("Authenticator verification could not be started. Please try signing in again.");
+        setLoginTwoFactorChallenge(result.challengeToken);
+        setLoginTwoFactorCode("");
+        return;
+      }
+      if ("requiresLoginApproval" in result && result.requiresLoginApproval) {
+        const approval = result.loginApproval;
+        if (!approval?.id || !approval?.approvalToken) throw new Error("The device approval request was incomplete. Please try signing in again.");
+        setLoginApprovalSessionOnly(true);
+        setLoginApproval({ id: String(approval.id), approvalToken: String(approval.approvalToken), expiresAt: approval.expiresAt || null });
+        return;
+      }
       window.dispatchEvent(new Event("scrolith:auth-changed"));
       window.location.assign(resolveAuthenticatedEntryPath(result.user as any));
     } catch (error: any) {
@@ -318,9 +339,38 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
         error,
         "Passkey sign-in was cancelled or could not be completed."
       );
-      if (!/cancel|abort|dismiss/i.test(message)) setLoginError(message);
+      if (!isPasskeyCancellation(error)) setLoginError(message);
     } finally {
       setPasskeyLoading(false);
+    }
+  };
+
+  const handlePasskeyTwoFactor = async () => {
+    if (!loginTwoFactorChallenge || !loginTwoFactorCode.trim() || loginLoading) return;
+    setLoginLoading(true);
+    setLoginError("");
+    try {
+      const { AuthService } = await import("../../services/authService");
+      const result = await AuthService.verify2FALogin(loginTwoFactorChallenge, loginTwoFactorCode.trim(), { sessionOnly: true });
+      if (result.requiresLoginApproval && result.loginApproval?.id && result.loginApproval.approvalToken) {
+        setLoginTwoFactorChallenge("");
+        setLoginTwoFactorCode("");
+        setLoginApprovalSessionOnly(true);
+        setLoginApproval({
+          id: String(result.loginApproval.id),
+          approvalToken: String(result.loginApproval.approvalToken),
+          expiresAt: result.loginApproval.expiresAt || null
+        });
+        return;
+      }
+      if (!result.success || !result.user) throw new Error(result.error || "Authenticator verification failed.");
+      setLoginTwoFactorChallenge("");
+      window.dispatchEvent(new Event("scrolith:auth-changed"));
+      window.location.assign(resolveAuthenticatedEntryPath(result.user as any));
+    } catch (error: any) {
+      setLoginError(error?.message || "Authenticator verification failed.");
+    } finally {
+      setLoginLoading(false);
     }
   };
 
@@ -418,29 +468,70 @@ export const GuestAuthCard: React.FC<GuestAuthCardProps> = ({
             onContinue={handleRememberedContinue}
             onUseAnother={handleUseAnotherProfile}
           />
+          {retainedProfileSwitcherEnabled() ? (
+            <label className="flex min-h-10 items-start gap-2 rounded-lg px-1 py-1 text-xs leading-5 text-slate-600">
+              <input
+                type="checkbox"
+                checked={rememberAccount}
+                onChange={(event) => {
+                  setRememberAccount(event.target.checked);
+                  setRememberProfileConsent(event.target.checked);
+                }}
+                className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>Remember this account on this device. Its name, photo, and a device-only identity reference are saved here; this does not keep you signed in.</span>
+            </label>
+          ) : null}
           {content?.enableSocialLogin !== false ? (
-            <AuthSocialButtons mode="login" config={socialConfig || undefined} redirectTo="/" />
+            <div onClickCapture={() => setRememberProfileConsent(rememberAccount)}>
+              <AuthSocialButtons mode="login" config={socialConfig || undefined} redirectTo="/" />
+            </div>
           ) : null}
           {passkeysEnabled ? (
             <div className="space-y-2">
               <button
                 type="button"
                 onClick={handlePasskeyLogin}
-                disabled={loginLoading || passkeyLoading || Boolean(loginApproval) || !passkeysAvailable}
+                disabled={loginLoading || passkeyLoading || Boolean(loginApproval) || Boolean(loginTwoFactorChallenge) || !passkeysAvailable}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-900 transition hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <KeyRound className="h-4 w-4" />
-                {passkeyLoading ? "Waiting for passkey..." : passkeysAvailable ? "Continue with a passkey" : "Passkey unavailable in this browser"}
+                {passkeyLoading ? "Waiting for passkey..." : passkeysAvailable ? "Sign in with a passkey" : "Passkey unavailable in this browser"}
               </button>
               <p className="text-center text-xs leading-5 text-slate-500">
                 {passkeysAvailable
-                  ? "Use a saved Scrolith passkey on this device. Enter your email first when you want to use a specific account. After password sign-in, open Settings > Security to save this account with a passkey."
+                  ? "Use a passkey saved on this device or in your password manager. Human Verification, authenticator checks, and new-device approval still apply when required."
                   : "Passkeys require a supported secure browser or the latest Scrolith mobile app. Password and social sign-in remain available."}
               </p>
             </div>
           ) : null}
           {loginError ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{loginError}</div>
+          ) : null}
+          {loginTwoFactorChallenge ? (
+            <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4" aria-label="Authenticator verification">
+              <p className="text-sm font-semibold text-amber-950">Complete authenticator verification</p>
+              <label className="block text-xs font-semibold text-amber-900">
+                Authenticator or backup code
+                <input
+                  type="text"
+                  inputMode="text"
+                  autoComplete="one-time-code"
+                  value={loginTwoFactorCode}
+                  onChange={(event) => setLoginTwoFactorCode(event.target.value)}
+                  maxLength={32}
+                  className="mt-1 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => void handlePasskeyTwoFactor()} disabled={loginLoading || !loginTwoFactorCode.trim()} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-60">
+                  {loginLoading ? "Verifying..." : "Verify and continue"}
+                </button>
+                <button type="button" onClick={() => { setLoginTwoFactorChallenge(""); setLoginTwoFactorCode(""); setLoginError(""); }} disabled={loginLoading} className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 disabled:opacity-60">
+                  Cancel
+                </button>
+              </div>
+            </div>
           ) : null}
           {loginApproval ? (
             <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 shadow-sm">

@@ -4,6 +4,8 @@ import api from './api';
 import { tokenStore } from './tokenStore';
 import type { User } from '../types';
 import { rememberAuthenticatedProfile } from './rememberedProfiles';
+import { getDeviceMetadata } from './deviceSecurity';
+import { isPasskeyBrowserAvailable } from './passkeyAvailability';
 
 export type PasskeyRecord = {
   id: string;
@@ -18,9 +20,10 @@ export type PasskeyRecord = {
 const isEnabled = () => String(import.meta.env.VITE_PASSKEYS_ENABLED || '').toLowerCase() === 'true';
 const browserSupportsPasskeys = () =>
   typeof window !== 'undefined' &&
-  typeof window.PublicKeyCredential !== 'undefined' &&
-  typeof navigator !== 'undefined' &&
-  (window.isSecureContext !== false);
+  isPasskeyBrowserAvailable({
+    publicKeyCredentialAvailable: typeof window.PublicKeyCredential !== 'undefined',
+    secureContext: typeof navigator !== 'undefined' && window.isSecureContext === true
+  });
 
 const unwrap = <T,>(response: any): T => {
   if (response?.data?.data !== undefined) return response.data.data as T;
@@ -60,11 +63,15 @@ export const PasskeyService = {
     return true;
   },
 
-  async authenticate(email?: string) {
+  async authenticate(email?: string, options: { humanVerificationToken?: string | null; expectedUserId?: string } = {}) {
     if (!passkeySupport.available()) throw new Error('Passkeys are not enabled on this device.');
     const normalizedEmail = String(email || '').trim().toLowerCase();
+    const device = await getDeviceMetadata();
     const optionsResponse = await api.post('/auth/passkeys/authentication/options', {
       platform: 'web',
+      device,
+      humanVerificationToken: options.humanVerificationToken || undefined,
+      expectedUserId: options.expectedUserId || undefined,
       ...(normalizedEmail ? { email: normalizedEmail } : {})
     });
     const optionsPayload = {
@@ -77,13 +84,30 @@ export const PasskeyService = {
     const verifiedResponse = await api.post('/auth/passkeys/authentication/verify', {
       challengeId: optionsPayload.challengeId,
       response: credential,
-      platform: 'web',
+      platform: 'web'
     });
     const payload = verifiedResponse?.data || {};
+    if (payload?.requires2FA || payload?.code === '2FA_REQUIRED') {
+      return {
+        requires2FA: true as const,
+        challengeToken: String(payload?.challengeToken || payload?.challenge_token || ''),
+        message: String(payload?.message || 'Authenticator verification is required.')
+      };
+    }
+    if (payload?.requiresLoginApproval || payload?.code === 'LOGIN_APPROVAL_REQUIRED') {
+      return {
+        requiresLoginApproval: true as const,
+        loginApproval: payload?.loginApproval || payload?.login_approval,
+        message: String(payload?.message || 'Approve this login from an existing trusted session.')
+      };
+    }
     const user = payload?.user as User | undefined;
     const token = payload?.token || payload?.accessToken;
     if (!user || !token) throw new Error('Passkey sign-in did not return a valid session.');
-    await tokenStore.set(token);
+    if (options.expectedUserId && String(user.id) !== options.expectedUserId) {
+      throw new Error('The authenticated account did not match the selected account.');
+    }
+    await tokenStore.setSessionOnly(token);
     api.defaults.headers.common.Authorization = `Bearer ${token}`;
     try {
       localStorage.setItem('user', JSON.stringify(user));
@@ -103,8 +127,10 @@ export const PasskeyService = {
     await api.patch(`/auth/passkeys/${encodeURIComponent(id)}`, { label: label.trim() });
   },
 
-  async revoke(id: string) {
-    await api.delete(`/auth/passkeys/${encodeURIComponent(id)}`);
+  async revoke(id: string, currentPassword?: string) {
+    await api.delete(`/auth/passkeys/${encodeURIComponent(id)}`, {
+      data: { currentPassword: currentPassword || undefined }
+    });
   },
 
   getErrorMessage(error: unknown, fallback = 'Passkey operation failed.') {

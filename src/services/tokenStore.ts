@@ -63,15 +63,19 @@ const clearCookie = () => {
 
 const safeGet = (key: string): string | null => {
   try {
-    return localStorage.getItem(key);
+    const sessionValue = sessionStorage.getItem(key);
+    if (sessionValue) return sessionValue;
   } catch {}
   try {
-    return sessionStorage.getItem(key);
+    return localStorage.getItem(key);
   } catch {}
   return null;
 };
 
 const safeSet = (key: string, value: string) => {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
   try {
     localStorage.setItem(key, value);
     return;
@@ -141,6 +145,19 @@ export const tokenStore = {
       } catch {
         // If the native Preferences plugin isn't available, keep in memory.
       }
+    }
+  },
+  async setSessionOnly(token: string): Promise<void> {
+    memoryToken = token;
+    try {
+      sessionStorage.setItem(tokenKey, token);
+    } catch {
+      // Keep the token in memory for this page lifetime if session storage is unavailable.
+    }
+    try {
+      localStorage.removeItem(tokenKey);
+    } catch {
+      // Never copy a passkey token into persistent storage as a fallback.
     }
   },
   async clear(): Promise<void> {

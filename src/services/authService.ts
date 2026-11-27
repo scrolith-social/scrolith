@@ -175,7 +175,7 @@ class AuthService {
     }
   }
 
-  static async exchangeApprovedLogin(attemptId: string, approvalToken: string) {
+  static async exchangeApprovedLogin(attemptId: string, approvalToken: string, options: { sessionOnly?: boolean } = {}) {
     try {
       const { DeviceSecurityService, traceDeviceSecurity } = await loadDeviceSecurity();
       traceDeviceSecurity('approval_exchange_started', { exchangeAttempted: true });
@@ -183,7 +183,8 @@ class AuthService {
       if (payload?.token && payload?.user) {
         const user = normalizeUser(payload.user);
         if (user) {
-          await tokenStore.set(payload.token);
+          if (options.sessionOnly) await tokenStore.setSessionOnly(payload.token);
+          else await tokenStore.set(payload.token);
           api.defaults.headers.common.Authorization = `Bearer ${payload.token}`;
           try { localStorage.setItem('user', JSON.stringify(user)); } catch {}
           rememberAuthenticatedProfile(user);
@@ -196,7 +197,7 @@ class AuthService {
     }
   }
 
-  static async verify2FALogin(challengeToken: string, code: string) {
+  static async verify2FALogin(challengeToken: string, code: string, options: { sessionOnly?: boolean } = {}) {
     try {
       const response = await withAuthRequestTimeout(
         api.post(
@@ -207,10 +208,20 @@ class AuthService {
         '2FA verification timed out. Please try again.'
       );
       const payload = extractAuthPayload(response);
+      if (payload?.requiresLoginApproval || payload?.code === 'LOGIN_APPROVAL_REQUIRED') {
+        return {
+          success: false,
+          requiresLoginApproval: true,
+          loginApproval: payload.loginApproval,
+          code: payload.code,
+          error: payload.message || 'Approve this login from an existing trusted session.'
+        };
+      }
       if (payload?.token && payload?.user) {
         const user = normalizeUser(payload.user);
         if (user) {
-          await tokenStore.set(payload.token);
+          if (options.sessionOnly) await tokenStore.setSessionOnly(payload.token);
+          else await tokenStore.set(payload.token);
           api.defaults.headers.common.Authorization = `Bearer ${payload.token}`;
           try {
             localStorage.setItem('user', JSON.stringify(user));
