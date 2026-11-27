@@ -234,6 +234,14 @@ test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically 
   assert.match(postgresHarness, /execute the actual guarded Profile rollback on disposable PostgreSQL 17/);
   assert.match(postgresHarness, /Profile rollback revoked exactly its SQL-derived UPDATE columns/);
   assert.match(postgresHarness, /preserves User and all non-target public ACLs/);
+  assert.match(postgresHarness, /const profileAclFingerprintSql = `[\s\S]*?aclexplode\(COALESCE\([\s\S]*?acldefault\('S', obj\.relowner\)/,
+    'Profile ACL snapshot expands effective ACL entries, including implicit defaults');
+  assert.match(postgresHarness, /const profilePreservedAclFingerprintSql = `[\s\S]*?aclexplode\(COALESCE\([\s\S]*?acldefault\('S', obj\.relowner\)/,
+    'preserved relation/column ACL snapshot compares semantic entries, not catalog serialization');
+  assert.match(postgresHarness, /SELECT string_agg\(att\.attnum::text \|\| ':' \|\| att\.attname::text[\s\S]*?FROM pg_attribute att/,
+    'Profile column ACL snapshot includes the identity of each column');
+  assert.doesNotMatch(postgresHarness, /(?:relacl|attacl)::text/,
+    'ACL rollback assertions do not depend on equivalent ACL array text representations');
 });
 
 test('existing-database inspection is read-only and reports only role, marker, ownership, and ACL metadata', async () => {

@@ -505,14 +505,29 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
              has_table_privilege('scrolith_runtime','public."Profile"','TRUNCATE')::text || ':' ||
              has_column_privilege('scrolith_runtime','public."Profile"','updatedAt','UPDATE')::text;
     `;
-    const profileRawAclFingerprintSql = `
+    const profileAclFingerprintSql = `
       SELECT md5(
-        COALESCE((SELECT relacl::text FROM pg_class WHERE oid='public."Profile"'::regclass), '<null>') || '/' ||
-        COALESCE((SELECT string_agg(attribute.attnum::text || ':' || attribute.attname::text || ':' ||
-                                    COALESCE(attribute.attacl::text, '<null>'), '|' ORDER BY attribute.attnum)
-                    FROM pg_attribute attribute
-                   WHERE attribute.attrelid='public."Profile"'::regclass
-                     AND attribute.attnum > 0 AND NOT attribute.attisdropped), '')
+        COALESCE((
+          SELECT string_agg(acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_class obj
+            CROSS JOIN LATERAL aclexplode(COALESCE(
+              obj.relacl,
+              CASE WHEN obj.relkind='S' THEN acldefault('S', obj.relowner)
+                   ELSE acldefault('r', obj.relowner) END
+            )) acl
+           WHERE obj.oid='public."Profile"'::regclass
+        ), '') || '/' || COALESCE((
+          SELECT string_agg(att.attnum::text || ':' || att.attname::text || ':' ||
+                   acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY att.attnum, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_attribute att
+            CROSS JOIN LATERAL aclexplode(COALESCE(att.attacl, '{}'::aclitem[])) acl
+           WHERE att.attrelid='public."Profile"'::regclass
+             AND att.attnum > 0 AND NOT att.attisdropped
+        ), '')
       );
     `;
     const profilePreservedAclFingerprintSql = `
@@ -523,17 +538,25 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
             FROM pg_namespace ns
            WHERE ns.nspname='public'
         ), '') || '/' || COALESCE((
-          SELECT string_agg(obj.relname || ':' || COALESCE(obj.relacl::text, '<null>'), '|'
-                   ORDER BY obj.relname)
+          SELECT string_agg(obj.relname || ':' || acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY obj.relname, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
             FROM pg_class obj
             JOIN pg_namespace ns ON ns.oid=obj.relnamespace
+            CROSS JOIN LATERAL aclexplode(COALESCE(
+              obj.relacl,
+              CASE WHEN obj.relkind='S' THEN acldefault('S', obj.relowner)
+                   ELSE acldefault('r', obj.relowner) END
+            )) acl
            WHERE ns.nspname='public'
         ), '') || '/' || COALESCE((
-          SELECT string_agg(obj.relname || '.' || att.attname || ':' ||
-                   COALESCE(att.attacl::text, '<null>'), '|' ORDER BY obj.relname, att.attnum)
+          SELECT string_agg(obj.relname || '.' || att.attname || ':' || acl.grantee::text || ':' ||
+                   acl.grantor::text || ':' || acl.privilege_type || ':' || acl.is_grantable::text,
+                   '|' ORDER BY obj.relname, att.attnum, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
             FROM pg_class obj
             JOIN pg_namespace ns ON ns.oid=obj.relnamespace
             JOIN pg_attribute att ON att.attrelid=obj.oid
+            CROSS JOIN LATERAL aclexplode(COALESCE(att.attacl, '{}'::aclitem[])) acl
            WHERE ns.nspname='public'
              AND att.attnum > 0 AND NOT att.attisdropped
              AND NOT (obj.relname='Profile' AND att.attname::text = ANY(${profileRollbackArray}))
@@ -544,7 +567,7 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     assert.equal(initialProfileUpdateColumns, [...profileGrantedColumns].sort().join(','));
     const initialProfileTableState = query('verify Profile table-level UPDATE/DELETE/TRUNCATE are denied and updatedAt remains allowed before rollback', 'synthetic_bootstrap_admin', profileTableAclStateSql);
     assert.equal(initialProfileTableState, 'false:false:false:true');
-    const initialProfileRawAcl = query('capture raw disposable Profile ACL before rollback', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql);
+    const initialProfileAcl = query('capture canonical disposable Profile ACL before rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
     const preservedAclBeforeProfileRollback = query('capture User and all non-target Profile/public ACLs before rollback', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql);
 
     const wrongProfileRelease = sourceSha === 'f'.repeat(40) ? 'e'.repeat(40) : 'f'.repeat(40);
@@ -553,40 +576,40 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
       '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
     ]), { expectFailure: true });
     assert.match(wrongMarkerRollback.output, /Profile rollback requires the finalized policy created by the declared release/);
-    assert.equal(query('verify mismatched Profile marker rejection made no raw ACL changes', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), initialProfileRawAcl);
+    assert.equal(query('verify mismatched Profile marker rejection made no Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
     assert.equal(query('verify mismatched Profile marker rejection preserved all unrelated privileges', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
 
     psql('inject an unexpected Profile table-wide UPDATE grant into the disposable database', 'scrolith_migrator', 'scrolith', `
       GRANT UPDATE ON TABLE public."Profile" TO scrolith_runtime;
     `);
-    const unexpectedTableGrantAcl = query('capture unexpected Profile table-wide ACL before rejected rollback', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql);
+    const unexpectedTableGrantAcl = query('capture unexpected Profile table-wide ACL before rejected rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
     const preservedAclDuringUnexpectedTableGrant = query('capture unrelated raw ACL state while the synthetic table grant is present', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql);
     const unexpectedTableGrantRollback = docker('reject Profile rollback when table-wide UPDATE remains after its column revokes', psqlArgs('scrolith_migrator', 'scrolith', [
       '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
     ]), { expectFailure: true });
     assert.match(unexpectedTableGrantRollback.output, /Profile rollback did not restore the prior narrowly scoped UPDATE state/);
-    assert.equal(query('verify failed table-wide ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), unexpectedTableGrantAcl);
+    assert.equal(query('verify failed table-wide ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), unexpectedTableGrantAcl);
     assert.equal(query('verify failed table-wide ACL rollback preserved User and unrelated ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclDuringUnexpectedTableGrant);
     psql('remove only the injected table-wide Profile UPDATE grant from the disposable database', 'scrolith_migrator', 'scrolith', `
       REVOKE UPDATE ON TABLE public."Profile" FROM scrolith_runtime;
     `);
-    assert.equal(query('verify synthetic table-wide Profile grant injection is fully removed', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), initialProfileRawAcl);
+    assert.equal(query('verify synthetic table-wide Profile grant injection is fully removed', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
     assert.equal(query('verify synthetic table-wide Profile grant cleanup restored unrelated raw ACL state', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
 
     psql('inject a partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column', 'scrolith_migrator', 'scrolith', `
       GRANT UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" TO PUBLIC;
     `);
-    const partialPublicProfileAcl = query('capture partial unexpected PUBLIC Profile ACL before rejected rollback', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql);
+    const partialPublicProfileAcl = query('capture partial unexpected PUBLIC Profile ACL before rejected rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
     const partialAclRollback = docker('reject Profile rollback when an unexpected partial PUBLIC column grant would survive', psqlArgs('scrolith_migrator', 'scrolith', [
       '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
     ]), { expectFailure: true });
     assert.match(partialAclRollback.output, /Profile rollback did not restore the prior narrowly scoped UPDATE state/);
-    assert.equal(query('verify rejected partial-ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), partialPublicProfileAcl);
+    assert.equal(query('verify rejected partial-ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), partialPublicProfileAcl);
     assert.equal(query('verify rejected partial-ACL rollback preserved User and all unrelated ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
     psql('remove only the injected PUBLIC Profile column grant from the disposable database', 'scrolith_migrator', 'scrolith', `
       REVOKE UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" FROM PUBLIC;
     `);
-    assert.equal(query('verify synthetic partial-ACL injection is fully removed', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), initialProfileRawAcl);
+    assert.equal(query('verify synthetic partial-ACL injection is fully removed', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
 
     psqlFile('execute the actual guarded Profile rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-profile-update-rollback.sql`, [
       ['expected_source_commit', sourceSha]
@@ -600,7 +623,7 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
       GRANT UPDATE (${profileIdentifierList}) ON TABLE public."Profile" TO scrolith_runtime;
     `);
     assert.equal(query('verify Profile ACL was restored exactly after the disposable rollback test', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
-    assert.equal(query('verify Profile ACL state was restored exactly after the disposable rollback test', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), initialProfileRawAcl);
+    assert.equal(query('verify Profile ACL state was restored exactly after the disposable rollback test', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
     resultSummary.profileRollback = 'the SQL-derived Profile allowlist was granted; wrong marker SHA, table-wide UPDATE, and an unexpected partial PUBLIC column grant were rejected with ACL transaction rollback; the actual guarded rollback revoked only the grant inventory minus updatedAt; User, updatedAt, and other public ACLs were unchanged; disposable Profile grants were restored';
 
     const repeatedFinalizer = docker('confirm first-launch full finalizer rejects an already initialized active database', psqlArgs('scrolith_migrator', 'scrolith', [
