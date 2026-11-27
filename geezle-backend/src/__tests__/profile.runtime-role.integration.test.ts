@@ -33,6 +33,7 @@ suite('authenticated profile save through the production server and runtime role
   let app: Express;
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const userId = `profile-runtime-${suffix}`;
+  const followeeId = `profile-runtime-followee-${suffix}`;
   let token = '';
 
   beforeAll(async () => {
@@ -46,9 +47,19 @@ suite('authenticated profile save through the production server and runtime role
         id: userId,
         email: `${userId}@example.invalid`,
         role: 'FREELANCER',
+        isActive: true,
+        followOnboardingRequired: true
+      }
+    });
+    await prisma.user.create({
+      data: {
+        id: followeeId,
+        email: `${followeeId}@example.invalid`,
+        role: 'FREELANCER',
         isActive: true
       }
     });
+    await prisma.userFollow.create({ data: { followerId: userId, followeeId } });
     token = await issueAuthSessionToken(userId);
   });
 
@@ -88,5 +99,82 @@ suite('authenticated profile save through the production server and runtime role
       bio: 'Disposable PostgreSQL runtime-role integration fixture',
       skills: ['synthetic-profile-test']
     });
+  });
+
+  test('language preference save and follow onboarding completion persist and reload under the narrow runtime role', async () => {
+    const auth = { Authorization: `Bearer ${token}` };
+    const privileges: Array<{
+      role_name: string;
+      table_update: boolean;
+      language_confirmed_update: boolean;
+      language_updated_at_update: boolean;
+      understood_languages_update: boolean;
+      onboarding_required_update: boolean;
+      onboarding_completed_at_update: boolean;
+      updated_at_update: boolean;
+      two_factor_secret_update: boolean;
+    }> = await prisma.$queryRawUnsafe(`
+      SELECT current_user AS role_name,
+             has_table_privilege(current_user, 'public.\"User\"', 'UPDATE') AS table_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'languagePreferencesConfirmed', 'UPDATE') AS language_confirmed_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'languagePreferencesUpdatedAt', 'UPDATE') AS language_updated_at_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'understoodLanguages', 'UPDATE') AS understood_languages_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'followOnboardingRequired', 'UPDATE') AS onboarding_required_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'followOnboardingCompletedAt', 'UPDATE') AS onboarding_completed_at_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'updatedAt', 'UPDATE') AS updated_at_update,
+             has_column_privilege(current_user, 'public.\"User\"', 'twoFactorSecret', 'UPDATE') AS two_factor_secret_update
+    `);
+    expect(privileges).toEqual([{
+      role_name: 'scrolith_runtime',
+      table_update: false,
+      language_confirmed_update: true,
+      language_updated_at_update: true,
+      understood_languages_update: true,
+      onboarding_required_update: true,
+      onboarding_completed_at_update: true,
+      updated_at_update: true,
+      two_factor_secret_update: false
+    }]);
+
+    const before = await request(app).get('/api/auth/follow-onboarding').set(auth);
+    expect(before.status).toBe(200);
+    expect(before.body.data.onboarding).toMatchObject({ required: true, followedCount: 1, canContinue: true });
+
+    const saved = await request(app)
+      .put('/api/auth/me/language-preferences')
+      .set(auth)
+      .send({ understoodLanguages: ['en'], confirm: true });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({
+      success: true,
+      data: { understoodLanguages: ['en'], languagePreferencesConfirmed: true }
+    });
+    expect(saved.body.data.languagePreferencesUpdatedAt).toEqual(expect.any(String));
+
+    const preferencesReload = await request(app).get('/api/auth/me/language-preferences').set(auth);
+    expect(preferencesReload.status).toBe(200);
+    expect(preferencesReload.body.data).toMatchObject({
+      understoodLanguages: ['en'],
+      languagePreferencesConfirmed: true,
+      languagePreferencesUpdatedAt: saved.body.data.languagePreferencesUpdatedAt
+    });
+
+    const completed = await request(app).post('/api/auth/follow-onboarding/complete').set(auth).send({});
+    expect(completed.status).toBe(200);
+    expect(completed.body.data.onboarding).toMatchObject({ required: false, followedCount: 1, canContinue: true });
+    expect(completed.body.data.onboarding.completedAt).toEqual(expect.any(String));
+
+    const onboardingReload = await request(app).get('/api/auth/follow-onboarding').set(auth);
+    expect(onboardingReload.status).toBe(200);
+    expect(onboardingReload.body.data.onboarding).toMatchObject({
+      required: false,
+      followedCount: 1,
+      canContinue: true,
+      completedAt: completed.body.data.onboarding.completedAt
+    });
+
+    await expect(prisma.$executeRawUnsafe(
+      `UPDATE public.\"User\" SET \"twoFactorSecret\" = NULL WHERE \"id\" = $1`, userId
+    )).rejects.toThrow(/permission denied/i);
   });
 });

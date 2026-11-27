@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -24,7 +25,8 @@ const scriptNames = [
   'scrolith-production-role-handoff.sql',
   'scrolith-production-runtime-finalize.sql',
   'scrolith-production-runtime-grants.sql',
-  'scrolith-production-runtime-enable.sql'
+  'scrolith-production-runtime-enable.sql',
+  'scrolith-production-user-language-preferences-rollback.sql'
 ];
 
 const redact = (value) => String(value)
@@ -309,9 +311,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     assert.equal(publicGrants, '0');
 
     const setupSql = `
-      INSERT INTO public."User" ("id","email","createdAt","updatedAt") VALUES
-        ('role-test-user-1','role-test-1@local.invalid',now(),now()),
-        ('role-test-user-2','role-test-2@local.invalid',now(),now());
+      INSERT INTO public."User" ("id","email","followOnboardingRequired","createdAt","updatedAt") VALUES
+        ('role-test-user-1','role-test-1@local.invalid',true,now(),now()),
+        ('role-test-user-2','role-test-2@local.invalid',false,now(),now());
       INSERT INTO public."Gig" ("id","title","slug","description","price","deliveryTime","userId","createdAt","updatedAt") VALUES
         ('role-test-linked-gig','Synthetic linked gig','role-test-linked-gig','Disposable role test gig',10,2,'role-test-user-1',now(),now()),
         ('role-test-unlinked-gig','Synthetic unlinked gig','role-test-unlinked-gig','Disposable role test gig',10,2,'role-test-user-1',now(),now());
@@ -339,16 +341,37 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     `;
     psql('runtime inserts supported synthetic account and representative financial rows', 'scrolith_runtime', 'scrolith', setupSql);
 
-    psql('runtime can execute supported balance, status, FX/provider, withdrawal-detail, Gcoin and AdPayment updates', 'scrolith_runtime', 'scrolith', `
+    psql('runtime can execute supported balance, status, FX/provider, withdrawal-detail, Gcoin, AdPayment, language-preference, and onboarding updates', 'scrolith_runtime', 'scrolith', `
       UPDATE public."Wallet" SET "balance"="balance"+1 WHERE "id"='role-test-wallet-1';
       UPDATE public."Transaction" SET "status"='COMPLETED', "description"='synthetic status update' WHERE "id"='role-test-transaction-1';
       UPDATE public."WalletFundingIntent" SET "status"="status", "fxLockId"=NULL WHERE "id"='role-test-funding-intent-1';
       UPDATE public."WithdrawalRequest" SET "details"="details", "status"="status" WHERE "id"='role-test-withdrawal-1';
       UPDATE public."GcoinWallet" SET "balance"="balance"+1 WHERE "id"='role-test-gcoin-wallet-1';
       UPDATE public."AdPayment" SET "amount"="amount", "currency"="currency", "status"="status" WHERE "id"='role-test-ad-payment-1';
+      UPDATE public."User" SET "understoodLanguages"=ARRAY['en'], "languagePreferencesConfirmed"=true, "languagePreferencesUpdatedAt"=now(), "updatedAt"=now() WHERE "id"='role-test-user-1';
+      UPDATE public."User" SET "followOnboardingRequired"=false, "followOnboardingCompletedAt"=now(), "updatedAt"=now() WHERE "id"='role-test-user-1';
       UPDATE public."OrderPaymentIntent" SET "status"="status", "fxLockId"="fxLockId" WHERE false;
       UPDATE public."GcoinEarningEvent" SET "reactionActive"="reactionActive", "reversalCount"="reversalCount" WHERE false;
     `);
+
+    const onboardingWrite = query('verify language preference and onboarding values persisted under runtime role', 'scrolith_runtime', `
+      SELECT array_to_string("understoodLanguages", ',') || ':' || "languagePreferencesConfirmed"::text || ':' ||
+             ("languagePreferencesUpdatedAt" IS NOT NULL)::text || ':' || "followOnboardingRequired"::text || ':' ||
+             ("followOnboardingCompletedAt" IS NOT NULL)::text
+        FROM public."User" WHERE "id"='role-test-user-1';
+    `);
+    assert.equal(onboardingWrite, 'en:true:true:false:true');
+    const onboardingPrivilegeState = query('assert exact User onboarding columns and no table-wide UPDATE', 'synthetic_bootstrap_admin', `
+      SELECT has_table_privilege('scrolith_runtime','public."User"','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingRequired','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingCompletedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','updatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','twoFactorSecret','UPDATE')::text;
+    `);
+    assert.equal(onboardingPrivilegeState, 'false:true:true:true:true:true:true:false');
 
     const linkedGigDelete = expectDenied('runtime cannot delete an order-linked gig or detach order history', `DELETE FROM public."Gig" WHERE "id"='role-test-linked-gig'`, /violates foreign key constraint|still referenced/i);
     assert.match(linkedGigDelete.output, /Order_gigId_fkey/i);
@@ -366,6 +389,7 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
       ['Transaction currency update is denied', `UPDATE public."Transaction" SET "currency"="currency" WHERE false`, /permission denied/i],
       ['Funding intent amount update is denied', `UPDATE public."WalletFundingIntent" SET "amount"="amount" WHERE false`, /permission denied/i],
       ['Funding intent currency update is denied', `UPDATE public."WalletFundingIntent" SET "currency"="currency" WHERE false`, /permission denied/i],
+      ['unapproved User security-field update is denied while narrow preference updates are allowed', `UPDATE public."User" SET "twoFactorSecret"=NULL WHERE "id"='role-test-user-1'`, /permission denied/i],
       ['Withdrawal amount update is denied', `UPDATE public."WithdrawalRequest" SET "amount"="amount" WHERE false`, /permission denied/i],
       ['Withdrawal owner update is denied', `UPDATE public."WithdrawalRequest" SET "userId"="userId" WHERE false`, /permission denied/i],
       ['Gcoin wallet owner update is denied', `UPDATE public."GcoinWallet" SET "userId"="userId" WHERE false`, /permission denied/i],
@@ -384,6 +408,34 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
       ['runtime cannot become the migrator', `SET ROLE scrolith_migrator`, /permission denied|cannot set role/i]
     ]) expectDenied(label, sql, expected);
 
+    psql('clone the finalized schema to a test-named database for actual authenticated HTTP regression', 'synthetic_bootstrap_admin', 'postgres', `
+      CREATE DATABASE scrolith_role_e2e TEMPLATE scrolith OWNER synthetic_bootstrap_admin;
+    `);
+    const httpEnv = {
+      ...isolatedEnv,
+      DATABASE_URL: `postgresql://scrolith_runtime@127.0.0.1:${hostPort}/scrolith_role_e2e?sslmode=disable`,
+      NODE_ENV: 'test',
+      APP_RUNTIME: 'test',
+      SCROLITH_ROLE_HTTP_TEST_APPROVED: 'true',
+      TEST_DB_PORT: String(hostPort),
+      TEST_DB_PROJECT: 'local-only',
+      TEST_DB_NAME: 'scrolith_role_e2e',
+      REDIS_TEST_MODE: 'local',
+      REDIS_RATE_LIMIT_FAIL_CLOSED: 'true',
+      ALLOW_DEV_AUTH_BYPASS: 'false',
+      DISABLE_BACKGROUND_WORKERS: 'true',
+      SCROLITH_MONEY_MOVEMENT_ENABLED: 'false',
+      EXTERNAL_PLATFORM_API_ENABLED: 'false',
+      SCROLITHA_PROVIDER: 'disabled',
+      UPLOAD_DRIVER: 'local',
+      JWT_SECRET: randomBytes(48).toString('base64url')
+    };
+    run('authenticated language-preference save, onboarding completion, reload, and denied-column HTTP regression on disposable cloned PG17 under scrolith_runtime', process.execPath, [
+      resolve(backendRoot, 'node_modules', 'jest', 'bin', 'jest.js'),
+      '--config', 'jest.config.cjs', '--runInBand', '--runTestsByPath',
+      'src/__tests__/profile.runtime-role.integration.test.ts', '--testTimeout=60000'
+    ], { cwd: backendRoot, env: httpEnv, timeout: 180000 });
+
     const finalMigrationState = query('record exact migration count, marker state, and effective roles', 'synthetic_bootstrap_admin', `
       SELECT (SELECT count(*)::text FROM public."_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL) || ':' ||
              (SELECT finalized::text FROM public.scrolith_runtime_policy_state WHERE singleton) || ':' ||
@@ -392,7 +444,32 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     `);
     assert.equal(finalMigrationState, '143:true:scrolith_backup=NOLOGIN,scrolith_migrator=NOLOGIN,scrolith_runtime=LOGIN');
     resultSummary.finalState = finalMigrationState;
-    resultSummary.runtimeOperations = 'synthetic inserts, required updates, financial field denial, direct and cascading-delete protection including restrictive Order-to-Gig retention, DDL/ledger denial passed';
+    resultSummary.runtimeOperations = 'synthetic inserts, language preference and follow-onboarding updates/reloads, exact User allowlist, forbidden security-column update, financial field denial, direct and cascading-delete protection including restrictive Order-to-Gig retention, DDL/ledger denial passed';
+
+    psql('temporarily enable migrator only inside disposable rollback test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator LOGIN;');
+    psqlFile('execute guarded language-preference rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-rollback.sql`, [
+      ['expected_source_commit', sourceSha]
+    ]);
+    psql('restore migrator NOLOGIN after disposable rollback test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator NOLOGIN;');
+    expectDenied('rollback removes the three language-preference UPDATE columns', `UPDATE public."User" SET "understoodLanguages"=ARRAY['en'], "languagePreferencesConfirmed"=true, "languagePreferencesUpdatedAt"=now() WHERE false`, /permission denied/i);
+    psql('rollback preserves onboarding and updatedAt UPDATE operations', 'scrolith_runtime', 'scrolith', `
+      UPDATE public."User" SET "followOnboardingRequired"="followOnboardingRequired",
+        "followOnboardingCompletedAt"="followOnboardingCompletedAt", "updatedAt"="updatedAt" WHERE false;
+    `);
+    const rollbackState = query('verify rollback revoked only the added fields and restored migrator NOLOGIN', 'synthetic_bootstrap_admin', `
+      SELECT has_table_privilege('scrolith_runtime','public."User"','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingRequired','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingCompletedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','updatedAt','UPDATE')::text || ':' ||
+             (SELECT CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END FROM pg_roles WHERE rolname='scrolith_migrator') || ':' ||
+             (SELECT CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END FROM pg_roles WHERE rolname='scrolith_runtime');
+    `);
+    assert.equal(rollbackState, 'false:false:false:false:true:true:true:NOLOGIN:LOGIN');
+    resultSummary.rollbackState = rollbackState;
+    resultSummary.rollbackOperations = 'guarded migration-role rollback completed; language columns denied; onboarding and updatedAt columns retained; migrator restored to NOLOGIN';
 
     const currentContainer = docker('verify task container label and image before cleanup', ['inspect', containerName, '--format', '{{index .Config.Labels "com.scrolith.validation.owner"}} {{.Image}}']);
     assert.match(currentContainer.output, /^production-db-role-pg17-20261121\s+sha256:/);

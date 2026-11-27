@@ -212,6 +212,37 @@ BEGIN
 END
 $verify_profile_update_allowlist$;
 
+DO $verify_user_update_allowlist$
+DECLARE
+  allowed_columns TEXT[] := ARRAY[
+    'authSessionVersion', 'avatar', 'country', 'currency_preference_updated_at',
+    'email', 'followOnboardingCompletedAt', 'followOnboardingRequired', 'isActive',
+    'isOnline', 'isVerified', 'kycStatus', 'languagePreferencesConfirmed',
+    'languagePreferencesUpdatedAt', 'lastLoginAt', 'lastSeenAt', 'loginApprovalWaivedById',
+    'loginApprovalWaivedReason', 'loginApprovalWaivedUntil', 'name', 'passwordHash',
+    'preferred_currency', 'profilePhotoFileId', 'refreshToken', 'role',
+    'understoodLanguages', 'updatedAt', 'username'
+  ];
+BEGIN
+  IF has_table_privilege('scrolith_runtime', 'public."User"', 'UPDATE')
+     OR EXISTS (
+       SELECT 1 FROM unnest(allowed_columns) AS allowed(column_name)
+        WHERE NOT has_column_privilege('scrolith_runtime', 'public."User"', allowed.column_name, 'UPDATE')
+     )
+     OR EXISTS (
+       SELECT 1 FROM information_schema.columns AS user_column
+        WHERE user_column.table_schema = 'public'
+          AND user_column.table_name = 'User'
+          AND has_column_privilege('scrolith_runtime', 'public."User"', user_column.column_name, 'UPDATE')
+          AND NOT user_column.column_name = ANY(allowed_columns)
+     )
+     OR has_table_privilege('scrolith_runtime', 'public."User"', 'DELETE')
+     OR has_table_privilege('scrolith_runtime', 'public."User"', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'User UPDATE allowlist or protected-table policy does not match reviewed application writes';
+  END IF;
+END
+$verify_user_update_allowlist$;
+
 -- Prisma inserts that use serial/identity defaults need sequence USAGE. Grant
 -- only sequences owned by a table receiving INSERT; never grant setval UPDATE.
 DO $runtime_sequence_grants$

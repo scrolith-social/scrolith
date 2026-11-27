@@ -140,6 +140,14 @@ jobs:
       - name: Run dependency security gate
         run: npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high
 
+      - name: Verify production runtime role with disposable PostgreSQL 17
+        env:
+          SCROLITH_RUN_PRODUCTION_ROLE_PG17: '1'
+          SCROLITH_ROLE_TEST_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          SCROLITH_PG17_TEST_IMAGE: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
+          SCROLITH_ROLE_VALIDATION_EVIDENCE_DIR: ${{ runner.temp }}/scrolith-role-pg17-evidence
+        run: node --test --test-reporter=spec scripts/production-role-postgres17.test.mjs
+
       - name: Install pinned frontend dependencies for authenticated browser validation
         working-directory: geezle
         run: npm ci --registry=https://registry.npmjs.org --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --no-audit --no-fund
