@@ -226,6 +226,7 @@ test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically 
   assert.match(postgresHarness, /'scrolith-production-profile-update-rollback\.sql'/);
   assert.match(postgresHarness, /profileGrantedColumns[\s\S]*profileRevokedColumns/);
   assert.match(postgresHarness, /reject Profile rollback with release SHA different from the finalized marker/);
+  assert.match(postgresHarness, /docker\('reject Profile rollback with release SHA different from the finalized marker'[\s\S]*?\{ expectFailure: true \}/);
   assert.match(postgresHarness, /unexpected Profile table-wide UPDATE grant/);
   assert.match(postgresHarness, /partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column/);
   assert.match(postgresHarness, /failed table-wide ACL rollback made no partial Profile ACL changes/);

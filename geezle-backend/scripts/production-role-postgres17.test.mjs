@@ -548,9 +548,10 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     const preservedAclBeforeProfileRollback = query('capture User and all non-target Profile/public ACLs before rollback', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql);
 
     const wrongProfileRelease = sourceSha === 'f'.repeat(40) ? 'e'.repeat(40) : 'f'.repeat(40);
-    const wrongMarkerRollback = psqlFile('reject Profile rollback with release SHA different from the finalized marker', 'scrolith_migrator', `${normalDir}/scrolith-production-profile-update-rollback.sql`, [
-      ['expected_source_commit', wrongProfileRelease]
-    ]);
+    const wrongMarkerRollback = docker('reject Profile rollback with release SHA different from the finalized marker', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', `expected_source_commit=${wrongProfileRelease}`,
+      '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
+    ]), { expectFailure: true });
     assert.match(wrongMarkerRollback.output, /Profile rollback requires the finalized policy created by the declared release/);
     assert.equal(query('verify mismatched Profile marker rejection made no raw ACL changes', 'synthetic_bootstrap_admin', profileRawAclFingerprintSql), initialProfileRawAcl);
     assert.equal(query('verify mismatched Profile marker rejection preserved all unrelated privileges', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
