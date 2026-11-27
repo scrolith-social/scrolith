@@ -231,6 +231,10 @@ test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically 
   assert.match(postgresHarness, /partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column/);
   assert.match(postgresHarness, /failed table-wide ACL rollback made no partial Profile ACL changes/);
   assert.match(postgresHarness, /rejected partial-ACL rollback made no partial Profile ACL changes/);
+  assert.match(postgresHarness, /table-wide Profile grant cleanup restored the exact UPDATE-column allowlist/);
+  assert.match(postgresHarness, /partial PUBLIC grant cleanup restored the exact Profile UPDATE-column allowlist/);
+  assert.match(postgresHarness, /WHERE ns\.nspname='public' AND obj\.relname <> 'Profile'/,
+    'non-target relation ACL snapshot excludes Profile relation ACL mutated only by fixture grant/revoke cleanup');
   assert.match(postgresHarness, /execute the actual guarded Profile rollback on disposable PostgreSQL 17/);
   assert.match(postgresHarness, /Profile rollback revoked exactly its SQL-derived UPDATE columns/);
   assert.match(postgresHarness, /preserves User and all non-target public ACLs/);

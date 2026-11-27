@@ -550,7 +550,7 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
               CASE WHEN obj.relkind='S' THEN acldefault('S', obj.relowner)
                    ELSE acldefault('r', obj.relowner) END
             )) acl
-           WHERE ns.nspname='public'
+           WHERE ns.nspname='public' AND obj.relname <> 'Profile'
         ), '') || '/' || COALESCE((
           SELECT string_agg(obj.relname || '.' || att.attname || ':' || acl.grantee::text || ':' ||
                    acl.grantor::text || ':' || acl.privilege_type || ':' || acl.is_grantable::text,
@@ -597,8 +597,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     psql('remove only the injected table-wide Profile UPDATE grant from the disposable database', 'scrolith_migrator', 'scrolith', `
       REVOKE UPDATE ON TABLE public."Profile" FROM scrolith_runtime;
     `);
-    assert.equal(query('verify synthetic table-wide Profile grant injection is fully removed', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
-    assert.equal(query('verify synthetic table-wide Profile grant cleanup restored unrelated raw ACL state', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+    assert.equal(query('verify table-wide Profile grant cleanup restored the exact UPDATE-column allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
+    assert.equal(query('verify table-wide Profile grant cleanup restored denied table privileges and retained updatedAt', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
+    assert.equal(query('verify table-wide Profile grant cleanup preserved User and non-target ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
 
     psql('inject a partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column', 'scrolith_migrator', 'scrolith', `
       GRANT UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" TO PUBLIC;
@@ -613,7 +614,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     psql('remove only the injected PUBLIC Profile column grant from the disposable database', 'scrolith_migrator', 'scrolith', `
       REVOKE UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" FROM PUBLIC;
     `);
-    assert.equal(query('verify synthetic partial-ACL injection is fully removed', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
+    assert.equal(query('verify partial PUBLIC grant cleanup restored the exact Profile UPDATE-column allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
+    assert.equal(query('verify partial PUBLIC grant cleanup restored denied table privileges and retained updatedAt', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
+    assert.equal(query('verify partial PUBLIC grant cleanup preserved User and non-target ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
 
     psqlFile('execute the actual guarded Profile rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-profile-update-rollback.sql`, [
       ['expected_source_commit', sourceSha]
