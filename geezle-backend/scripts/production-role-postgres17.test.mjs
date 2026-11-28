@@ -13,6 +13,8 @@ const repositoryRoot = resolve(backendRoot, '..');
 const postgresScripts = resolve(repositoryRoot, 'deploy', 'postgres');
 const defaultSourceSha = '15ca15c9b1ce462a8a140090cf45c0354d762ce6';
 const sourceSha = process.env.SCROLITH_ROLE_TEST_SOURCE_SHA ?? defaultSourceSha;
+const incrementalReleaseSha = process.env.SCROLITH_ROLE_TEST_INCREMENTAL_SOURCE_SHA
+  ?? '1111111111111111111111111111111111111111';
 const expectedFqdn = 'scrolith-validation.postgres.database.azure.com';
 const dockerImage = process.env.SCROLITH_PG17_TEST_IMAGE ?? 'postgres:17';
 const evidenceRoot = process.env.SCROLITH_ROLE_VALIDATION_EVIDENCE_DIR
@@ -26,6 +28,10 @@ const scriptNames = [
   'scrolith-production-runtime-finalize.sql',
   'scrolith-production-runtime-grants.sql',
   'scrolith-production-runtime-enable.sql',
+  'scrolith-production-profile-update-rollback.sql',
+  'scrolith-production-user-language-preferences-inspect.sql',
+  'scrolith-production-user-language-preferences-apply.sql',
+  'scrolith-production-user-language-preferences-preflight.sql',
   'scrolith-production-user-language-preferences-rollback.sql'
 ];
 
@@ -37,6 +43,41 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
   skip: enabled ? false : 'set SCROLITH_RUN_PRODUCTION_ROLE_PG17=1 to create a task-owned disposable PostgreSQL 17 container'
 }, async () => {
   assert.match(sourceSha, /^[0-9a-f]{40}$/, 'the recorded migration marker input must be a SHA-shaped value');
+  assert.match(incrementalReleaseSha, /^[0-9a-f]{40}$/, 'the incremental release input must be a SHA-shaped value');
+  assert.notEqual(incrementalReleaseSha, sourceSha, 'the incremental code release must be distinct from the existing policy-marker commit');
+
+  const runtimeGrantSql = await readFile(join(postgresScripts, 'scrolith-production-runtime-grants.sql'), 'utf8');
+  const profileRollbackSql = await readFile(join(postgresScripts, 'scrolith-production-profile-update-rollback.sql'), 'utf8');
+  const extractColumns = (sql, pattern, label) => {
+    const match = sql.match(pattern);
+    assert.ok(match, `${label} must contain the reviewed Profile column list`);
+    return [...match[1].matchAll(/"([A-Za-z][A-Za-z0-9]*)"/g)].map((column) => column[1]);
+  };
+  const profileGrantedColumns = extractColumns(
+    runtimeGrantSql,
+    /GRANT UPDATE \(([^)]*)\)\s*ON TABLE :"application_schema"\."Profile" TO :"runtime_role";/,
+    'runtime grant policy'
+  );
+  const profileRevokedColumns = extractColumns(
+    profileRollbackSql,
+    /REVOKE UPDATE \(([^)]*)\)\s*ON TABLE public\."Profile" FROM scrolith_runtime;/,
+    'Profile rollback'
+  );
+  const rollbackAssertionColumn = profileRollbackSql.match(
+    /has_column_privilege\('scrolith_runtime',\s*'public\."Profile"',\s*'([^']+)',\s*'UPDATE'\)/
+  )?.[1];
+  assert.equal(new Set(profileGrantedColumns).size, profileGrantedColumns.length, 'Profile grant columns must be unique');
+  assert.equal(new Set(profileRevokedColumns).size, profileRevokedColumns.length, 'Profile rollback columns must be unique');
+  assert.ok(profileRevokedColumns.includes(rollbackAssertionColumn), 'the rollback assertion checks a column in its SQL-derived revoke list');
+  assert.ok(profileGrantedColumns.includes('updatedAt'), 'Profile.updatedAt is part of the pre-existing grant state');
+  assert.deepEqual(
+    [...profileGrantedColumns.filter((column) => column !== 'updatedAt')].sort(),
+    [...profileRevokedColumns].sort(),
+    'the Profile rollback must revoke exactly the Profile columns added by the grant policy, preserving updatedAt'
+  );
+  const profileRollbackArray = `ARRAY[${profileRevokedColumns.map((column) => `'${column}'`).join(',')}]::text[]`;
+  const profileIdentifierList = profileGrantedColumns.map((column) => `"${column}"`).join(', ');
+
   await mkdir(evidenceRoot, { recursive: true });
   const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const containerName = `scrolith-role-pg17-${runId}`;
@@ -446,17 +487,300 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     resultSummary.finalState = finalMigrationState;
     resultSummary.runtimeOperations = 'synthetic inserts, language preference and follow-onboarding updates/reloads, exact User allowlist, forbidden security-column update, financial field denial, direct and cascading-delete protection including restrictive Order-to-Gig retention, DDL/ledger denial passed';
 
-    psql('temporarily enable migrator only inside disposable rollback test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator LOGIN;');
-    psqlFile('execute guarded language-preference rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-rollback.sql`, [
+    psql('temporarily enable migrator only inside disposable existing-database permission test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator LOGIN;');
+
+    const profileUpdateStateSql = `
+      SELECT COALESCE(array_to_string(ARRAY(
+        SELECT attribute.attname::text
+          FROM pg_attribute attribute
+         WHERE attribute.attrelid='public."Profile"'::regclass
+           AND attribute.attnum > 0 AND NOT attribute.attisdropped
+           AND has_column_privilege('scrolith_runtime','public."Profile"',attribute.attname,'UPDATE')
+         ORDER BY attribute.attname
+      ), ','), '');
+    `;
+    const profileTableAclStateSql = `
+      SELECT has_table_privilege('scrolith_runtime','public."Profile"','UPDATE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."Profile"','DELETE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."Profile"','TRUNCATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."Profile"','updatedAt','UPDATE')::text;
+    `;
+    const profileAclFingerprintSql = `
+      SELECT md5(
+        COALESCE((
+          SELECT string_agg(acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_class obj
+            CROSS JOIN LATERAL aclexplode(COALESCE(
+              obj.relacl,
+              CASE WHEN obj.relkind='S' THEN acldefault('S', obj.relowner)
+                   ELSE acldefault('r', obj.relowner) END
+            )) acl
+           WHERE obj.oid='public."Profile"'::regclass
+        ), '') || '/' || COALESCE((
+          SELECT string_agg(att.attnum::text || ':' || att.attname::text || ':' ||
+                   acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY att.attnum, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_attribute att
+            CROSS JOIN LATERAL aclexplode(
+              CASE WHEN COALESCE(cardinality(att.attacl), 0) > 0 THEN att.attacl END
+            ) acl
+           WHERE att.attrelid='public."Profile"'::regclass
+             AND att.attnum > 0 AND NOT att.attisdropped
+        ), '')
+      );
+    `;
+    const profilePreservedAclFingerprintSql = `
+      SELECT md5(
+        COALESCE((
+          SELECT string_agg(ns.nspname || ':' || COALESCE(ns.nspacl::text, '<null>'), '|'
+                   ORDER BY ns.nspname)
+            FROM pg_namespace ns
+           WHERE ns.nspname='public'
+        ), '') || '/' || COALESCE((
+          SELECT string_agg(obj.relname || ':' || acl.grantee::text || ':' || acl.grantor::text || ':' ||
+                   acl.privilege_type || ':' || acl.is_grantable::text, '|'
+                   ORDER BY obj.relname, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_class obj
+            JOIN pg_namespace ns ON ns.oid=obj.relnamespace
+            CROSS JOIN LATERAL aclexplode(COALESCE(
+              obj.relacl,
+              CASE WHEN obj.relkind='S' THEN acldefault('S', obj.relowner)
+                   ELSE acldefault('r', obj.relowner) END
+            )) acl
+           WHERE ns.nspname='public' AND obj.relname <> 'Profile'
+        ), '') || '/' || COALESCE((
+          SELECT string_agg(obj.relname || '.' || att.attname || ':' || acl.grantee::text || ':' ||
+                   acl.grantor::text || ':' || acl.privilege_type || ':' || acl.is_grantable::text,
+                   '|' ORDER BY obj.relname, att.attnum, acl.grantee, acl.grantor, acl.privilege_type, acl.is_grantable)
+            FROM pg_class obj
+            JOIN pg_namespace ns ON ns.oid=obj.relnamespace
+            JOIN pg_attribute att ON att.attrelid=obj.oid
+            CROSS JOIN LATERAL aclexplode(
+              CASE WHEN COALESCE(cardinality(att.attacl), 0) > 0 THEN att.attacl END
+            ) acl
+           WHERE ns.nspname='public'
+             AND att.attnum > 0 AND NOT att.attisdropped
+             AND NOT (obj.relname='Profile' AND att.attname::text = ANY(${profileRollbackArray}))
+        ), '')
+      );
+    `;
+    const initialProfileUpdateColumns = query('verify Profile has the complete reviewed pre-rollback UPDATE allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql);
+    assert.equal(initialProfileUpdateColumns, [...profileGrantedColumns].sort().join(','));
+    const initialProfileTableState = query('verify Profile table-level UPDATE/DELETE/TRUNCATE are denied and updatedAt remains allowed before rollback', 'synthetic_bootstrap_admin', profileTableAclStateSql);
+    assert.equal(initialProfileTableState, 'false:false:false:true');
+    const initialProfileAcl = query('capture canonical disposable Profile ACL before rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
+    const preservedAclBeforeProfileRollback = query('capture User and all non-target Profile/public ACLs before rollback', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql);
+
+    const wrongProfileRelease = sourceSha === 'f'.repeat(40) ? 'e'.repeat(40) : 'f'.repeat(40);
+    const wrongMarkerRollback = docker('reject Profile rollback with release SHA different from the finalized marker', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', `expected_source_commit=${wrongProfileRelease}`,
+      '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
+    ]), { expectFailure: true });
+    assert.match(wrongMarkerRollback.output, /Profile rollback requires the finalized policy created by the declared release/);
+    assert.equal(query('verify mismatched Profile marker rejection made no Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
+    assert.equal(query('verify mismatched Profile marker rejection preserved all unrelated privileges', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+
+    psql('inject an unexpected Profile table-wide UPDATE grant into the disposable database', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE ON TABLE public."Profile" TO scrolith_runtime;
+    `);
+    const unexpectedTableGrantAcl = query('capture unexpected Profile table-wide ACL before rejected rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
+    const preservedAclDuringUnexpectedTableGrant = query('capture unrelated raw ACL state while the synthetic table grant is present', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql);
+    const unexpectedTableGrantRollback = docker('reject Profile rollback when table-wide UPDATE remains after its column revokes', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
+    ]), { expectFailure: true });
+    assert.match(unexpectedTableGrantRollback.output, /Profile rollback did not restore the prior narrowly scoped UPDATE state/);
+    assert.equal(query('verify failed table-wide ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), unexpectedTableGrantAcl);
+    assert.equal(query('verify failed table-wide ACL rollback preserved User and unrelated ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclDuringUnexpectedTableGrant);
+    psql('remove only the injected table-wide Profile UPDATE grant from the disposable database', 'scrolith_migrator', 'scrolith', `
+      REVOKE UPDATE ON TABLE public."Profile" FROM scrolith_runtime;
+    `);
+    psql('restore only the reviewed Profile column allowlist after disposable grant cleanup', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE (${profileIdentifierList}) ON TABLE public."Profile" TO scrolith_runtime;
+    `);
+    assert.equal(query('verify table-wide Profile grant cleanup restored the exact UPDATE-column allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
+    assert.equal(query('verify table-wide Profile grant cleanup restored denied table privileges and retained updatedAt', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
+    assert.equal(query('verify table-wide Profile grant cleanup preserved User and non-target ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+
+    psql('inject a partial unexpected PUBLIC Profile UPDATE grant on the rollback assertion column', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" TO PUBLIC;
+    `);
+    const partialPublicProfileAcl = query('capture partial unexpected PUBLIC Profile ACL before rejected rollback', 'synthetic_bootstrap_admin', profileAclFingerprintSql);
+    const partialAclRollback = docker('reject Profile rollback when an unexpected partial PUBLIC column grant would survive', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-f', `${normalDir}/scrolith-production-profile-update-rollback.sql`
+    ]), { expectFailure: true });
+    assert.match(partialAclRollback.output, /Profile rollback did not restore the prior narrowly scoped UPDATE state/);
+    assert.equal(query('verify rejected partial-ACL rollback made no partial Profile ACL changes', 'synthetic_bootstrap_admin', profileAclFingerprintSql), partialPublicProfileAcl);
+    assert.equal(query('verify rejected partial-ACL rollback preserved User and all unrelated ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+    psql('remove only the injected PUBLIC Profile column grant from the disposable database', 'scrolith_migrator', 'scrolith', `
+      REVOKE UPDATE ("${rollbackAssertionColumn}") ON TABLE public."Profile" FROM PUBLIC;
+    `);
+    assert.equal(query('verify partial PUBLIC grant cleanup restored the exact Profile UPDATE-column allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
+    assert.equal(query('verify partial PUBLIC grant cleanup restored denied table privileges and retained updatedAt', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
+    assert.equal(query('verify partial PUBLIC grant cleanup preserved User and non-target ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+
+    psqlFile('execute the actual guarded Profile rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-profile-update-rollback.sql`, [
       ['expected_source_commit', sourceSha]
     ]);
-    psql('restore migrator NOLOGIN after disposable rollback test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator NOLOGIN;');
-    expectDenied('rollback removes the three language-preference UPDATE columns', `UPDATE public."User" SET "understoodLanguages"=ARRAY['en'], "languagePreferencesConfirmed"=true, "languagePreferencesUpdatedAt"=now() WHERE false`, /permission denied/i);
-    psql('rollback preserves onboarding and updatedAt UPDATE operations', 'scrolith_runtime', 'scrolith', `
-      UPDATE public."User" SET "followOnboardingRequired"="followOnboardingRequired",
-        "followOnboardingCompletedAt"="followOnboardingCompletedAt", "updatedAt"="updatedAt" WHERE false;
+    const rolledBackProfileColumns = query('verify Profile rollback revoked exactly its SQL-derived UPDATE columns', 'synthetic_bootstrap_admin', profileUpdateStateSql);
+    assert.equal(rolledBackProfileColumns, 'updatedAt');
+    assert.equal(query('verify Profile table-level UPDATE/DELETE/TRUNCATE remain denied and updatedAt remains allowed', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
+    assert.equal(query('verify successful Profile rollback preserves User and all non-target public ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);
+
+    psql('restore only the existing Profile column allowlist in the disposable database for subsequent role tests', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE (${profileIdentifierList}) ON TABLE public."Profile" TO scrolith_runtime;
     `);
-    const rollbackState = query('verify rollback revoked only the added fields and restored migrator NOLOGIN', 'synthetic_bootstrap_admin', `
+    assert.equal(query('verify Profile ACL was restored exactly after the disposable rollback test', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
+    assert.equal(query('verify Profile ACL state was restored exactly after the disposable rollback test', 'synthetic_bootstrap_admin', profileAclFingerprintSql), initialProfileAcl);
+    resultSummary.profileRollback = 'the SQL-derived Profile allowlist was granted; wrong marker SHA, table-wide UPDATE, and an unexpected partial PUBLIC column grant were rejected with ACL transaction rollback; the actual guarded rollback revoked only the grant inventory minus updatedAt; User, updatedAt, and other public ACLs were unchanged; disposable Profile grants were restored';
+
+    const repeatedFinalizer = docker('confirm first-launch full finalizer rejects an already initialized active database', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', 'bootstrap_admin_role=synthetic_bootstrap_admin',
+      '-f', `${normalDir}/scrolith-production-runtime-finalize.sql`
+    ]), { expectFailure: true });
+    assert.match(repeatedFinalizer.output, /runtime remains NOLOGIN/);
+
+    psql('simulate recorded existing-database ACL state by removing only the three missing language columns', 'scrolith_migrator', 'scrolith', `
+      REVOKE UPDATE ("languagePreferencesConfirmed", "languagePreferencesUpdatedAt", "understoodLanguages")
+        ON TABLE public."User" FROM scrolith_runtime;
+    `);
+    const baselineUserState = query('verify disposable existing state has only the three missing User UPDATE columns', 'synthetic_bootstrap_admin', `
+      SELECT has_table_privilege('scrolith_runtime','public."User"','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingRequired','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingCompletedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','updatedAt','UPDATE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."User"','DELETE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."User"','TRUNCATE')::text;
+    `);
+    assert.equal(baselineUserState, 'false:false:false:false:true:true:true:false:false');
+
+    const effectiveAclFingerprintSql = `
+      SELECT md5(
+        COALESCE((
+          SELECT string_agg(c.relname || ':' || p.privilege || ':' ||
+                   has_table_privilege('scrolith_runtime', c.oid, p.privilege)::text,
+                   '|' ORDER BY c.relname, p.privilege)
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p(privilege)
+           WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
+        ), '') || '/' || COALESCE((
+          SELECT string_agg(c.relname || '.' || a.attname || ':' || p.privilege || ':' ||
+                   has_column_privilege('scrolith_runtime', c.oid, a.attnum, p.privilege)::text,
+                   '|' ORDER BY c.relname, a.attnum, p.privilege)
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            JOIN pg_attribute a ON a.attrelid=c.oid
+            CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) p(privilege)
+           WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
+             AND a.attnum > 0 AND NOT a.attisdropped
+             AND NOT (c.relname='User' AND a.attname = ANY(ARRAY[
+               'languagePreferencesConfirmed','languagePreferencesUpdatedAt','understoodLanguages'
+             ]))
+        ), '')
+      );
+    `;
+    const aclFingerprintBefore = query('capture effective public-schema privileges before the incremental procedure', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql);
+
+    const readOnlyInspection = docker('run prepared read-only existing-database role, marker, ownership, and ACL inspection on disposable PG17', psqlArgs('synthetic_bootstrap_admin', 'scrolith', [
+      '-A', '-t', '-f', `${normalDir}/scrolith-production-user-language-preferences-inspect.sql`
+    ]));
+    assert.match(readOnlyInspection.output, /Connection and target facts/);
+    assert.ok(readOnlyInspection.output.includes(sourceSha));
+    assert.match(readOnlyInspection.output, /143/);
+    assert.match(readOnlyInspection.output, /understoodLanguages/);
+    assert.equal(query('verify read-only inspection did not change effective runtime ACLs', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql), aclFingerprintBefore);
+    const wrongMarkerApply = docker('reject incremental grant when the declared existing policy marker SHA is wrong', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', `expected_source_commit=${incrementalReleaseSha}`,
+      '-v', `expected_policy_source_commit=${'0'.repeat(40)}`,
+      '-f', `${normalDir}/scrolith-production-user-language-preferences-apply.sql`
+    ]), { expectFailure: true });
+    assert.match(wrongMarkerApply.output, /existing finalized policy marker does not match/);
+    psql('create a test-only PUBLIC ACL drift to verify fail-closed handling', 'scrolith_migrator', 'scrolith',
+      'GRANT SELECT ON TABLE public."User" TO PUBLIC;');
+    const publicAclApply = docker('reject an existing database with PUBLIC privileges on User', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', 'expected_source_commit=' + incrementalReleaseSha,
+      '-v', 'expected_policy_source_commit=' + sourceSha,
+      '-f', normalDir + '/scrolith-production-user-language-preferences-apply.sql'
+    ]), { expectFailure: true });
+    assert.match(publicAclApply.output, /PUBLIC retains unexpected User table or column privileges/);
+    assert.equal(query('verify PUBLIC ACL rejection changed no target User updates', 'synthetic_bootstrap_admin',
+      "SELECT has_column_privilege('scrolith_runtime','public.\"User\"','languagePreferencesConfirmed','UPDATE')::text || ':' || " +
+      "has_column_privilege('scrolith_runtime','public.\"User\"','languagePreferencesUpdatedAt','UPDATE')::text || ':' || " +
+      "has_column_privilege('scrolith_runtime','public.\"User\"','understoodLanguages','UPDATE')::text;"), 'false:false:false');
+    psql('remove only the synthetic PUBLIC ACL drift after its rejection test', 'scrolith_migrator', 'scrolith',
+      'REVOKE SELECT ON TABLE public."User" FROM PUBLIC;');
+    assert.equal(query('verify baseline effective ACL restored after PUBLIC drift test', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql), aclFingerprintBefore);
+    assert.equal(query('verify wrong marker attempt changed no User privileges', 'synthetic_bootstrap_admin', `
+      SELECT has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text;
+    `), 'false:false:false');
+
+    psql('create a partial target-column state to verify fail-closed handling', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE ("languagePreferencesConfirmed")
+        ON TABLE public."User" TO scrolith_runtime;
+    `);
+    const partialGrantApply = docker('reject an existing database with a partial language-column grant', psqlArgs('scrolith_migrator', 'scrolith', [
+      '-v', `expected_source_commit=${incrementalReleaseSha}`,
+      '-v', `expected_policy_source_commit=${sourceSha}`,
+      '-f', `${normalDir}/scrolith-production-user-language-preferences-apply.sql`
+    ]), { expectFailure: true });
+    assert.match(partialGrantApply.output, /language-preference UPDATE columns are partially granted/);
+    assert.equal(query('verify partial-grant guard leaves the original partial ACL unchanged', 'synthetic_bootstrap_admin', `
+      SELECT has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text;
+    `), 'true:false:false');
+    assert.equal(query('verify partial-grant guard preserves all non-target public ACLs', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql), aclFingerprintBefore);
+    psql('restore the synthetic pre-procedure ACL after partial-state assertion', 'scrolith_migrator', 'scrolith', `
+      REVOKE UPDATE ("languagePreferencesConfirmed")
+        ON TABLE public."User" FROM scrolith_runtime;
+    `);
+    assert.equal(query('verify partial-state setup was fully rolled back to the baseline ACL', 'synthetic_bootstrap_admin', `
+      SELECT has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text;
+    `), 'false:false:false');
+
+    psqlFile('apply guarded three-column permission increment to a disposable initialized PostgreSQL 17 state', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-apply.sql`, [
+      ['expected_source_commit', incrementalReleaseSha],
+      ['expected_policy_source_commit', sourceSha]
+    ]);
+    const appliedState = query('assert incremental grant preserves exact User allowlist and active role state', 'synthetic_bootstrap_admin', `
+      SELECT has_table_privilege('scrolith_runtime','public."User"','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingRequired','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','followOnboardingCompletedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','updatedAt','UPDATE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."User"','DELETE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."User"','TRUNCATE')::text || ':' ||
+             (SELECT string_agg(rolname || '=' || CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END, ',' ORDER BY rolname)
+                FROM pg_roles WHERE rolname IN ('scrolith_runtime','scrolith_migrator','scrolith_backup'));
+    `);
+    assert.equal(appliedState, 'false:true:true:true:true:true:true:false:false:scrolith_backup=NOLOGIN,scrolith_migrator=LOGIN,scrolith_runtime=LOGIN');
+    assert.equal(query('verify existing effective privileges outside the three approved columns were preserved', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql), aclFingerprintBefore);
+
+    psqlFile('retry incremental grant idempotently on the same initialized state', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-apply.sql`, [
+      ['expected_source_commit', incrementalReleaseSha],
+      ['expected_policy_source_commit', sourceSha]
+    ]);
+    assert.equal(query('verify idempotent retry preserves the applied ACL', 'synthetic_bootstrap_admin', `
+      SELECT has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','languagePreferencesUpdatedAt','UPDATE')::text || ':' ||
+             has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text;
+    `), 'true:true:true');
+
+    psqlFile('execute focused existing-database rollback on disposable PostgreSQL 17', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-rollback.sql`, [
+      ['expected_source_commit', incrementalReleaseSha],
+      ['expected_policy_source_commit', sourceSha]
+    ]);
+    const rollbackState = query('verify focused rollback removes only the three increment columns', 'synthetic_bootstrap_admin', `
       SELECT has_table_privilege('scrolith_runtime','public."User"','UPDATE')::text || ':' ||
              has_column_privilege('scrolith_runtime','public."User"','understoodLanguages','UPDATE')::text || ':' ||
              has_column_privilege('scrolith_runtime','public."User"','languagePreferencesConfirmed','UPDATE')::text || ':' ||
@@ -464,13 +788,33 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
              has_column_privilege('scrolith_runtime','public."User"','followOnboardingRequired','UPDATE')::text || ':' ||
              has_column_privilege('scrolith_runtime','public."User"','followOnboardingCompletedAt','UPDATE')::text || ':' ||
              has_column_privilege('scrolith_runtime','public."User"','updatedAt','UPDATE')::text || ':' ||
-             (SELECT CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END FROM pg_roles WHERE rolname='scrolith_migrator') || ':' ||
-             (SELECT CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END FROM pg_roles WHERE rolname='scrolith_runtime');
+             has_table_privilege('scrolith_runtime','public."User"','DELETE')::text || ':' ||
+             has_table_privilege('scrolith_runtime','public."User"','TRUNCATE')::text;
     `);
-    assert.equal(rollbackState, 'false:false:false:false:true:true:true:NOLOGIN:LOGIN');
+    assert.equal(rollbackState, 'false:false:false:false:true:true:true:false:false');
+    assert.equal(query('verify focused rollback preserves every other effective public-schema privilege', 'synthetic_bootstrap_admin', effectiveAclFingerprintSql), aclFingerprintBefore);
     resultSummary.rollbackState = rollbackState;
-    resultSummary.rollbackOperations = 'guarded migration-role rollback completed; language columns denied; onboarding and updatedAt columns retained; migrator restored to NOLOGIN';
+    resultSummary.rollbackOperations = 'existing-state marker mismatch rejected without ACL changes; exact three-column grant applied and safely retried; focused rollback removed only the three added columns, preserving onboarding, updatedAt, all other effective public-schema privileges, runtime login, and migration ownership';
 
+    psqlFile('restore the tested incremental grant as the final disposable candidate state', 'scrolith_migrator', `${normalDir}/scrolith-production-user-language-preferences-apply.sql`, [
+      ['expected_source_commit', incrementalReleaseSha],
+      ['expected_policy_source_commit', sourceSha]
+    ]);
+    psql('restore migrator NOLOGIN after disposable existing-database permission test', 'synthetic_bootstrap_admin', 'scrolith', 'ALTER ROLE scrolith_migrator NOLOGIN;');
+    psql('runtime can update exactly the three language-preference fields after the increment', 'scrolith_runtime', 'scrolith', `
+      UPDATE public."User" SET "understoodLanguages"="understoodLanguages",
+        "languagePreferencesConfirmed"="languagePreferencesConfirmed",
+        "languagePreferencesUpdatedAt"="languagePreferencesUpdatedAt" WHERE false;
+    `);
+    psql('incremental grant preserves onboarding and updatedAt UPDATE operations', 'scrolith_runtime', 'scrolith', `
+      UPDATE public."User" SET "followOnboardingRequired"="followOnboardingRequired",
+        "followOnboardingCompletedAt"="followOnboardingCompletedAt", "updatedAt"="updatedAt" WHERE false;
+    `);
+    assert.equal(query('verify final incremental state keeps application roles at original login state', 'synthetic_bootstrap_admin', `
+      SELECT string_agg(rolname || '=' || CASE WHEN rolcanlogin THEN 'LOGIN' ELSE 'NOLOGIN' END, ',' ORDER BY rolname)
+        FROM pg_roles WHERE rolname IN ('scrolith_runtime','scrolith_migrator','scrolith_backup');
+    `), 'scrolith_backup=NOLOGIN,scrolith_migrator=NOLOGIN,scrolith_runtime=LOGIN');
+    resultSummary.incrementalState = 'User targeted columns granted; all pre-existing User and public-schema runtime privileges preserved; runtime LOGIN/migrator NOLOGIN/backup NOLOGIN';
     const currentContainer = docker('verify task container label and image before cleanup', ['inspect', containerName, '--format', '{{index .Config.Labels "com.scrolith.validation.owner"}} {{.Image}}']);
     assert.match(currentContainer.output, /^production-db-role-pg17-20261121\s+sha256:/);
   } finally {
