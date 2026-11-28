@@ -197,12 +197,28 @@ jobs:
           source_sha = sys.argv[3]
           with tarfile.open(archive_path, 'r:*') as archive:
               index = json.load(archive.extractfile('index.json'))
-              candidates = [item for item in index['manifests']
-                            if item.get('platform', {}).get('os') == 'linux'
-                            and item.get('platform', {}).get('architecture') == 'amd64'
-                            and item.get('mediaType', '').endswith('.image.manifest.v1+json')]
+              image_manifest_types = {
+                  'application/vnd.oci.image.manifest.v1+json',
+                  'application/vnd.docker.distribution.manifest.v2+json',
+              }
+              candidates = []
+              for item in index.get('manifests', []):
+                  annotations = item.get('annotations', {})
+                  if annotations.get('vnd.docker.reference.type') == 'attestation-manifest':
+                      continue
+                  if item.get('mediaType') not in image_manifest_types:
+                      continue
+                  platform = item.get('platform')
+                  if platform and (platform.get('os'), platform.get('architecture')) != ('linux', 'amd64'):
+                      continue
+                  candidates.append(item)
               if len(candidates) != 1:
-                  raise SystemExit(f'Expected one linux/amd64 image manifest, found {len(candidates)}')
+                  descriptors = [{key: item.get(key) for key in ('mediaType', 'digest', 'platform', 'annotations')}
+                                 for item in index.get('manifests', [])]
+                  raise SystemExit(
+                      f'Expected one linux/amd64 image manifest, found {len(candidates)}; '
+                      f'OCI descriptors: {json.dumps(descriptors, sort_keys=True)}'
+                  )
               descriptor = candidates[0]
               blob_path = 'blobs/sha256/' + descriptor['digest'].split(':', 1)[1]
               manifest_bytes = archive.extractfile(blob_path).read()
