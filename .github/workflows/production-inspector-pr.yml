@@ -22,12 +22,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      EVIDENCE_DIR: ${{ runner.temp }}/production-inspector-evidence
       POSTGRES_IMAGE: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
       TRIVY_VERSION: 0.76.2
       TRIVY_CHECKSUMS_SHA256: 802e4ac1418ed967cd3c4b901f4f71ca00b7363ede67778665a22d9f13f58c83
 
     steps:
+      - name: Initialize temporary evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/production-inspector-evidence"
+          mkdir -p "$evidence_dir"
+          printf 'EVIDENCE_DIR=%s\n' "$evidence_dir" >> "$GITHUB_ENV"
+
       - name: Check out exact PR source without persisted credentials
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
