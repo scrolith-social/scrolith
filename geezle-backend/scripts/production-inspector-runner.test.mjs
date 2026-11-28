@@ -94,6 +94,11 @@ test('inspector image is a pinned non-root PostgreSQL 17 client-only runtime', a
   assert.match(dockerfile, /postgresql17-client=\$\{POSTGRESQL17_CLIENT_VERSION\}/);
   assert.match(dockerfile, /CA_CERTIFICATES_BUNDLE_VERSION=20261020-r0/);
   assert.match(dockerfile, /POSTGRESQL17_CLIENT_VERSION=17\.12-r0/);
+  assert.match(dockerfile, /OPENSSL_RUNTIME_VERSION=3\.5\.9-r1/);
+  assert.match(dockerfile, /ZLIB_RUNTIME_VERSION=1\.4-r0/);
+  assert.match(dockerfile, /"libcrypto3=\$\{OPENSSL_RUNTIME_VERSION\}"/);
+  assert.match(dockerfile, /"libssl3=\$\{OPENSSL_RUNTIME_VERSION\}"/);
+  assert.match(dockerfile, /"zlib=\$\{ZLIB_RUNTIME_VERSION\}"/);
   assert.match(dockerfile, /test -r \/etc\/ssl\/certs\/ca-certificates\.crt/);
   assert.match(dockerfile, /if apk info -e postgresql17[^\n]*; then exit 1; fi/);
   assert.match(dockerfile, /test ! -e \/usr\/libexec\/postgresql17\/postgres/);

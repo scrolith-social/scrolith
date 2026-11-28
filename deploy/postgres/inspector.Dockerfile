@@ -5,6 +5,8 @@ FROM alpine:3.24.4@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee2
 
 ARG POSTGRESQL17_CLIENT_VERSION=17.12-r0
 ARG CA_CERTIFICATES_BUNDLE_VERSION=20261020-r0
+ARG OPENSSL_RUNTIME_VERSION=3.5.9-r1
+ARG ZLIB_RUNTIME_VERSION=1.4-r0
 
 LABEL org.opencontainers.image.title="Scrolith production metadata inspector"
 LABEL org.opencontainers.image.description="Runs only the checked-in read-only Scrolith PostgreSQL inspection report"
@@ -12,7 +14,10 @@ LABEL org.opencontainers.image.description="Runs only the checked-in read-only S
 RUN set -eux; \
     apk add --no-cache \
       "postgresql17-client=${POSTGRESQL17_CLIENT_VERSION}" \
-      "ca-certificates-bundle=${CA_CERTIFICATES_BUNDLE_VERSION}"; \
+      "ca-certificates-bundle=${CA_CERTIFICATES_BUNDLE_VERSION}" \
+      "libcrypto3=${OPENSSL_RUNTIME_VERSION}" \
+      "libssl3=${OPENSSL_RUNTIME_VERSION}" \
+      "zlib=${ZLIB_RUNTIME_VERSION}"; \
     test -x /usr/libexec/postgresql17/psql; \
     psql --version | grep -F "${POSTGRESQL17_CLIENT_VERSION%-r*}"; \
     test -r /etc/ssl/certs/ca-certificates.crt; \
