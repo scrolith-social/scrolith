@@ -597,6 +597,9 @@ test('production PostgreSQL role bootstrap, migrations, finalization and runtime
     psql('remove only the injected table-wide Profile UPDATE grant from the disposable database', 'scrolith_migrator', 'scrolith', `
       REVOKE UPDATE ON TABLE public."Profile" FROM scrolith_runtime;
     `);
+    psql('restore only the reviewed Profile column allowlist after disposable grant cleanup', 'scrolith_migrator', 'scrolith', `
+      GRANT UPDATE (${profileIdentifierList}) ON TABLE public."Profile" TO scrolith_runtime;
+    `);
     assert.equal(query('verify table-wide Profile grant cleanup restored the exact UPDATE-column allowlist', 'synthetic_bootstrap_admin', profileUpdateStateSql), [...profileGrantedColumns].sort().join(','));
     assert.equal(query('verify table-wide Profile grant cleanup restored denied table privileges and retained updatedAt', 'synthetic_bootstrap_admin', profileTableAclStateSql), 'false:false:false:true');
     assert.equal(query('verify table-wide Profile grant cleanup preserved User and non-target ACLs', 'synthetic_bootstrap_admin', profilePreservedAclFingerprintSql), preservedAclBeforeProfileRollback);

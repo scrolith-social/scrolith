@@ -232,6 +232,8 @@ test('Profile UPDATE rollback is SQL-derived, guarded, and exercised atomically 
   assert.match(postgresHarness, /failed table-wide ACL rollback made no partial Profile ACL changes/);
   assert.match(postgresHarness, /rejected partial-ACL rollback made no partial Profile ACL changes/);
   assert.match(postgresHarness, /table-wide Profile grant cleanup restored the exact UPDATE-column allowlist/);
+  assert.match(postgresHarness, /restore only the reviewed Profile column allowlist after disposable grant cleanup[\s\S]*?GRANT UPDATE \(\$\{profileIdentifierList\}\) ON TABLE public\."Profile" TO scrolith_runtime/,
+    'disposable ACL-fixture cleanup restores only the SQL-derived Profile column allowlist');
   assert.match(postgresHarness, /partial PUBLIC grant cleanup restored the exact Profile UPDATE-column allowlist/);
   assert.match(postgresHarness, /WHERE ns\.nspname='public' AND obj\.relname <> 'Profile'/,
     'non-target relation ACL snapshot excludes Profile relation ACL mutated only by fixture grant/revoke cleanup');
