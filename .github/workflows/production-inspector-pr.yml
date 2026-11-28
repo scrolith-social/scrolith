@@ -1,0 +1,379 @@
+name: Production Inspector PR Validation
+
+on:
+  push:
+    branches:
+      - codex/pr185-inspector-runner-20261128
+  pull_request:
+    branches:
+      - backend/main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-inspector-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-build-scan:
+    name: Inspector SQL, wrapper, Bicep, PG17, image scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      EVIDENCE_DIR: ${{ runner.temp }}/production-inspector-evidence
+      POSTGRES_IMAGE: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
+      TRIVY_VERSION: 0.76.2
+      TRIVY_CHECKSUMS_SHA256: 802e4ac1418ed967cd3c4b901f4f71ca00b7363ede67778665a22d9f13f58c83
+
+    steps:
+      - name: Check out exact PR source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+
+      - name: Set up Node.js 22.18.0
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: '22.18.0'
+
+      - name: Verify source pin and run both inspector tests plus wrapper contract
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SCROLITH_INSPECTOR_TEST_SHELL: /bin/sh
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SOURCE_SHA"
+          printf '{"sourceCommit":"%s","event":"%s"}\n' "$actual_sha" "$GITHUB_EVENT_NAME" > "$EVIDENCE_DIR/source.json"
+          node --check geezle-backend/scripts/production-inspector-postgres17.test.mjs
+          node --check geezle-backend/scripts/production-inspector-sql-contract.test.mjs
+          node --check geezle-backend/scripts/production-inspector-runner.test.mjs
+          node --test --test-reporter=spec \
+            geezle-backend/scripts/production-inspector-sql-contract.test.mjs \
+            geezle-backend/scripts/production-inspector-runner.test.mjs
+          sh -n deploy/postgres/run-production-inspector.sh
+
+      - name: Compile inspector Container Apps Job Bicep offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          az bicep version 2>&1 | tee "$EVIDENCE_DIR/bicep-version.txt"
+          az bicep build \
+            --file deploy/azure/scrolith-production-db-inspector-job.bicep \
+            --outfile "$EVIDENCE_DIR/scrolith-production-db-inspector-job.json" \
+            2>&1 | tee "$EVIDENCE_DIR/bicep-build.log"
+
+      - name: Prepare disposable PostgreSQL 17 TLS cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends postgresql-client
+          mkdir -p "$RUNNER_TEMP/inspector-pg17-tls"
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$RUNNER_TEMP/inspector-pg17-tls/server.key" \
+            -out "$RUNNER_TEMP/inspector-pg17-tls/server.crt" \
+            -days 1 -subj '/CN=localhost' \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+            -addext 'basicConstraints=critical,CA:TRUE'
+          chmod 600 "$RUNNER_TEMP/inspector-pg17-tls/server.key"
+          chmod 644 "$RUNNER_TEMP/inspector-pg17-tls/server.crt"
+          container_name="scrolith-inspector-pg17-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf '%s\n' "$container_name" > "$RUNNER_TEMP/inspector-pg17-container-name"
+          docker run --detach \
+            --name "$container_name" \
+            --publish 127.0.0.1:55432:5432 \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_DB=postgres \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            --health-cmd='pg_isready -U postgres -d postgres' \
+            --health-interval=2s --health-timeout=3s --health-retries=40 \
+            "$POSTGRES_IMAGE" > "$EVIDENCE_DIR/postgres-container-id.txt"
+          for attempt in $(seq 1 90); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' "$container_name" 2>/dev/null || true)"
+            if [ "$state" = healthy ]; then break; fi
+            if [ "$attempt" -eq 90 ]; then docker logs "$container_name"; exit 1; fi
+            sleep 2
+          done
+          docker cp "$RUNNER_TEMP/inspector-pg17-tls/server.crt" "$container_name:/var/lib/postgresql/data/server.crt"
+          docker cp "$RUNNER_TEMP/inspector-pg17-tls/server.key" "$container_name:/var/lib/postgresql/data/server.key"
+          docker exec --user root "$container_name" chown postgres:postgres /var/lib/postgresql/data/server.crt /var/lib/postgresql/data/server.key
+          docker exec --user root "$container_name" chmod 600 /var/lib/postgresql/data/server.key
+          docker exec --user postgres "$container_name" psql -X -v ON_ERROR_STOP=1 --username=postgres --dbname=postgres \
+            --command="ALTER SYSTEM SET ssl = 'on'"
+          docker exec --user postgres "$container_name" psql -X -v ON_ERROR_STOP=1 --username=postgres --dbname=postgres \
+            --command="ALTER SYSTEM SET ssl_cert_file = 'server.crt'"
+          docker exec --user postgres "$container_name" psql -X -v ON_ERROR_STOP=1 --username=postgres --dbname=postgres \
+            --command="ALTER SYSTEM SET ssl_key_file = 'server.key'"
+          docker restart "$container_name" > /dev/null
+          for attempt in $(seq 1 90); do
+            if pg_isready --host localhost --port 55432 --username postgres --dbname postgres >/dev/null 2>&1; then break; fi
+            if [ "$attempt" -eq 90 ]; then docker logs "$container_name"; exit 1; fi
+            sleep 2
+          done
+          psql "host=localhost port=55432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=$RUNNER_TEMP/inspector-pg17-tls/server.crt" \
+            --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --command="SELECT 'TLS_VERIFY_FULL=' || ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid();" \
+            | tee "$EVIDENCE_DIR/postgres-tls-check.txt" | grep -qx 'TLS_VERIFY_FULL=t'
+          psql "host=localhost port=55432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=$RUNNER_TEMP/inspector-pg17-tls/server.crt" \
+            --no-psqlrc --set=ON_ERROR_STOP=1 \
+            --command="CREATE ROLE synthetic_inspector_admin LOGIN CREATEDB CREATEROLE NOSUPERUSER NOINHERIT NOREPLICATION NOBYPASSRLS;"
+
+      - name: Run guarded PostgreSQL 17 inspector integration harness
+        shell: bash
+        env:
+          SCROLITH_RUN_PRODUCTION_INSPECTOR_PG17: '1'
+          SCROLITH_PSQL: /usr/bin/psql
+          SCROLITH_INSPECTOR_EVIDENCE_DIR: ${{ runner.temp }}/production-inspector-evidence/pg17
+          PGHOST: localhost
+          PGPORT: '55432'
+          PGDATABASE: postgres
+          PGUSER: synthetic_inspector_admin
+          PGSSLMODE: verify-full
+          PGSSLROOTCERT: ${{ runner.temp }}/inspector-pg17-tls/server.crt
+          PGAPPNAME: scrolith-disposable-inspector-pg17-test
+          PGCONNECT_TIMEOUT: '5'
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCROLITH_INSPECTOR_EVIDENCE_DIR"
+          node --test --test-reporter=spec geezle-backend/scripts/production-inspector-postgres17.test.mjs 2>&1 \
+            | tee "$EVIDENCE_DIR/postgres17-test.log"
+
+      - name: Record disposable PostgreSQL 17 harness summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/production-inspector-evidence/pg17/inspector-pg17-summary.json"
+          if [ -f "$summary" ]; then
+            cp "$summary" "$EVIDENCE_DIR/inspector-pg17-summary.json"
+          fi
+
+      - name: Build exact-source inspector OCI image and record provenance
+        id: image
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SOURCE_SHA"
+          docker buildx version | tee "$EVIDENCE_DIR/buildx-version.txt"
+          docker buildx build \
+            --pull --no-cache \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --metadata-file "$EVIDENCE_DIR/build-metadata.json" \
+            --output "type=oci,dest=$RUNNER_TEMP/scrolith-production-inspector.oci.tar" \
+            --file deploy/postgres/inspector.Dockerfile \
+            . 2>&1 | tee "$EVIDENCE_DIR/image-build.log"
+          python3 - "$RUNNER_TEMP/scrolith-production-inspector.oci.tar" "$EVIDENCE_DIR" "$actual_sha" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+          import tarfile
+
+          archive_path = pathlib.Path(sys.argv[1])
+          evidence = pathlib.Path(sys.argv[2])
+          source_sha = sys.argv[3]
+          with tarfile.open(archive_path, 'r:*') as archive:
+              index = json.load(archive.extractfile('index.json'))
+              candidates = [item for item in index['manifests']
+                            if item.get('platform', {}).get('os') == 'linux'
+                            and item.get('platform', {}).get('architecture') == 'amd64'
+                            and item.get('mediaType', '').endswith('.image.manifest.v1+json')]
+              if len(candidates) != 1:
+                  raise SystemExit(f'Expected one linux/amd64 image manifest, found {len(candidates)}')
+              descriptor = candidates[0]
+              blob_path = 'blobs/sha256/' + descriptor['digest'].split(':', 1)[1]
+              manifest_bytes = archive.extractfile(blob_path).read()
+              computed = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
+              if computed != descriptor['digest']:
+                  raise SystemExit('OCI manifest descriptor digest does not match its content')
+              manifest = json.loads(manifest_bytes)
+              config_digest = manifest['config']['digest']
+              report = {
+                  'sourceCommit': source_sha,
+                  'platform': 'linux/amd64',
+                  'imageManifestDigest': computed,
+                  'imageConfigDigest': config_digest,
+                  'ociIndexDigest': 'sha256:' + hashlib.sha256(archive.extractfile('index.json').read()).hexdigest(),
+                  'ociArchiveSha256': hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                  'dockerfile': 'deploy/postgres/inspector.Dockerfile',
+              }
+          (evidence / 'image-identity.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+          metadata = json.loads((evidence / 'build-metadata.json').read_text(encoding='utf-8'))
+          (evidence / 'build-provenance.json').write_text(json.dumps({
+              'builder': 'GitHub-hosted ubuntu-24.04 / Docker Buildx',
+              'buildCommand': 'docker buildx build --pull --no-cache --platform linux/amd64 --provenance=mode=max --output type=oci',
+              'sourceCommit': source_sha,
+              'dockerfileSha256': hashlib.sha256(pathlib.Path('deploy/postgres/inspector.Dockerfile').read_bytes()).hexdigest(),
+              'runnerScriptSha256': hashlib.sha256(pathlib.Path('deploy/postgres/run-production-inspector.sh').read_bytes()).hexdigest(),
+              'inspectionSqlSha256': hashlib.sha256(pathlib.Path('deploy/postgres/scrolith-production-user-language-preferences-inspect.sql').read_bytes()).hexdigest(),
+              'buildMetadata': metadata,
+              'image': report,
+          }, indent=2) + '\n', encoding='utf-8')
+          PY
+          image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["imageManifestDigest"])' "$EVIDENCE_DIR/image-identity.json")"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install verified Trivy 0.76.2 and refresh vulnerability database
+        id: trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy_root="$RUNNER_TEMP/trivy-$TRIVY_VERSION"
+          mkdir -p "$trivy_root" "$RUNNER_TEMP/trivy-cache"
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            --output "$trivy_root/checksums.txt"
+          printf '%s  %s\n' "$TRIVY_CHECKSUMS_SHA256" "$trivy_root/checksums.txt" | sha256sum --check --status
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$trivy_root/trivy.tar.gz"
+          expected_binary_sha="$(awk '$2 == "trivy_'"$TRIVY_VERSION"'_Linux-64bit.tar.gz" {print $1}' "$trivy_root/checksums.txt")"
+          test "${#expected_binary_sha}" -eq 64
+          printf '%s  %s\n' "$expected_binary_sha" "$trivy_root/trivy.tar.gz" | sha256sum --check --status
+          tar -xzf "$trivy_root/trivy.tar.gz" -C "$trivy_root" trivy
+          "$trivy_root/trivy" --version | tee "$EVIDENCE_DIR/trivy-version.txt"
+          "$trivy_root/trivy" image --cache-dir "$RUNNER_TEMP/trivy-cache" --download-db-only \
+            2>&1 | tee "$EVIDENCE_DIR/trivy-db-refresh.log"
+          echo "$trivy_root" >> "$GITHUB_PATH"
+
+      - name: Scan exact OCI image manifest without suppressions
+        id: scan
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          trivy_bin="$RUNNER_TEMP/trivy-$TRIVY_VERSION/trivy"
+          oci_image="$RUNNER_TEMP/scrolith-production-inspector.oci.tar"
+          printf '%q ' "$trivy_bin" image --config= --ignorefile= --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" --input "$oci_image" --platform linux/amd64 \
+            --scanners vuln --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json --output "$EVIDENCE_DIR/trivy-report.json" --exit-code 1 \
+            > "$EVIDENCE_DIR/trivy-scan-command.txt"
+          set +e
+          "$trivy_bin" image \
+            --config= \
+            --ignorefile= \
+            --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" \
+            --input "$oci_image" \
+            --platform linux/amd64 \
+            --scanners vuln \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json \
+            --output "$EVIDENCE_DIR/trivy-report.json" \
+            --exit-code 1 \
+            2> >(tee "$EVIDENCE_DIR/trivy-scan.stderr.log" >&2)
+          scan_rc=$?
+          set -e
+          python3 - "$EVIDENCE_DIR/trivy-report.json" "$EVIDENCE_DIR" "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" <<'PY'
+          import collections
+          import datetime
+          import json
+          import pathlib
+          import sys
+
+          report_path, out_dir, digest, version, code = sys.argv[1:]
+          report_file = pathlib.Path(report_path)
+          if not report_file.is_file() or report_file.stat().st_size == 0:
+              summary = {
+                  'imageManifestDigest': digest,
+                  'scanner': 'Trivy ' + version,
+                  'scanStatus': 'failed-no-raw-report',
+                  'exitCode': int(code),
+                  'findings': [],
+              }
+              (pathlib.Path(out_dir) / 'trivy-summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+              raise SystemExit('Trivy did not produce a raw JSON report')
+          report = json.loads(report_file.read_text(encoding='utf-8'))
+          counts = collections.Counter()
+          findings = []
+          for result in report.get('Results') or []:
+              for vuln in result.get('Vulnerabilities') or []:
+                  severity = vuln.get('Severity', 'UNKNOWN')
+                  counts[severity] += 1
+                  findings.append({
+                      'target': result.get('Target'),
+                      'class': result.get('Class'),
+                      'type': result.get('Type'),
+                      'vulnerabilityID': vuln.get('VulnerabilityID'),
+                      'pkgName': vuln.get('PkgName'),
+                      'installedVersion': vuln.get('InstalledVersion'),
+                      'fixedVersion': vuln.get('FixedVersion'),
+                      'severity': severity,
+                  })
+          summary = {
+              'imageManifestDigest': digest,
+              'scanner': 'Trivy ' + version,
+              'database': report.get('Metadata', {}),
+              'scanStatus': ('completed-no-findings-at-configured-severities' if int(code) == 0
+                             else ('completed-with-findings-nonzero-exit' if findings
+                                   else 'failed-nonzero-without-findings')),
+              'severityCounts': {level: counts[level] for level in ('UNKNOWN','LOW','MEDIUM','HIGH','CRITICAL')},
+              'findingCount': len(findings),
+              'exitCode': int(code),
+              'noSuppressions': True,
+              'findings': findings,
+              'generatedAtUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          (pathlib.Path(out_dir) / 'trivy-summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+          if int(code) != 0 and not findings:
+              raise SystemExit('Trivy exited nonzero without vulnerability findings; classify as scanner failure, not a clean scan')
+          PY
+          printf 'imageDigest=%s\nscanner=Trivy %s\nscanExitCode=%s\n' "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" | tee "$EVIDENCE_DIR/scan-result.txt"
+          echo "scan_exit_code=$scan_rc" >> "$GITHUB_OUTPUT"
+          exit "$scan_rc"
+
+      - name: Record exact source diff and whitespace check
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short > "$EVIDENCE_DIR/git-status.txt"
+          git diff --check > "$EVIDENCE_DIR/git-diff-check.txt"
+          git rev-parse HEAD > "$EVIDENCE_DIR/checked-out-head.txt"
+
+      - name: Capture PostgreSQL container log summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          name_file="$RUNNER_TEMP/inspector-pg17-container-name"
+          if [ -f "$name_file" ]; then
+            docker logs "$(cat "$name_file")" > "$EVIDENCE_DIR/postgres-container.log" 2>&1 || true
+          fi
+
+      - name: Remove only the disposable PostgreSQL container
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          name_file="$RUNNER_TEMP/inspector-pg17-container-name"
+          if [ -f "$name_file" ]; then
+            container_name="$(cat "$name_file")"
+            case "$container_name" in
+              "scrolith-inspector-pg17-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}") docker rm --force "$container_name" || true ;;
+              *) echo 'Refusing to remove a container not owned by this workflow run.' >&2; exit 1 ;;
+            esac
+          fi
+
+      - name: Upload inspector build and scan evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.2
+        with:
+          name: production-inspector-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/production-inspector-evidence
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
