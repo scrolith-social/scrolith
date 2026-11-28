@@ -195,49 +195,68 @@ jobs:
           archive_path = pathlib.Path(sys.argv[1])
           evidence = pathlib.Path(sys.argv[2])
           source_sha = sys.argv[3]
+          metadata = json.loads((evidence / 'build-metadata.json').read_text(encoding='utf-8'))
+          image_digest = metadata.get('containerimage.digest')
+          descriptor = metadata.get('containerimage.descriptor', {})
+          if not isinstance(image_digest, str) or not image_digest.startswith('sha256:') or len(image_digest) != 71:
+              raise SystemExit('Buildx metadata did not contain a valid immutable SHA-256 image digest')
+          if descriptor.get('digest') != image_digest:
+              raise SystemExit('Buildx image descriptor digest differs from containerimage.digest')
           with tarfile.open(archive_path, 'r:*') as archive:
-              index = json.load(archive.extractfile('index.json'))
+              layout_index_bytes = archive.extractfile('index.json').read()
+              index = json.loads(layout_index_bytes)
               image_manifest_types = {
                   'application/vnd.oci.image.manifest.v1+json',
                   'application/vnd.docker.distribution.manifest.v2+json',
               }
               candidates = []
-              for item in index.get('manifests', []):
-                  annotations = item.get('annotations', {})
-                  if annotations.get('vnd.docker.reference.type') == 'attestation-manifest':
-                      continue
-                  if item.get('mediaType') not in image_manifest_types:
-                      continue
-                  platform = item.get('platform')
-                  if platform and (platform.get('os'), platform.get('architecture')) != ('linux', 'amd64'):
-                      continue
-                  candidates.append(item)
+              def visit(index_value, depth=0):
+                  if depth > 4:
+                      raise SystemExit('OCI index nesting exceeded the expected maximum depth')
+                  for item in index_value.get('manifests', []):
+                      digest = item.get('digest', '')
+                      if not digest.startswith('sha256:') or len(digest) != 71:
+                          raise SystemExit('OCI descriptor has an invalid SHA-256 digest')
+                      blob_path = 'blobs/sha256/' + digest.split(':', 1)[1]
+                      blob_file = archive.extractfile(blob_path)
+                      if blob_file is None:
+                          raise SystemExit(f'OCI descriptor blob is missing: {digest}')
+                      blob = blob_file.read()
+                      if 'sha256:' + hashlib.sha256(blob).hexdigest() != digest:
+                          raise SystemExit(f'OCI descriptor blob hash mismatch: {digest}')
+                      media_type = item.get('mediaType', '')
+                      if media_type == 'application/vnd.oci.image.index.v1+json':
+                          visit(json.loads(blob), depth + 1)
+                          continue
+                      if media_type not in image_manifest_types:
+                          continue
+                      if item.get('annotations', {}).get('vnd.docker.reference.type') == 'attestation-manifest':
+                          continue
+                      platform = item.get('platform')
+                      if platform and (platform.get('os'), platform.get('architecture')) != ('linux', 'amd64'):
+                          continue
+                      candidates.append((item, blob))
+
+              visit(index)
               if len(candidates) != 1:
-                  descriptors = [{key: item.get(key) for key in ('mediaType', 'digest', 'platform', 'annotations')}
-                                 for item in index.get('manifests', [])]
-                  raise SystemExit(
-                      f'Expected one linux/amd64 image manifest, found {len(candidates)}; '
-                      f'OCI descriptors: {json.dumps(descriptors, sort_keys=True)}'
-                  )
-              descriptor = candidates[0]
-              blob_path = 'blobs/sha256/' + descriptor['digest'].split(':', 1)[1]
-              manifest_bytes = archive.extractfile(blob_path).read()
-              computed = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
-              if computed != descriptor['digest']:
-                  raise SystemExit('OCI manifest descriptor digest does not match its content')
+                  raise SystemExit(f'Expected one linux/amd64 image manifest in the OCI layout, found {len(candidates)}')
+              manifest_descriptor, manifest_bytes = candidates[0]
+              manifest_digest = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
+              if manifest_digest != manifest_descriptor['digest']:
+                  raise SystemExit('OCI platform manifest descriptor digest does not match its content')
               manifest = json.loads(manifest_bytes)
               config_digest = manifest['config']['digest']
               report = {
                   'sourceCommit': source_sha,
                   'platform': 'linux/amd64',
-                  'imageManifestDigest': computed,
+                  'imageDigest': image_digest,
+                  'platformManifestDigest': manifest_digest,
                   'imageConfigDigest': config_digest,
-                  'ociIndexDigest': 'sha256:' + hashlib.sha256(archive.extractfile('index.json').read()).hexdigest(),
+                  'ociLayoutIndexSha256': hashlib.sha256(layout_index_bytes).hexdigest(),
                   'ociArchiveSha256': hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                   'dockerfile': 'deploy/postgres/inspector.Dockerfile',
               }
           (evidence / 'image-identity.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-          metadata = json.loads((evidence / 'build-metadata.json').read_text(encoding='utf-8'))
           (evidence / 'build-provenance.json').write_text(json.dumps({
               'builder': 'GitHub-hosted ubuntu-24.04 / Docker Buildx',
               'buildCommand': 'docker buildx build --pull --no-cache --platform linux/amd64 --provenance=mode=max --output type=oci',
@@ -249,7 +268,7 @@ jobs:
               'image': report,
           }, indent=2) + '\n', encoding='utf-8')
           PY
-          image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["imageManifestDigest"])' "$EVIDENCE_DIR/image-identity.json")"
+          image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["imageDigest"])' "$EVIDENCE_DIR/image-identity.json")"
           echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
 
       - name: Install verified Trivy 0.76.2 and refresh vulnerability database
@@ -316,7 +335,7 @@ jobs:
           report_file = pathlib.Path(report_path)
           if not report_file.is_file() or report_file.stat().st_size == 0:
               summary = {
-                  'imageManifestDigest': digest,
+                  'imageDigest': digest,
                   'scanner': 'Trivy ' + version,
                   'scanStatus': 'failed-no-raw-report',
                   'exitCode': int(code),
@@ -342,7 +361,7 @@ jobs:
                       'severity': severity,
                   })
           summary = {
-              'imageManifestDigest': digest,
+              'imageDigest': digest,
               'scanner': 'Trivy ' + version,
               'database': report.get('Metadata', {}),
               'scanStatus': ('completed-no-findings-at-configured-severities' if int(code) == 0
