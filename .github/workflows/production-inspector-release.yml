@@ -1,0 +1,616 @@
+name: Production Inspector Image Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit SHA already reviewed and merged into backend/main
+        required: true
+        type: string
+      publish_to_production_acr:
+        description: Request publication after the protected production environment approves
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-inspector-release-${{ inputs.source_sha || github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-scan:
+    name: Build and scan reviewed source without cloud credentials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      TRIVY_VERSION: 0.76.2
+      TRIVY_CHECKSUMS_SHA256: 802e4ac1418ed967cd3c4b901f4f71ca00b7363ede67778665a22d9f13f58c83
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      image_digest: ${{ steps.image.outputs.image_digest }}
+      archive_sha256: ${{ steps.image.outputs.archive_sha256 }}
+    steps:
+      - name: Initialize isolated evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "EVIDENCE_DIR=$RUNNER_TEMP/production-inspector-release-evidence" >> "$GITHUB_ENV"
+          echo "OCI_ARCHIVE=$RUNNER_TEMP/scrolith-production-inspector.oci.tar" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/production-inspector-release-evidence"
+
+      - name: Check out the exact reviewed source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify dispatch branch and reviewed backend/main ancestry
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != 'refs/heads/main' ]]; then
+            echo 'Release dispatch must run from the protected default branch main.' >&2
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'source_sha must be a full lowercase 40-character Git commit SHA.' >&2
+            exit 1
+          fi
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$SOURCE_SHA"
+          git fetch --no-tags origin refs/heads/backend/main:refs/remotes/origin/backend/main
+          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/backend/main
+          printf '{"sourceCommit":"%s","dispatchRef":"%s","backendMain":"%s"}\n' \
+            "$actual_sha" "$GITHUB_REF" "$(git rev-parse refs/remotes/origin/backend/main)" \
+            > "$EVIDENCE_DIR/source.json"
+          echo "source_sha=$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver: docker-container
+
+      - name: Build the exact source as a retained OCI archive with provenance
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_tag="source-${SOURCE_SHA}"
+          docker buildx version | tee "$EVIDENCE_DIR/buildx-version.txt"
+          docker buildx build \
+            --pull --no-cache \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --metadata-file "$EVIDENCE_DIR/build-metadata.json" \
+            --tag "postgres-inspector:${source_tag}" \
+            --output "type=oci,dest=$OCI_ARCHIVE" \
+            --file deploy/postgres/inspector.Dockerfile \
+            . 2>&1 | tee "$EVIDENCE_DIR/image-build.log"
+          python3 - "$OCI_ARCHIVE" "$EVIDENCE_DIR" "$SOURCE_SHA" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import tarfile
+
+          archive_path = pathlib.Path(sys.argv[1])
+          evidence = pathlib.Path(sys.argv[2])
+          source_sha = sys.argv[3]
+          metadata = json.loads((evidence / 'build-metadata.json').read_text(encoding='utf-8'))
+          image_digest = metadata.get('containerimage.digest')
+          descriptor = metadata.get('containerimage.descriptor', {})
+          if not isinstance(image_digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_digest):
+              raise SystemExit('Buildx metadata did not contain a full immutable SHA-256 image digest')
+          if descriptor.get('digest') != image_digest:
+              raise SystemExit('Buildx descriptor digest differs from containerimage.digest')
+          with tarfile.open(archive_path, 'r:*') as archive:
+              index_member = archive.extractfile('index.json')
+              if index_member is None:
+                  raise SystemExit('Buildx OCI archive has no index.json')
+              index_bytes = index_member.read()
+              index = json.loads(index_bytes)
+              image_manifest_types = {
+                  'application/vnd.oci.image.manifest.v1+json',
+                  'application/vnd.docker.distribution.manifest.v2+json',
+              }
+              candidates = []
+
+              def visit(index_value, depth=0):
+                  if depth > 4:
+                      raise SystemExit('OCI index nesting exceeded the expected maximum depth')
+                  for item in index_value.get('manifests', []):
+                      digest = item.get('digest', '')
+                      if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                          raise SystemExit('OCI descriptor has an invalid SHA-256 digest')
+                      blob_file = archive.extractfile('blobs/sha256/' + digest.split(':', 1)[1])
+                      if blob_file is None:
+                          raise SystemExit('OCI descriptor blob is missing')
+                      blob = blob_file.read()
+                      if 'sha256:' + hashlib.sha256(blob).hexdigest() != digest:
+                          raise SystemExit('OCI descriptor blob digest mismatch')
+                      media_type = item.get('mediaType', '')
+                      if media_type == 'application/vnd.oci.image.index.v1+json':
+                          visit(json.loads(blob), depth + 1)
+                          continue
+                      if media_type not in image_manifest_types:
+                          continue
+                      if item.get('annotations', {}).get('vnd.docker.reference.type') == 'attestation-manifest':
+                          continue
+                      platform = item.get('platform')
+                      if platform and (platform.get('os'), platform.get('architecture')) != ('linux', 'amd64'):
+                          continue
+                      candidates.append((item, blob))
+
+              visit(index)
+              if len(candidates) != 1:
+                  raise SystemExit(f'Expected exactly one linux/amd64 image manifest; found {len(candidates)}')
+              manifest_descriptor, manifest_bytes = candidates[0]
+              platform_digest = 'sha256:' + hashlib.sha256(manifest_bytes).hexdigest()
+              if platform_digest != manifest_descriptor['digest']:
+                  raise SystemExit('OCI platform manifest digest does not match its content')
+              config_digest = json.loads(manifest_bytes)['config']['digest']
+          archive_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+          identity = {
+              'sourceCommit': source_sha,
+              'platform': 'linux/amd64',
+              'imageDigest': image_digest,
+              'platformManifestDigest': platform_digest,
+              'imageConfigDigest': config_digest,
+              'ociLayoutIndexSha256': hashlib.sha256(index_bytes).hexdigest(),
+              'ociArchiveSha256': archive_hash,
+              'dockerfile': 'deploy/postgres/inspector.Dockerfile',
+          }
+          (evidence / 'image-identity.json').write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8')
+          provenance = {
+              'builder': 'GitHub-hosted ubuntu-24.04 / Docker Buildx',
+              'workflowRunId': os.environ.get('GITHUB_RUN_ID'),
+              'workflowRunAttempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'sourceCommit': source_sha,
+              'buildCommand': 'docker buildx build --pull --no-cache --platform linux/amd64 --provenance=mode=max --output type=oci',
+              'dockerfileSha256': hashlib.sha256(pathlib.Path('deploy/postgres/inspector.Dockerfile').read_bytes()).hexdigest(),
+              'runnerScriptSha256': hashlib.sha256(pathlib.Path('deploy/postgres/run-production-inspector.sh').read_bytes()).hexdigest(),
+              'inspectionSqlSha256': hashlib.sha256(pathlib.Path('deploy/postgres/scrolith-production-user-language-preferences-inspect.sql').read_bytes()).hexdigest(),
+              'buildMetadata': metadata,
+              'image': identity,
+          }
+          (evidence / 'build-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(identity, sort_keys=True))
+          PY
+          image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["imageDigest"])' "$EVIDENCE_DIR/image-identity.json")"
+          archive_sha256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["ociArchiveSha256"])' "$EVIDENCE_DIR/image-identity.json")"
+          printf '%s  %s\n' "$archive_sha256" "$OCI_ARCHIVE" > "$EVIDENCE_DIR/oci-archive.sha256"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$archive_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Verify OCI transfer preserves the exact image digest locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends skopeo
+          skopeo --version | tee "$EVIDENCE_DIR/skopeo-version.txt"
+          image_digest="${{ steps.image.outputs.image_digest }}"
+          source_tag="source-${SOURCE_SHA}"
+          skopeo copy --all --preserve-digests \
+            --digestfile "$EVIDENCE_DIR/local-copy-digest.txt" \
+            "oci-archive:$OCI_ARCHIVE:$source_tag" \
+            "oci:$RUNNER_TEMP/scrolith-production-inspector-local:$source_tag" \
+            2>&1 | tee "$EVIDENCE_DIR/local-copy.log"
+          copied_digest="$(tr -d '\r\n' < "$EVIDENCE_DIR/local-copy-digest.txt")"
+          test "$copied_digest" = "$image_digest"
+          printf 'verifiedImageDigest=%s\n' "$copied_digest" > "$EVIDENCE_DIR/local-copy-verification.txt"
+
+      - name: Install verified Trivy 0.76.2 and refresh vulnerability database
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy_root="$RUNNER_TEMP/trivy-$TRIVY_VERSION"
+          mkdir -p "$trivy_root" "$RUNNER_TEMP/trivy-cache"
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            --output "$trivy_root/checksums.txt"
+          printf '%s  %s\n' "$TRIVY_CHECKSUMS_SHA256" "$trivy_root/checksums.txt" | sha256sum --check --status
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$trivy_root/trivy.tar.gz"
+          expected_binary_sha="$(awk '$2 == "trivy_'"$TRIVY_VERSION"'_Linux-64bit.tar.gz" {print $1}' "$trivy_root/checksums.txt")"
+          test "${#expected_binary_sha}" -eq 64
+          printf '%s  %s\n' "$expected_binary_sha" "$trivy_root/trivy.tar.gz" | sha256sum --check --status
+          tar -xzf "$trivy_root/trivy.tar.gz" -C "$trivy_root" trivy
+          "$trivy_root/trivy" --version | tee "$EVIDENCE_DIR/trivy-version.txt"
+          "$trivy_root/trivy" image --cache-dir "$RUNNER_TEMP/trivy-cache" --download-db-only \
+            2>&1 | tee "$EVIDENCE_DIR/trivy-db-refresh.log"
+
+      - name: Scan the exact retained OCI image without suppressions
+        id: scan
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          trivy_bin="$RUNNER_TEMP/trivy-$TRIVY_VERSION/trivy"
+          oci_layout="$RUNNER_TEMP/scrolith-production-inspector-oci-layout"
+          python3 deploy/postgres/extract-inspector-oci-layout.py \
+            "$OCI_ARCHIVE" "$oci_layout" 2>&1 | tee "$EVIDENCE_DIR/oci-layout-extract.log"
+          printf '%q ' "$trivy_bin" image --config= --ignorefile= --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" --input "$oci_layout" --platform linux/amd64 \
+            --scanners vuln --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json --output "$EVIDENCE_DIR/trivy-report.json" --exit-code 1 \
+            > "$EVIDENCE_DIR/trivy-scan-command.txt"
+          set +e
+          "$trivy_bin" image \
+            --config= --ignorefile= --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" \
+            --input "$oci_layout" --platform linux/amd64 \
+            --scanners vuln --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
+            --format json --output "$EVIDENCE_DIR/trivy-report.json" --exit-code 1 \
+            2>&1 | tee "$EVIDENCE_DIR/trivy-scan.log"
+          scan_rc=${PIPESTATUS[0]}
+          set -e
+          python3 - "$EVIDENCE_DIR/trivy-report.json" "$EVIDENCE_DIR" "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" <<'PY'
+          import collections
+          import datetime
+          import json
+          import pathlib
+          import sys
+
+          report_path, out_dir, digest, version, code = sys.argv[1:]
+          report_file = pathlib.Path(report_path)
+          if not report_file.is_file() or report_file.stat().st_size == 0:
+              raise SystemExit('Trivy produced no raw JSON report; scan is not a pass')
+          report = json.loads(report_file.read_text(encoding='utf-8'))
+          counts = collections.Counter()
+          findings = []
+          for result in report.get('Results') or []:
+              for vuln in result.get('Vulnerabilities') or []:
+                  severity = vuln.get('Severity', 'UNKNOWN')
+                  counts[severity] += 1
+                  findings.append({
+                      'target': result.get('Target'),
+                      'vulnerabilityID': vuln.get('VulnerabilityID'),
+                      'package': vuln.get('PkgName'),
+                      'installedVersion': vuln.get('InstalledVersion'),
+                      'fixedVersion': vuln.get('FixedVersion'),
+                      'severity': severity,
+                  })
+          summary = {
+              'imageDigest': digest,
+              'scanner': 'Trivy ' + version,
+              'database': report.get('Metadata', {}),
+              'scanStatus': 'completed-no-findings-at-configured-severities' if int(code) == 0 else 'completed-with-findings-or-scan-error',
+              'severityCounts': {level: counts[level] for level in ('UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')},
+              'findingCount': len(findings),
+              'exitCode': int(code),
+              'noSuppressions': True,
+              'findings': findings,
+              'generatedAtUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          (pathlib.Path(out_dir) / 'trivy-summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+          if int(code) != 0 and not findings:
+              raise SystemExit('Trivy exited nonzero without findings; classify as scan failure')
+          PY
+          printf 'imageDigest=%s\nscanExitCode=%s\n' "$IMAGE_DIGEST" "$scan_rc" | tee "$EVIDENCE_DIR/scan-result.txt"
+          exit "$scan_rc"
+
+      - name: Upload exact OCI artifact, provenance, and raw scan evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.2
+        with:
+          name: production-inspector-release-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/scrolith-production-inspector.oci.tar
+            ${{ runner.temp }}/production-inspector-release-evidence
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+
+  publish-production-acr:
+    name: Publish exact scanned OCI artifact after production approval
+    needs: build-and-scan
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_production_acr && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SOURCE_SHA: ${{ needs.build-and-scan.outputs.source_sha }}
+      EXPECTED_IMAGE_DIGEST: ${{ needs.build-and-scan.outputs.image_digest }}
+      EXPECTED_ARCHIVE_SHA256: ${{ needs.build-and-scan.outputs.archive_sha256 }}
+      REGISTRY: scrolithprodsea2026.azurecr.io
+      REPOSITORY: scrolith-tools/postgres-inspector
+      TRIVY_VERSION: 0.76.2
+      TRIVY_CHECKSUMS_SHA256: 802e4ac1418ed967cd3c4b901f4f71ca00b7363ede67778665a22d9f13f58c83
+    steps:
+      - name: Initialize publication evidence and private auth directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          echo "PUBLISH_EVIDENCE_DIR=$RUNNER_TEMP/production-inspector-publish-evidence" >> "$GITHUB_ENV"
+          echo "OCI_ARCHIVE=$RUNNER_TEMP/scrolith-production-inspector.oci.tar" >> "$GITHUB_ENV"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/production-inspector-registry-auth" >> "$GITHUB_ENV"
+          mkdir -m 700 -p "$RUNNER_TEMP/production-inspector-publish-evidence" "$RUNNER_TEMP/production-inspector-registry-auth"
+
+      - name: Download the successful build job's immutable artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: production-inspector-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/inspector-release-artifact
+
+      - name: Verify source, clean pre-push scan, OCI identity, and archive hash
+        shell: bash
+        env:
+          ARTIFACT_ROOT: ${{ runner.temp }}/inspector-release-artifact
+        run: |
+          set -euo pipefail
+          evidence="$ARTIFACT_ROOT/production-inspector-release-evidence"
+          python3 - "$evidence/image-identity.json" "$evidence/trivy-summary.json" "$evidence/build-provenance.json" "$SOURCE_SHA" "$EXPECTED_IMAGE_DIGEST" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+          identity_path, scan_path, provenance_path, expected_source, expected_digest = sys.argv[1:]
+          identity = json.loads(pathlib.Path(identity_path).read_text(encoding='utf-8'))
+          scan = json.loads(pathlib.Path(scan_path).read_text(encoding='utf-8'))
+          provenance = json.loads(pathlib.Path(provenance_path).read_text(encoding='utf-8'))
+          if not re.fullmatch(r'sha256:[0-9a-f]{64}', expected_digest):
+              raise SystemExit('Build job output is not a full immutable SHA-256 digest')
+          if identity.get('sourceCommit') != expected_source or provenance.get('sourceCommit') != expected_source:
+              raise SystemExit('Downloaded artifact source SHA differs from this run output')
+          if identity.get('imageDigest') != expected_digest or scan.get('imageDigest') != expected_digest:
+              raise SystemExit('Downloaded artifact image digest differs from the successful build output')
+          if scan.get('exitCode') != 0 or scan.get('noSuppressions') is not True or scan.get('findingCount') != 0:
+              raise SystemExit('Only a completed unsuppressed zero-finding pre-push scan may be published')
+          print('Verified exact source SHA, OCI digest, provenance, and zero-finding scan evidence.')
+          PY
+          archive="$ARTIFACT_ROOT/scrolith-production-inspector.oci.tar"
+          test -s "$archive"
+          actual_archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          test "$actual_archive_sha256" = "$EXPECTED_ARCHIVE_SHA256"
+          cp "$archive" "$OCI_ARCHIVE"
+          cp "$evidence/image-identity.json" "$PUBLISH_EVIDENCE_DIR/"
+          cp "$evidence/build-provenance.json" "$PUBLISH_EVIDENCE_DIR/"
+          cp "$evidence/trivy-summary.json" "$PUBLISH_EVIDENCE_DIR/pre-push-trivy-summary.json"
+          cp "$evidence/trivy-report.json" "$PUBLISH_EVIDENCE_DIR/pre-push-trivy-report.json"
+          printf '%s  %s\n' "$actual_archive_sha256" "$OCI_ARCHIVE" > "$PUBLISH_EVIDENCE_DIR/oci-archive.sha256"
+
+      - name: Check OIDC inputs are configured without printing their values
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$AZURE_CLIENT_ID"
+          test -n "$AZURE_TENANT_ID"
+          test -n "$AZURE_SUBSCRIPTION_ID"
+          printf 'Required OIDC identifiers are configured; values withheld.\n'
+
+      - name: Authenticate to Azure with the protected environment OIDC identity
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify subscription and registry target without querying secrets
+        shell: bash
+        env:
+          EXPECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          actual_subscription="$(az account show --query id --output tsv)"
+          test "$actual_subscription" = "$EXPECTED_SUBSCRIPTION_ID"
+          printf 'OIDC subscription matches the configured production subscription.\n'
+
+      - name: Install Skopeo and authenticate to the exact production registry
+        id: acr-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install --yes --no-install-recommends skopeo
+          skopeo --version | tee "$PUBLISH_EVIDENCE_DIR/skopeo-version.txt"
+          token_file="$RUNNER_TEMP/acr-access-token"
+          trap 'rm -f "$token_file" "$DOCKER_CONFIG/config.json"' EXIT
+          umask 077
+          az acr login --name scrolithprodsea2026 --expose-token --query accessToken --output tsv > "$token_file"
+          test -s "$token_file"
+          REGISTRY_AUTH_FILE="$DOCKER_CONFIG/config.json" TOKEN_FILE="$token_file" REGISTRY_HOST="$REGISTRY" python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import pathlib
+
+          token = pathlib.Path(os.environ['TOKEN_FILE']).read_text(encoding='utf-8').strip()
+          if not token or any(ch.isspace() for ch in token):
+              raise SystemExit('Registry token response was empty or malformed')
+          auth = base64.b64encode(('00000000-0000-0000-0000-000000000000:' + token).encode()).decode()
+          path = pathlib.Path(os.environ['REGISTRY_AUTH_FILE'])
+          path.write_text(json.dumps({'auths': {os.environ['REGISTRY_HOST']: {'auth': auth}}}), encoding='utf-8')
+          path.chmod(0o600)
+          PY
+          rm -f "$token_file"
+          printf 'Authenticated to the fixed production registry; token remains in a mode-0600 temporary auth file.\n'
+          trap - EXIT
+          echo "authfile=$DOCKER_CONFIG/config.json" >> "$GITHUB_OUTPUT"
+
+      - name: Push only the verified OCI artifact under a unique source/run tag
+        id: push
+        shell: bash
+        env:
+          AUTH_FILE: ${{ steps.acr-auth.outputs.authfile }}
+        run: |
+          set -euo pipefail
+          source_tag="source-${SOURCE_SHA}"
+          release_tag="inspector-${SOURCE_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          destination="docker://${REGISTRY}/${REPOSITORY}:${release_tag}"
+          printf 'sourceSHA=%s\nreleaseTag=%s\nexpectedDigest=%s\n' \
+            "$SOURCE_SHA" "$release_tag" "$EXPECTED_IMAGE_DIGEST" \
+            > "$PUBLISH_EVIDENCE_DIR/publish-request.txt"
+          skopeo copy --all --preserve-digests \
+            --src-authfile "$AUTH_FILE" --dest-authfile "$AUTH_FILE" \
+            --digestfile "$PUBLISH_EVIDENCE_DIR/skopeo-pushed-digest.txt" \
+            "oci-archive:$OCI_ARCHIVE:$source_tag" "$destination" \
+            2>&1 | tee "$PUBLISH_EVIDENCE_DIR/skopeo-push.log"
+          pushed_digest="$(tr -d '\r\n' < "$PUBLISH_EVIDENCE_DIR/skopeo-pushed-digest.txt")"
+          if [[ ! "$pushed_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'Skopeo did not return a complete OCI SHA-256 digest.' >&2
+            exit 1
+          fi
+          test "$pushed_digest" = "$EXPECTED_IMAGE_DIGEST"
+          printf '%s\n' "$release_tag" > "$PUBLISH_EVIDENCE_DIR/release-tag.txt"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "pushed_digest=$pushed_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the digest served by ACR for the unique release tag
+        id: registry-digest
+        shell: bash
+        env:
+          AUTH_FILE: ${{ steps.acr-auth.outputs.authfile }}
+          RELEASE_TAG: ${{ steps.push.outputs.release_tag }}
+          PUSHED_DIGEST: ${{ steps.push.outputs.pushed_digest }}
+        run: |
+          set -euo pipefail
+          acr_digest="$(az acr repository show \
+            --name scrolithprodsea2026 \
+            --image "${REPOSITORY}:${RELEASE_TAG}" \
+            --query digest --output tsv)"
+          test "$acr_digest" = "$PUSHED_DIGEST"
+          skopeo inspect --raw --authfile "$AUTH_FILE" \
+            "docker://${REGISTRY}/${REPOSITORY}:${RELEASE_TAG}" \
+            > "$PUBLISH_EVIDENCE_DIR/acr-manifest.json"
+          served_digest="sha256:$(sha256sum "$PUBLISH_EVIDENCE_DIR/acr-manifest.json" | awk '{print $1}')"
+          test "$served_digest" = "$acr_digest"
+          test "$served_digest" = "$PUSHED_DIGEST"
+          test "$served_digest" = "$EXPECTED_IMAGE_DIGEST"
+          printf '{"registry":"%s","repository":"%s","tag":"%s","digest":"%s","sourceCommit":"%s"}\n' \
+            "$REGISTRY" "$REPOSITORY" "$RELEASE_TAG" "$served_digest" "$SOURCE_SHA" \
+            > "$PUBLISH_EVIDENCE_DIR/acr-image-identity.json"
+          printf 'acrMetadataDigest=%s\nservedManifestDigest=%s\n' \
+            "$acr_digest" "$served_digest" > "$PUBLISH_EVIDENCE_DIR/acr-digest-verification.txt"
+          echo "registry_digest=$served_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install verified Trivy and refresh its vulnerability database
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy_root="$RUNNER_TEMP/trivy-$TRIVY_VERSION"
+          mkdir -p "$trivy_root" "$RUNNER_TEMP/trivy-cache"
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            --output "$trivy_root/checksums.txt"
+          printf '%s  %s\n' "$TRIVY_CHECKSUMS_SHA256" "$trivy_root/checksums.txt" | sha256sum --check --status
+          curl --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$trivy_root/trivy.tar.gz"
+          expected_binary_sha="$(awk '$2 == "trivy_'"$TRIVY_VERSION"'_Linux-64bit.tar.gz" {print $1}' "$trivy_root/checksums.txt")"
+          test "${#expected_binary_sha}" -eq 64
+          printf '%s  %s\n' "$expected_binary_sha" "$trivy_root/trivy.tar.gz" | sha256sum --check --status
+          tar -xzf "$trivy_root/trivy.tar.gz" -C "$trivy_root" trivy
+          "$trivy_root/trivy" --version | tee "$PUBLISH_EVIDENCE_DIR/trivy-version.txt"
+          "$trivy_root/trivy" image --cache-dir "$RUNNER_TEMP/trivy-cache" --download-db-only \
+            2>&1 | tee "$PUBLISH_EVIDENCE_DIR/trivy-db-refresh.log"
+
+      - name: Scan the exact pushed ACR digest without suppressions
+        id: registry-scan
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.registry-digest.outputs.registry_digest }}
+        run: |
+          set -euo pipefail
+          trivy_bin="$RUNNER_TEMP/trivy-$TRIVY_VERSION/trivy"
+          image_ref="${REGISTRY}/${REPOSITORY}@${IMAGE_DIGEST}"
+          printf '%q ' "$trivy_bin" image --image-src remote --config= --ignorefile= --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" --scanners vuln \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json \
+            --output "$PUBLISH_EVIDENCE_DIR/post-push-trivy-report.json" --exit-code 1 "$image_ref" \
+            > "$PUBLISH_EVIDENCE_DIR/post-push-trivy-command.txt"
+          set +e
+          DOCKER_CONFIG="$DOCKER_CONFIG" "$trivy_bin" image \
+            --image-src remote --config= --ignorefile= --secret-config= \
+            --cache-dir "$RUNNER_TEMP/trivy-cache" --scanners vuln \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --format json \
+            --output "$PUBLISH_EVIDENCE_DIR/post-push-trivy-report.json" --exit-code 1 "$image_ref" \
+            2>&1 | tee "$PUBLISH_EVIDENCE_DIR/post-push-trivy.log"
+          scan_rc=${PIPESTATUS[0]}
+          set -e
+          python3 - "$PUBLISH_EVIDENCE_DIR/post-push-trivy-report.json" "$PUBLISH_EVIDENCE_DIR" "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" <<'PY'
+          import collections
+          import datetime
+          import json
+          import pathlib
+          import sys
+
+          report_path, out_dir, digest, version, code = sys.argv[1:]
+          report_file = pathlib.Path(report_path)
+          if not report_file.is_file() or report_file.stat().st_size == 0:
+              raise SystemExit('Post-push Trivy scan produced no raw report; release is blocked')
+          report = json.loads(report_file.read_text(encoding='utf-8'))
+          counts = collections.Counter()
+          findings = []
+          for result in report.get('Results') or []:
+              for vuln in result.get('Vulnerabilities') or []:
+                  severity = vuln.get('Severity', 'UNKNOWN')
+                  counts[severity] += 1
+                  findings.append({
+                      'target': result.get('Target'),
+                      'vulnerabilityID': vuln.get('VulnerabilityID'),
+                      'package': vuln.get('PkgName'),
+                      'installedVersion': vuln.get('InstalledVersion'),
+                      'fixedVersion': vuln.get('FixedVersion'),
+                      'severity': severity,
+                  })
+          summary = {
+              'imageDigest': digest,
+              'scanner': 'Trivy ' + version,
+              'database': report.get('Metadata', {}),
+              'scanStatus': 'completed-no-findings-at-configured-severities' if int(code) == 0 else 'completed-with-findings-or-scan-error',
+              'severityCounts': {level: counts[level] for level in ('UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')},
+              'findingCount': len(findings),
+              'exitCode': int(code),
+              'noSuppressions': True,
+              'findings': findings,
+              'generatedAtUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          (pathlib.Path(out_dir) / 'post-push-trivy-summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+          if int(code) != 0 and not findings:
+              raise SystemExit('Trivy exited nonzero without vulnerability findings; classify as scanner failure')
+          PY
+          printf 'imageDigest=%s\nscanExitCode=%s\n' "$IMAGE_DIGEST" "$scan_rc" \
+            | tee "$PUBLISH_EVIDENCE_DIR/post-push-scan-result.txt"
+          exit "$scan_rc"
+
+      - name: Upload publication digest and post-push scan evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.6.2
+        with:
+          name: production-inspector-acr-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/production-inspector-publish-evidence
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Remove temporary registry credentials and Azure CLI session
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/acr-access-token" "$DOCKER_CONFIG/config.json"
+          rmdir "$DOCKER_CONFIG" 2>/dev/null || true
+          az logout >/dev/null 2>&1 || true
+          printf 'Temporary registry authentication files removed; ephemeral runner session logged out.\n'
