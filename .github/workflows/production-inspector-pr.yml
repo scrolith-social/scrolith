@@ -127,7 +127,7 @@ jobs:
           done
           psql "host=localhost port=55432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=$RUNNER_TEMP/inspector-pg17-tls/server.crt" \
             --no-psqlrc --set=ON_ERROR_STOP=1 --no-align --tuples-only --command="SELECT 'TLS_VERIFY_FULL=' || ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid();" \
-            | tee "$EVIDENCE_DIR/postgres-tls-check.txt" | grep -qx 'TLS_VERIFY_FULL=t'
+            | tee "$EVIDENCE_DIR/postgres-tls-check.txt" | grep -qx 'TLS_VERIFY_FULL=true'
           psql "host=localhost port=55432 dbname=postgres user=postgres sslmode=verify-full sslrootcert=$RUNNER_TEMP/inspector-pg17-tls/server.crt" \
             --no-psqlrc --set=ON_ERROR_STOP=1 \
             --command="CREATE ROLE synthetic_inspector_admin LOGIN CREATEDB CREATEROLE NOSUPERUSER NOINHERIT NOREPLICATION NOBYPASSRLS;"
