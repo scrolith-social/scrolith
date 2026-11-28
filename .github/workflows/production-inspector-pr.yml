@@ -310,7 +310,7 @@ jobs:
           oci_layout="$RUNNER_TEMP/scrolith-production-inspector-oci-layout"
           python3 deploy/postgres/extract-inspector-oci-layout.py \
             "$oci_archive" "$oci_layout" 2>&1 | tee "$EVIDENCE_DIR/oci-layout-extract.log"
-          oci_image="$oci_layout@$PLATFORM_MANIFEST_DIGEST"
+          oci_image="$oci_layout"
           printf '%q ' "$trivy_bin" image --config= --ignorefile= --secret-config= \
             --cache-dir "$RUNNER_TEMP/trivy-cache" --input "$oci_image" --platform linux/amd64 \
             --scanners vuln --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \

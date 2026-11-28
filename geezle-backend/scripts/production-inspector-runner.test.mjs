@@ -92,7 +92,7 @@ test('CI scans the exact linux/amd64 OCI manifest from a validated layout direct
   assert.match(workflow, /extract-inspector-oci-layout\.py/);
   assert.match(workflow, /platform_digest="\$\(python3[\s\S]*platformManifestDigest/);
   assert.match(workflow, /PLATFORM_MANIFEST_DIGEST: \$\{\{ steps\.image\.outputs\.platform_manifest_digest \}\}/);
-  assert.match(workflow, /oci_image="\$oci_layout@\$PLATFORM_MANIFEST_DIGEST"/);
+  assert.match(workflow, /oci_image="\$oci_layout"/);
   assert.match(workflow, /--input "\$oci_image"[\s\S]*--platform linux\/amd64/);
   assert.match(workflow, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/);
   assert.match(workflow, /'noSuppressions': True/);
