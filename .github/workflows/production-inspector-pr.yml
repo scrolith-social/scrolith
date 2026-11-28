@@ -70,6 +70,7 @@ jobs:
           node --test --test-reporter=spec \
             geezle-backend/scripts/production-inspector-sql-contract.test.mjs \
             geezle-backend/scripts/production-inspector-runner.test.mjs
+          python3 deploy/postgres/test_extract_inspector_oci_layout.py -v
           sh -n deploy/postgres/run-production-inspector.sh
 
       - name: Compile inspector Container Apps Job Bicep offline
@@ -269,7 +270,9 @@ jobs:
           }, indent=2) + '\n', encoding='utf-8')
           PY
           image_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["imageDigest"])' "$EVIDENCE_DIR/image-identity.json")"
+          platform_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platformManifestDigest"])' "$EVIDENCE_DIR/image-identity.json")"
           echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+          echo "platform_manifest_digest=$platform_digest" >> "$GITHUB_OUTPUT"
 
       - name: Install verified Trivy 0.76.2 and refresh vulnerability database
         id: trivy
@@ -299,10 +302,15 @@ jobs:
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+          PLATFORM_MANIFEST_DIGEST: ${{ steps.image.outputs.platform_manifest_digest }}
         run: |
           set -euo pipefail
           trivy_bin="$RUNNER_TEMP/trivy-$TRIVY_VERSION/trivy"
-          oci_image="$RUNNER_TEMP/scrolith-production-inspector.oci.tar"
+          oci_archive="$RUNNER_TEMP/scrolith-production-inspector.oci.tar"
+          oci_layout="$RUNNER_TEMP/scrolith-production-inspector-oci-layout"
+          python3 deploy/postgres/extract-inspector-oci-layout.py \
+            "$oci_archive" "$oci_layout" 2>&1 | tee "$EVIDENCE_DIR/oci-layout-extract.log"
+          oci_image="$oci_layout@$PLATFORM_MANIFEST_DIGEST"
           printf '%q ' "$trivy_bin" image --config= --ignorefile= --secret-config= \
             --cache-dir "$RUNNER_TEMP/trivy-cache" --input "$oci_image" --platform linux/amd64 \
             --scanners vuln --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL \
@@ -324,18 +332,19 @@ jobs:
             2> >(tee "$EVIDENCE_DIR/trivy-scan.stderr.log" >&2)
           scan_rc=$?
           set -e
-          python3 - "$EVIDENCE_DIR/trivy-report.json" "$EVIDENCE_DIR" "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" <<'PY'
+          python3 - "$EVIDENCE_DIR/trivy-report.json" "$EVIDENCE_DIR" "$IMAGE_DIGEST" "$PLATFORM_MANIFEST_DIGEST" "$TRIVY_VERSION" "$scan_rc" <<'PY'
           import collections
           import datetime
           import json
           import pathlib
           import sys
 
-          report_path, out_dir, digest, version, code = sys.argv[1:]
+          report_path, out_dir, digest, platform_digest, version, code = sys.argv[1:]
           report_file = pathlib.Path(report_path)
           if not report_file.is_file() or report_file.stat().st_size == 0:
               summary = {
                   'imageDigest': digest,
+                  'platformManifestDigest': platform_digest,
                   'scanner': 'Trivy ' + version,
                   'scanStatus': 'failed-no-raw-report',
                   'exitCode': int(code),
@@ -362,6 +371,7 @@ jobs:
                   })
           summary = {
               'imageDigest': digest,
+              'platformManifestDigest': platform_digest,
               'scanner': 'Trivy ' + version,
               'database': report.get('Metadata', {}),
               'scanStatus': ('completed-no-findings-at-configured-severities' if int(code) == 0
@@ -378,7 +388,7 @@ jobs:
           if int(code) != 0 and not findings:
               raise SystemExit('Trivy exited nonzero without vulnerability findings; classify as scanner failure, not a clean scan')
           PY
-          printf 'imageDigest=%s\nscanner=Trivy %s\nscanExitCode=%s\n' "$IMAGE_DIGEST" "$TRIVY_VERSION" "$scan_rc" | tee "$EVIDENCE_DIR/scan-result.txt"
+          printf 'imageDigest=%s\nplatformManifestDigest=%s\nscanner=Trivy %s\nscanExitCode=%s\n' "$IMAGE_DIGEST" "$PLATFORM_MANIFEST_DIGEST" "$TRIVY_VERSION" "$scan_rc" | tee "$EVIDENCE_DIR/scan-result.txt"
           echo "scan_exit_code=$scan_rc" >> "$GITHUB_OUTPUT"
           exit "$scan_rc"
 

@@ -86,3 +86,14 @@ test('wrapper contract keeps the report buffered until psql succeeds', async () 
   assert.match(source, /then\n  cat "\$report_file"\nelse\n  exit \$\?/);
   assert.doesNotMatch(source, /set -x|\btee\s/);
 });
+
+test('CI scans the exact linux/amd64 OCI manifest from a validated layout directory', async () => {
+  const workflow = await readFile(resolve(repositoryRoot, '.github', 'workflows', 'production-inspector-pr.yml'), 'utf8');
+  assert.match(workflow, /extract-inspector-oci-layout\.py/);
+  assert.match(workflow, /platform_digest="\$\(python3[\s\S]*platformManifestDigest/);
+  assert.match(workflow, /PLATFORM_MANIFEST_DIGEST: \$\{\{ steps\.image\.outputs\.platform_manifest_digest \}\}/);
+  assert.match(workflow, /oci_image="\$oci_layout@\$PLATFORM_MANIFEST_DIGEST"/);
+  assert.match(workflow, /--input "\$oci_image"[\s\S]*--platform linux\/amd64/);
+  assert.match(workflow, /--severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL/);
+  assert.match(workflow, /'noSuppressions': True/);
+});
