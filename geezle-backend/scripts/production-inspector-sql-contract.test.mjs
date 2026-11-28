@@ -83,8 +83,13 @@ test('production inspector proposal is digest-pinned, read-only, and column-scop
   assert.match(runner, /2>\/dev\/null/);
   assert.match(runner, /then\n  cat "\$report_file"/);
   assert.doesNotMatch(runner, /set -x|env\s*$/m);
-  assert.match(dockerfile, /FROM postgres:17-bookworm@sha256:[0-9a-f]{64}/);
-  assert.match(dockerfile, /USER postgres/);
+  assert.match(dockerfile, /FROM alpine:3\.24\.4@sha256:[0-9a-f]{64}/);
+  assert.match(dockerfile, /postgresql17-client=\$\{POSTGRESQL17_CLIENT_VERSION\}/);
+  assert.match(dockerfile, /POSTGRESQL17_CLIENT_VERSION=17\.12-r0/);
+  assert.match(dockerfile, /CA_CERTIFICATES_BUNDLE_VERSION=20261020-r0/);
+  assert.match(dockerfile, /USER 10001:10001/);
+  assert.match(dockerfile, /test -r \/etc\/ssl\/certs\/ca-certificates\.crt/);
+  assert.doesNotMatch(dockerfile, /FROM postgres:|USER postgres|gosu/);
   assert.match(bicep, /Microsoft\.App\/managedEnvironments@[0-9-]+'\s+existing/);
   assert.match(bicep, /triggerType: 'Manual'/);
   assert.match(bicep, /replicaRetryLimit: 0/);

@@ -87,6 +87,23 @@ test('wrapper contract keeps the report buffered until psql succeeds', async () 
   assert.doesNotMatch(source, /set -x|\btee\s/);
 });
 
+test('inspector image is a pinned non-root PostgreSQL 17 client-only runtime', async () => {
+  const dockerfile = await readFile(resolve(repositoryRoot, 'deploy', 'postgres', 'inspector.Dockerfile'), 'utf8');
+
+  assert.match(dockerfile, /FROM alpine:3\.24\.4@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b/);
+  assert.match(dockerfile, /postgresql17-client=\$\{POSTGRESQL17_CLIENT_VERSION\}/);
+  assert.match(dockerfile, /CA_CERTIFICATES_BUNDLE_VERSION=20261020-r0/);
+  assert.match(dockerfile, /POSTGRESQL17_CLIENT_VERSION=17\.12-r0/);
+  assert.match(dockerfile, /test -r \/etc\/ssl\/certs\/ca-certificates\.crt/);
+  assert.match(dockerfile, /if apk info -e postgresql17[^\n]*; then exit 1; fi/);
+  assert.match(dockerfile, /test ! -e \/usr\/libexec\/postgresql17\/postgres/);
+  assert.match(dockerfile, /USER 10001:10001/);
+  assert.match(dockerfile, /test "\$\(id -u\)" = 10001/);
+  assert.match(dockerfile, /! command -v pg_dump/);
+  assert.match(dockerfile, /ENTRYPOINT \["\/bin\/sh", "\/opt\/scrolith\/run-inspector\.sh"\]/);
+  assert.doesNotMatch(dockerfile, /FROM postgres:|gosu|PGPASSWORD|DATABASE_URL/);
+});
+
 test('CI scans the exact linux/amd64 OCI manifest from a validated layout directory', async () => {
   const workflow = await readFile(resolve(repositoryRoot, '.github', 'workflows', 'production-inspector-pr.yml'), 'utf8');
   assert.match(workflow, /extract-inspector-oci-layout\.py/);
