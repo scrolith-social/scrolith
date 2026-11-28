@@ -67,9 +67,11 @@ jobs:
           node --check geezle-backend/scripts/production-inspector-postgres17.test.mjs
           node --check geezle-backend/scripts/production-inspector-sql-contract.test.mjs
           node --check geezle-backend/scripts/production-inspector-runner.test.mjs
+          node --check geezle-backend/scripts/production-inspector-release-workflow.test.mjs
           node --test --test-reporter=spec \
             geezle-backend/scripts/production-inspector-sql-contract.test.mjs \
-            geezle-backend/scripts/production-inspector-runner.test.mjs
+            geezle-backend/scripts/production-inspector-runner.test.mjs \
+            geezle-backend/scripts/production-inspector-release-workflow.test.mjs
           python3 deploy/postgres/test_extract_inspector_oci_layout.py -v
           sh -n deploy/postgres/run-production-inspector.sh
 

@@ -96,6 +96,9 @@ test('production inspector proposal is digest-pinned, read-only, and column-scop
   assert.match(bicep, /@minLength\(71\)[\s\S]*@maxLength\(71\)/,
     'Bicep must reject digest strings with the wrong OCI sha256 length');
   assert.match(bicep, /scrolith-tools\/postgres-inspector@\$\{inspectorImageDigest\}/);
+  assert.match(bicep, /verified by the reviewed inspector image-release evidence after the production ACR push/);
+  assert.doesNotMatch(bicep, /postgres-inspector:\$\{inspectorImageDigest\}/,
+    'the job template must use an immutable digest reference, never a tag');
   assert.match(bicep, /PGSSLMODE', value: 'verify-full'/);
   assert.match(bicep, /PGPASSWORD', secretRef: containerSecretName/);
   assert.doesNotMatch(bicep, /\bingress\s*:/i);

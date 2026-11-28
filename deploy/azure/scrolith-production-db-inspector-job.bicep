@@ -6,7 +6,7 @@ targetScope = 'resourceGroup'
 ])
 param environmentName string = 'cae-scrolith-sea-prod'
 
-@description('Pinned final inspector image digest in the production ACR; provide the full sha256:<64 hex> value.')
+@description('Full sha256:<64 lowercase hex> digest verified by the reviewed inspector image-release evidence after the production ACR push; never pass a tag or pre-push OCI-only digest.')
 @minLength(71)
 @maxLength(71)
 param inspectorImageDigest string
